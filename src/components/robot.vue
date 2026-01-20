@@ -89,7 +89,7 @@
 </template>
 
 <script setup>
-import { ref, defineEmits, computed, defineProps } from "vue";
+import { ref, computed } from "vue";
 
 // 新增 props 定义
 const props = defineProps({

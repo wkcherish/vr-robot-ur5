@@ -1,0 +1,10 @@
+<mujoco model="rack">
+  <compiler angle="radian"/>
+
+  <worldbody>
+    <body name="rack_base" pos="0 0 0">
+      <inertial mass="49.112" pos="-0.011971 0.0044869 -0.4297" diaginertia="9.9116 21.362 28"/>
+      <geom type="box" size="1.0 0.8 1.8" pos="0 0 -0.9" rgba="0.75 0.76 0.78 1"/>
+    </body>
+  </worldbody>
+</mujoco>

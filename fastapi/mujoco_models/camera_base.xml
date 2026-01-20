@@ -1,0 +1,10 @@
+<mujoco model="camera_base">
+  <compiler angle="radian"/>
+
+  <worldbody>
+    <body name="camera_base" pos="0 0 0" quat="0.7071067811865476 0 0 0.7071067811865475">
+      <inertial mass="15.57" pos="0.55262 0.63542 0.59184" diaginertia="0.30648 0.7762 1.0218"/>
+      <geom type="box" size="0.8 0.6 0.4" pos="0.4 0.3 0.2" rgba="1 1 1 1"/>
+    </body>
+  </worldbody>
+</mujoco>
