@@ -9,4 +9,3 @@ import 'element-plus/dist/index.css'
 // axios.defaults.baseURL = 'http://127.0.0.1:8001'
 
 createApp(App).use(ElementPlus).mount('#app')
-

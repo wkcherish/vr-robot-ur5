@@ -10,11 +10,16 @@
           @click="toggleSimulation"
           class="control-button"
           :class="{ active: isSimulationRunning }"
+          :disabled="!isConnected || commandPending"
         >
           <span class="btn-icon">{{ isSimulationRunning ? "⏹" : "▶" }}</span>
           {{ isSimulationRunning ? "停止仿真" : "开始仿真" }}
         </button>
-        <button @click="resetSimulation" class="control-button secondary">
+        <button
+          @click="resetSimulation"
+          class="control-button secondary"
+          :disabled="!isConnected || commandPending"
+        >
           <span class="btn-icon">🔄</span>重置场景
         </button>
       </div>
@@ -36,13 +41,13 @@
     <!-- 工具识别区 -->
     <div class="panel-section">
       <h4 class="section-title">工具识别</h4>
-      <button
-        @click="detectTools"
-        class="control-button tertiary"
-        :disabled="!isSimulationRunning"
-      >
-        <span class="btn-icon">🔍</span>识别桌面工具
-      </button>
+        <button
+          @click="detectTools"
+          class="control-button tertiary"
+          :disabled="!isConnected || !isSimulationRunning || commandPending"
+        >
+          <span class="btn-icon">🔍</span>识别桌面工具
+        </button>
 
       <div v-if="detectedTools.length > 0" class="tools-container">
         <div class="section-subtitle">识别结果</div>
@@ -76,7 +81,7 @@
           @click="grabTool"
           class="control-button"
           :disabled="
-            selectedToolIndex === null || !isSimulationRunning || isGrabbing
+            !isConnected || selectedToolIndex === null || !isSimulationRunning || commandPending
           "
         >
           <span class="btn-icon">✋</span>抓取工具
@@ -84,7 +89,7 @@
         <button
           @click="placeTool"
           class="control-button secondary"
-          :disabled="!isToolGrabbed || !isSimulationRunning || isPlacing"
+          :disabled="!isConnected || !isToolGrabbed || !isSimulationRunning || commandPending"
         >
           <span class="btn-icon">👇</span>放置工具
         </button>
@@ -98,11 +103,53 @@
             :key="index"
             @click="moveToPosition(position)"
             class="position-button"
-            :disabled="!isSimulationRunning || isMoving"
+            :disabled="!isConnected || !isSimulationRunning || commandPending"
           >
             {{ position.name }}
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- 连接状态区 -->
+    <div class="panel-section">
+      <h4 class="section-title">连接状态</h4>
+      <div class="status-container">
+        <div class="status-item">
+          <div class="status-label">服务器连接:</div>
+          <div
+            class="status-value"
+            :class="{
+              'status-active': isConnected,
+              'status-inactive': !isConnected,
+            }"
+          >
+            {{ connectionStatus }}
+          </div>
+        </div>
+        <div class="status-item" v-if="commandPending">
+          <div class="status-label">命令状态:</div>
+          <div class="status-value status-pending">
+            <div class="spinner"></div> 正在执行...
+          </div>
+        </div>
+      </div>
+      <div class="control-grid" style="margin-top: 12px;">
+        <button
+          @click="connectWebSocket"
+          class="control-button"
+          :class="{ active: isConnected }"
+          :disabled="isConnected"
+        >
+          <span class="btn-icon">🔗</span>{{ isConnected ? "已连接" : "连接服务器" }}
+        </button>
+        <button
+          @click="disconnectWebSocket"
+          class="control-button secondary"
+          :disabled="!isConnected"
+        >
+          <span class="btn-icon">🔌</span>断开连接
+        </button>
       </div>
     </div>
 
@@ -144,7 +191,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import websocketManager from "../utils/websocket.js";
 
 // 仿真状态
 const isSimulationRunning = ref(false);
@@ -152,6 +200,11 @@ const simulationSpeed = ref(1.0);
 const currentOperation = ref("idle");
 const operationMessage = ref("");
 const operationSuccess = ref(true);
+
+// WebSocket 连接状态
+const isConnected = ref(false);
+const connectionStatus = ref("未连接");
+const commandPending = ref(false);
 
 // 工具识别相关
 const detectedTools = ref([]);
@@ -188,8 +241,66 @@ const currentOperationText = computed(() => {
   }
 });
 
+// WebSocket 事件监听
+const setupWebSocketListeners = () => {
+  websocketManager.on('statusChange', (status) => {
+    connectionStatus.value = status;
+    isConnected.value = websocketManager.isConnected;
+  });
+
+  websocketManager.on('connected', () => {
+    operationMessage.value = "已连接到仿真服务器";
+    operationSuccess.value = true;
+  });
+
+  websocketManager.on('disconnected', () => {
+    isSimulationRunning.value = false;
+    operationMessage.value = "仿真服务器连接断开";
+    operationSuccess.value = false;
+    resetOperationStates();
+  });
+
+  websocketManager.on('controlResult', (data) => {
+    commandPending.value = false;
+    if (data.status === 'success') {
+      operationMessage.value = "控制命令执行成功";
+      operationSuccess.value = true;
+    } else {
+      operationMessage.value = `控制命令失败: ${data.message || '未知错误'}`;
+      operationSuccess.value = false;
+    }
+  });
+
+  websocketManager.on('resetResult', (data) => {
+    commandPending.value = false;
+    if (data.status === 'success') {
+      operationMessage.value = "仿真已重置";
+      operationSuccess.value = true;
+      resetOperationStates();
+      detectedTools.value = [];
+      selectedToolIndex.value = null;
+      isToolGrabbed.value = false;
+    } else {
+      operationMessage.value = `重置失败: ${data.message || '未知错误'}`;
+      operationSuccess.value = false;
+    }
+  });
+
+  websocketManager.on('error', (error) => {
+    commandPending.value = false;
+    operationMessage.value = `WebSocket 错误: ${error.message || '未知错误'}`;
+    operationSuccess.value = false;
+  });
+};
+
 // 开始/停止仿真
 const toggleSimulation = () => {
+  if (!isConnected.value) {
+    operationMessage.value = "请先连接到仿真服务器";
+    operationSuccess.value = false;
+    return;
+  }
+
   isSimulationRunning.value = !isSimulationRunning.value;
   if (isSimulationRunning.value) {
     operationMessage.value = "仿真已启动";
@@ -197,24 +308,28 @@ const toggleSimulation = () => {
   } else {
     operationMessage.value = "仿真已停止";
     operationSuccess.value = true;
-    // 重置所有操作状态
     resetOperationStates();
   }
 };
 
 // 重置仿真
 const resetSimulation = () => {
-  if (isSimulationRunning.value) {
-    isSimulationRunning.value = false;
+  if (!isConnected.value) {
+    operationMessage.value = "请先连接到仿真服务器";
+    operationSuccess.value = false;
+    return;
   }
 
-  // 重置所有状态
-  resetOperationStates();
-  detectedTools.value = [];
-  selectedToolIndex.value = null;
-  isToolGrabbed.value = false;
-  operationMessage.value = "场景已重置";
-  operationSuccess.value = true;
+  commandPending.value = true;
+  operationMessage.value = "正在重置仿真...";
+  currentOperation.value = "resetting";
+
+  const success = websocketManager.sendResetCommand();
+  if (!success) {
+    commandPending.value = false;
+    operationMessage.value = "发送重置命令失败";
+    operationSuccess.value = false;
+  }
 };
 
 // 重置操作状态
@@ -227,12 +342,16 @@ const resetOperationStates = () => {
 
 // 识别桌面工具
 const detectTools = () => {
-  if (!isSimulationRunning.value) return;
+  if (!isConnected.value || !isSimulationRunning.value) {
+    operationMessage.value = "请先连接服务器并启动仿真";
+    operationSuccess.value = false;
+    return;
+  }
 
   currentOperation.value = "detecting";
-  operationMessage.value = "";
+  operationMessage.value = "正在识别桌面工具...";
 
-  // 模拟识别过程
+  // 发送工具识别请求（这里先用模拟数据，实际应该调用后端AI服务）
   setTimeout(() => {
     detectedTools.value = [
       {
@@ -253,8 +372,7 @@ const detectTools = () => {
     ];
 
     currentOperation.value = "idle";
-    operationMessage.value =
-      "成功识别到 " + detectedTools.value.length + " 个工具";
+    operationMessage.value = "成功识别到 " + detectedTools.value.length + " 个工具";
     operationSuccess.value = true;
   }, 1500);
 };
@@ -268,60 +386,149 @@ const selectTool = (index) => {
 
 // 抓取工具
 const grabTool = () => {
-  if (!isSimulationRunning.value || selectedToolIndex.value === null) return;
+  if (!isConnected.value || !isSimulationRunning.value || selectedToolIndex.value === null) {
+    operationMessage.value = "请先连接服务器并选择工具";
+    operationSuccess.value = false;
+    return;
+  }
 
+  const tool = detectedTools.value[selectedToolIndex.value];
   isGrabbing.value = true;
   currentOperation.value = "grabbing";
-  operationMessage.value = "";
+  operationMessage.value = `正在抓取 ${tool.name}...`;
+  commandPending.value = true;
 
-  // 模拟抓取过程
-  setTimeout(() => {
-    isToolGrabbed.value = true;
+  // 计算抓取位置的关节角度（这里需要根据工具位置进行逆运动学计算）
+  // 暂时使用预设的抓取姿态
+  const grabPose = [0.0, -Math.PI/3, Math.PI/2, -Math.PI/3, -Math.PI/2, Math.PI/4]; // 抓取姿态
+
+  const success = websocketManager.sendControlCommand(grabPose, {
+    n_steps: 20,
+    control_mode: 'position'
+  });
+
+  if (!success) {
     isGrabbing.value = false;
     currentOperation.value = "idle";
-    operationMessage.value = `成功抓取: ${
-      detectedTools.value[selectedToolIndex.value].name
-    }`;
-    operationSuccess.value = true;
-  }, 2000);
+    commandPending.value = false;
+    operationMessage.value = "发送抓取命令失败";
+    operationSuccess.value = false;
+  }
 };
 
 // 移动到预设位置
 const moveToPosition = (position) => {
-  if (!isSimulationRunning.value || !isToolGrabbed.value) return;
+  if (!isConnected.value || !isSimulationRunning.value || !isToolGrabbed.value) {
+    operationMessage.value = "请先连接服务器并抓取工具";
+    operationSuccess.value = false;
+    return;
+  }
 
   isMoving.value = true;
   currentOperation.value = "moving";
-  operationMessage.value = "";
+  operationMessage.value = `正在移动到 ${position.name}...`;
+  commandPending.value = true;
 
-  // 模拟移动过程
-  setTimeout(() => {
+  // 根据预设位置计算关节角度（这里需要逆运动学计算）
+  // 暂时使用预设的关节角度
+  let targetPose;
+  if (position.name === "工作区A") {
+    targetPose = [Math.PI/6, -Math.PI/3, Math.PI/2, -Math.PI/3, -Math.PI/2, 0];
+  } else if (position.name === "工作区B") {
+    targetPose = [-Math.PI/6, -Math.PI/3, Math.PI/2, -Math.PI/3, -Math.PI/2, 0];
+  } else if (position.name === "存放处") {
+    targetPose = [0, -Math.PI/2, Math.PI/2, -Math.PI/2, -Math.PI/2, Math.PI/2];
+  }
+
+  const success = websocketManager.sendControlCommand(targetPose, {
+    n_steps: 15,
+    control_mode: 'position'
+  });
+
+  if (!success) {
     isMoving.value = false;
     currentOperation.value = "idle";
-    operationMessage.value = `已移动到: ${position.name}`;
-    operationSuccess.value = true;
-  }, 1500);
+    commandPending.value = false;
+    operationMessage.value = "发送移动命令失败";
+    operationSuccess.value = false;
+  }
 };
 
 // 放置工具
 const placeTool = () => {
-  if (!isSimulationRunning.value || !isToolGrabbed.value) return;
+  if (!isConnected.value || !isSimulationRunning.value || !isToolGrabbed.value) {
+    operationMessage.value = "请先连接服务器并抓取工具";
+    operationSuccess.value = false;
+    return;
+  }
 
   isPlacing.value = true;
   currentOperation.value = "placing";
-  operationMessage.value = "";
+  operationMessage.value = "正在放置工具...";
+  commandPending.value = true;
 
-  // 模拟放置过程
-  setTimeout(() => {
-    isToolGrabbed.value = false;
+  // 释放姿态
+  const releasePose = [0.0, -Math.PI/4, Math.PI/3, -Math.PI/4, -Math.PI/2, 0];
+
+  const success = websocketManager.sendControlCommand(releasePose, {
+    n_steps: 10,
+    control_mode: 'position'
+  });
+
+  if (!success) {
     isPlacing.value = false;
     currentOperation.value = "idle";
-    operationMessage.value = "工具已放置";
-    operationSuccess.value = true;
-    // 重置选择
-    selectedToolIndex.value = null;
-  }, 1500);
+    commandPending.value = false;
+    operationMessage.value = "发送放置命令失败";
+    operationSuccess.value = false;
+  }
 };
+
+// WebSocket 连接管理
+const connectWebSocket = () => {
+  if (isConnected.value) {
+    operationMessage.value = "已经连接到服务器";
+    operationSuccess.value = true;
+    return;
+  }
+
+  operationMessage.value = "正在连接到仿真服务器...";
+  websocketManager.connect();
+};
+
+const disconnectWebSocket = () => {
+  if (!isConnected.value) {
+    operationMessage.value = "未连接到服务器";
+    operationSuccess.value = false;
+    return;
+  }
+
+  websocketManager.disconnect();
+  isSimulationRunning.value = false;
+  resetOperationStates();
+  operationMessage.value = "已断开与仿真服务器的连接";
+  operationSuccess.value = true;
+};
+
+// 组件生命周期
+onMounted(() => {
+  setupWebSocketListeners();
+
+  // 获取初始连接状态
+  const status = websocketManager.getStatus();
+  isConnected.value = status.isConnected;
+  connectionStatus.value = status.status;
+});
+
+onBeforeUnmount(() => {
+  // 清理事件监听器
+  websocketManager.off('statusChange');
+  websocketManager.off('connected');
+  websocketManager.off('disconnected');
+  websocketManager.off('controlResult');
+  websocketManager.off('resetResult');
+  websocketManager.off('error');
+});
 </script>
 
 <style>
@@ -587,5 +794,26 @@ const placeTool = () => {
 
 .status-error {
   color: #f56c6c;
+}
+
+.status-pending {
+  color: #e6a23c;
+  display: flex;
+  align-items: center;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #e6a23c;
+  border-top: 2px solid transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 </style>

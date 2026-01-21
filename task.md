@@ -30,10 +30,10 @@
 ### 任务 2.1：创建 MuJoCo 模型目录结构
 **描述**: 建立模型文件组织结构
 **步骤**:
-1. 创建 `fastapi/mujoco_models/` 目录
-2. 创建 `fastapi/mujoco_models/meshes/` 子目录
+1. 创建 `backend/mujoco_models/` 目录
+2. 创建 `backend/mujoco_models/meshes/` 子目录
 3. 添加 `.gitkeep` 文件防止空目录被忽略
-**验收标准**: 目录结构创建完成，可通过 `ls fastapi/mujoco_models/` 确认
+**验收标准**: 目录结构创建完成，可通过 `ls backend/mujoco_models/` 确认
 **预计时间**: 15分钟
 
 ### 任务 2.2：分析 UR5 URDF 文件结构
@@ -47,13 +47,13 @@
 
 ### 任务 2.3：创建 UR5 MJCF 模型文件
 **描述**: 将 UR5 URDF 转换为 MJCF 格式
-**AI 编程任务**: 生成完整的 `fastapi/mujoco_models/ur5.xml` 文件
+**AI 编程任务**: 生成完整的 `backend/mujoco_models/ur5.xml` 文件
 **要求**:
 - 包含 6 个关节：shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3
 - 添加 position 执行器和关节传感器
 - 正确引用 mesh 文件路径
 - 确保坐标系一致性
-**验收标准**: `python -c "import mujoco; mujoco.MjModel.from_xml_path('fastapi/mujoco_models/ur5.xml')"` 无错误
+**验收标准**: `python -c "import mujoco; mujoco.MjModel.from_xml_path('backend/mujoco_models/ur5.xml')"` 无错误
 **预计时间**: 4-6小时
 
 ### 任务 2.4：创建静态环境模型
@@ -69,7 +69,7 @@
 
 ### 任务 2.5：创建环境集成文件
 **描述**: 将所有环境组件集成到一个场景中
-**AI 编程任务**: 生成 `fastapi/mujoco_models/environment.xml`
+**AI 编程任务**: 生成 `backend/mujoco_models/environment.xml`
 **要求**:
 - 包含 UR5 机器人和所有静态环境
 - 设置合适的初始位置和姿态
@@ -94,7 +94,7 @@
 该原则确保改进的可重复性、安全性和可测量性，使仿真验证结果成为后续真实部署的重要依据。
 
 ### M1：环境感知（Environment Sensing）- 基于 MuJoCo 传感器
-**AI 编程任务**: 在 `fastapi/` 中实现 `env_sensing.py`，利用 MuJoCo 仿真环境进行环境感知
+**AI 编程任务**: 在 `backend/` 中实现 `env_sensing.py`，利用 MuJoCo 仿真环境进行环境感知
 **内容与步骤**:
 1. 数据采集接口：调用 `simulation.py` 的 `render_camera()` 接口和传感器数据（关节力矩 `qfrc_constraint`、接触信息 `contact`）读取数据。
 2. 主动过滤：在仿真环境中实现基于任务的 ROI 选择器，决定上报的关键传感器数据（例如：只监控特定关节的力矩变化）。
@@ -173,7 +173,7 @@
 > **前置条件**: 阶段二完成，所有 MJCF 模型文件就绪
 
 ### 任务 3.1：创建 Simulation 类基础结构
-**AI 编程任务**: 生成 `fastapi/simulation.py` 基础框架
+**AI 编程任务**: 生成 `backend/simulation.py` 基础框架
 **要求**:
 - 导入必要的模块（mujoco, numpy, asyncio 等）
 - 定义 SimState 数据类
@@ -203,7 +203,7 @@
 **预计时间**: 3-4小时
 
 ### 任务 3.4：实现 REST API 接口
-**AI 编程任务**: 在 `fastapi/main.py` 中添加 REST 端点
+**AI 编程任务**: 在 `backend/main.py` 中添加 REST 端点
 **要求**:
 - `POST /sim/reset/` - 重置仿真状态
 - `POST /sim/step/` - 执行控制步进
@@ -424,14 +424,14 @@
 ---
 
 ### 七、交付物清单（详细验收标准）
-1. **MuJoCo 模型文件集** `fastapi/mujoco_models/`：
+1. **MuJoCo 模型文件集** `backend/mujoco_models/`：
    - `ur5.xml`：完整的 UR5 机器人 MJCF 模型（6关节+执行器+sensors）
    - `battery.xml`、`rack.xml`、`camera_base.xml`：静态环境组件
    - `environment.xml`：集成环境场景
    - `meshes/`：所有必需的网格文件（STL/DAE格式）
    - 验收：所有模型可被 MuJoCo 正确加载，无几何冲突
 
-2. **后端仿真模块** `fastapi/simulation.py`：
+2. **后端仿真模块** `backend/simulation.py`：
    - 完整的 Simulation 类（模型加载、步进控制、状态管理）
    - REST API：`/sim/reset/`、`/sim/step/`、`/sim/state/`
    - WebSocket：`/sim/ws`（实时状态推送和控制接收）
@@ -453,7 +453,7 @@
    - 误差统计表（位置误差 < 5mm，姿态误差 < 2°）
    - 验收：仿真与实际机器人姿态一致性验证
 
-5. **AI 增强模块** `fastapi/`：
+5. **AI 增强模块** `backend/`：
    - `env_sensing.py`：基于 MuJoCo 传感器的环境感知模块
    - `vision.py`：仿真相机图像处理和目标检测
    - `tactile.py`：力学触觉数据处理和事件检测
@@ -508,7 +508,7 @@
 ```bash
 # 项目根目录结构
 vue-robot/
-├── fastapi/
+├── backend/
 │   ├── mujoco_models/     # MJCF 模型文件
 │   ├── simulation.py      # 仿真核心模块
 │   ├── main.py           # FastAPI 应用入口
@@ -528,7 +528,7 @@ vue-robot/
 #### 启动和调试命令
 ```bash
 # 后端开发模式
-cd fastapi
+cd backend
 python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 # 前端开发模式
@@ -695,11 +695,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY fastapi/ ./fastapi/
+COPY backend/ ./backend/
 COPY src/ ./src/
 
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "fastapi.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 #### 监控和日志

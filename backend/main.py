@@ -3,7 +3,7 @@ UR5 机器人仿真 API 服务
 提供基于 MuJoCo 的机器人仿真控制接口
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import responses as fastapi_responses
 from pydantic import BaseModel, Field
@@ -213,12 +213,12 @@ async def get_simulation_state():
 
 @app.get("/sim/camera.jpg",
          summary="获取相机 JPEG 图像",
-         response_class=fastapi.responses.Response)
+         response_class=fastapi_responses.Response)
 async def get_camera_jpeg(
     camera: str = "camera1",
-    width: int = fastapi.Query(640, description="图像宽度", ge=160, le=1920),
-    height: int = fastapi.Query(480, description="图像高度", ge=120, le=1080),
-    quality: int = fastapi.Query(80, description="JPEG 质量", ge=1, le=100)
+    width: int = Query(640, description="图像宽度", ge=160, le=1920),
+    height: int = Query(480, description="图像高度", ge=120, le=1080),
+    quality: int = Query(80, description="JPEG 质量", ge=1, le=100)
 ):
     """
     获取相机渲染的 JPEG 图像
@@ -271,11 +271,11 @@ async def get_camera_jpeg(
 
 @app.get("/sim/camera.png",
          summary="获取相机 PNG 图像",
-         response_class=fastapi.responses.Response)
+         response_class=fastapi_responses.Response)
 async def get_camera_png(
     camera: str = "camera1",
-    width: int = fastapi.Query(640, description="图像宽度", ge=160, le=1920),
-    height: int = fastapi.Query(480, description="图像高度", ge=120, le=1080)
+    width: int = Query(640, description="图像宽度", ge=160, le=1920),
+    height: int = Query(480, description="图像高度", ge=120, le=1080)
 ):
     """
     获取相机渲染的 PNG 图像
@@ -328,10 +328,10 @@ async def get_camera_png(
          summary="获取相机图像 (Base64)")
 async def get_camera_base64(
     camera: str = "camera1",
-    width: int = fastapi.Query(640, description="图像宽度", ge=160, le=1920),
-    height: int = fastapi.Query(480, description="图像高度", ge=120, le=1080),
-    quality: int = fastapi.Query(80, description="JPEG 质量", ge=1, le=100),
-    format: str = fastapi.Query("jpeg", description="图像格式", regex="^(jpeg|png)$")
+    width: int = Query(640, description="图像宽度", ge=160, le=1920),
+    height: int = Query(480, description="图像高度", ge=120, le=1080),
+    quality: int = Query(80, description="JPEG 质量", ge=1, le=100),
+    format: str = Query("jpeg", description="图像格式", regex="^(jpeg|png)$")
 ):
     """
     获取相机图像的 Base64 编码

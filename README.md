@@ -96,7 +96,7 @@ pip install fastapi uvicorn
 使用以下命令启动 FastAPI 服务器：
 
 ```bash
-uvicorn main:app --reload
+ python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 6. 访问应用

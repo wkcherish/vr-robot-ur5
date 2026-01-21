@@ -12,7 +12,7 @@ import numpy as np
 import base64
 import io
 import queue
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 
 try:
     import mujoco
@@ -268,7 +268,8 @@ class Simulation:
             return
 
         print("=" * 50)
-        print("模型信息:"        print(f"  文件: {self.model_path}")
+        print("模型信息:")
+        print(f"  文件: {self.model_path}")
         print(f"  关节数量: {self.model.njnt}")
         print(f"  执行器数量: {self.model.nu}")
         print(f"  自由度: {self.model.nv}")
@@ -693,7 +694,8 @@ class Simulation:
             total_displacement = np.abs(final_qpos - initial_qpos)
             max_displacement = np.max(total_displacement)
 
-            print("控制结果:"            print(f"  步进次数: {n_steps}")
+            print("控制结果:")
+            print(f"  步进次数: {n_steps}")
             print(f"  执行时间: {execution_time:.4f} s")
             print(f"  平均步进时间: {execution_time/n_steps*1000:.2f} ms")
             print(f"  最大位置误差: {max_error:.6f} rad ({np.degrees(max_error):.2f}°)")
