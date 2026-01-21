@@ -38,6 +38,49 @@
             </div>
           </div>
 
+          <!-- 状态同步状态区 -->
+          <div class="panel-section" v-if="showStateSyncStatus">
+            <h4 class="section-title">状态同步</h4>
+            <div class="sync-status-grid">
+              <div class="sync-status-item">
+                <span class="sync-label">连接状态:</span>
+                <span class="sync-value" :class="{ 'sync-connected': isWebSocketConnected, 'sync-disconnected': !isWebSocketConnected }">
+                  {{ isWebSocketConnected ? '已连接' : '未连接' }}
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">连接质量:</span>
+                <span class="sync-value" :class="{ 'sync-good': connectionQuality >= 80, 'sync-fair': connectionQuality >= 50 && connectionQuality < 80, 'sync-poor': connectionQuality < 50 }">
+                  {{ connectionQuality }}%
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">实际帧率:</span>
+                <span class="sync-value">{{ actualUpdateRate.toFixed(1) }} Hz</span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">网络延迟:</span>
+                <span class="sync-value" :class="{ 'sync-high-latency': networkLatency > 100 }">
+                  {{ networkLatency.toFixed(0) }} ms
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">同步错误:</span>
+                <span class="sync-value" :class="{ 'sync-has-errors': stateSyncErrors > 0 }">
+                  {{ stateSyncErrors }}
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">插值状态:</span>
+                <span class="sync-value">
+                  <button @click="toggleStateInterpolation" class="interpolation-toggle" :class="{ active: stateInterpolationEnabled }">
+                    {{ stateInterpolationEnabled ? '启用' : '禁用' }}
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+
           <!-- 角度控制区 -->
           <div class="panel-section">
             <h4 class="section-title">角度控制</h4>
@@ -173,6 +216,13 @@
           >
             <span class="panel-icon">📊</span> 任务进度
           </button>
+          <button
+            @click="togglePanel('sync')"
+            class="panel-control-button"
+            :class="{ active: showStateSyncStatus }"
+          >
+            <span class="panel-icon">🔄</span> 状态同步
+          </button>
         </div>
       </div>
     </el-container>
@@ -188,6 +238,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import axios from "axios";
+import websocketManager from "./utils/websocket.js"; // 引入WebSocket管理器
 import endEffectorPose from "./components/robot.vue"; // 引入末端执行器位姿
 
 // 修改视角控制为下拉菜单
@@ -203,6 +254,7 @@ const showCameraPanel = ref(false); // 相机状态面板默认显示
 const showControlPanel = ref(false); // 仿真控制面板默认显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
+const showStateSyncStatus = ref(true); // 状态同步状态默认显示
 const angleInput = ref(""); // 新增用于存储输入角度的变量
 const angles = ref([0, 0, 0, 0, 0, 0]); // 新增数组用于存储六个角度
 
@@ -217,6 +269,20 @@ const setAnglesResponse = ref([]); // 用于存储设置的角度值的响应
 const fetchInterval = ref(null); // 用于存储定时器的引用
 const testvalue = ref(null); // 用于存储从后端获取的数值
 const isFetching = ref(false);
+
+// WebSocket 状态同步相关
+const isWebSocketConnected = ref(false);
+const websocketStatus = ref("未连接");
+const simulationState = ref(null); // 完整的仿真状态
+const stateUpdateHistory = ref([]); // 状态更新历史，用于插值
+const networkLatency = ref(0); // 网络延迟
+const stateSyncErrors = ref(0); // 状态同步错误计数
+const lastStateUpdate = ref(0); // 最后状态更新时间
+const stateInterpolationEnabled = ref(true); // 启用状态插值
+const targetUpdateRate = ref(50); // 目标更新率 (Hz)
+const actualUpdateRate = ref(0); // 实际更新率
+const stateBufferSize = ref(10); // 状态缓冲区大小
+const connectionQuality = ref(100); // 连接质量百分比
 
 // 新增: 计算机器臂末端位置的函数
 const calculateEndEffectorPosition = () => {
@@ -425,6 +491,9 @@ function togglePanel(panel) {
       break;
     case "progress":
       showTaskProgress.value = !showTaskProgress.value;
+      break;
+    case "sync":
+      showStateSyncStatus.value = !showStateSyncStatus.value;
       break;
   }
 }
@@ -650,9 +719,227 @@ initCameraBase();
 // 设置位置信息更新定时器
 const positionUpdateInterval = ref(null);
 
-// 移除positionUpdateInterval定时器，因为render函数已经在每帧更新
+// WebSocket 状态同步监听器
+const setupWebSocketStateSync = () => {
+  // 连接状态监听
+  websocketManager.on('statusChange', (status) => {
+    websocketStatus.value = status;
+    isWebSocketConnected.value = websocketManager.isConnected;
+
+    if (isWebSocketConnected.value) {
+      console.log('WebSocket状态同步已连接');
+    } else {
+      console.log('WebSocket状态同步已断开');
+      resetStateSync();
+    }
+  });
+
+  // 状态更新监听
+  websocketManager.on('stateUpdate', (data) => {
+    handleStateUpdate(data);
+  });
+
+  // 错误处理
+  websocketManager.on('error', (error) => {
+    stateSyncErrors.value++;
+    console.error('状态同步错误:', error);
+    updateConnectionQuality();
+  });
+
+  // 连接断开
+  websocketManager.on('disconnected', () => {
+    resetStateSync();
+  });
+};
+
+// 处理状态更新
+const handleStateUpdate = (data) => {
+  const now = Date.now();
+  const prevUpdate = lastStateUpdate.value;
+
+  // 计算网络延迟（如果有时间戳）
+  if (data.timestamp) {
+    const serverTime = data.timestamp * 1000; // 假设时间戳是秒
+    networkLatency.value = now - serverTime;
+  }
+
+  // 更新状态
+  simulationState.value = data;
+
+  // 同步关节角度
+  if (data.qpos && Array.isArray(data.qpos)) {
+    updateJointAngles(data.qpos);
+  }
+
+  // 添加到状态历史缓冲区
+  addToStateBuffer(data, now);
+
+  // 更新统计信息
+  updateSyncStats(now, prevUpdate);
+  updateConnectionQuality();
+
+  lastStateUpdate.value = now;
+};
+
+// 更新关节角度
+const updateJointAngles = (qpos) => {
+  // 将弧度转换为角度
+  const anglesInDegrees = qpos.slice(0, 6).map(rad => rad * (180 / Math.PI));
+  jointAngles.value = anglesInDegrees;
+
+  // 应用到机器人模型
+  setRobotAngles(anglesInDegrees);
+
+  // 更新末端执行器位置
+  calculateEndEffectorPosition();
+};
+
+// 添加到状态缓冲区（用于插值）
+const addToStateBuffer = (state, timestamp) => {
+  stateUpdateHistory.value.push({
+    state: { ...state },
+    timestamp: timestamp
+  });
+
+  // 保持缓冲区大小
+  if (stateUpdateHistory.value.length > stateBufferSize.value) {
+    stateUpdateHistory.value.shift();
+  }
+};
+
+// 更新同步统计信息
+const updateSyncStats = (now, prevUpdate) => {
+  if (prevUpdate > 0) {
+    const timeDiff = now - prevUpdate;
+    const instantRate = 1000 / timeDiff; // Hz
+
+    // 计算移动平均更新率
+    const alpha = 0.1; // 平滑因子
+    actualUpdateRate.value = actualUpdateRate.value * (1 - alpha) + instantRate * alpha;
+  }
+};
+
+// 更新连接质量
+const updateConnectionQuality = () => {
+  const now = Date.now();
+  const timeSinceLastUpdate = now - lastStateUpdate.value;
+
+  // 如果超过2秒没有更新，降低质量
+  let quality = 100;
+  if (timeSinceLastUpdate > 2000) {
+    quality = Math.max(0, 100 - (timeSinceLastUpdate - 2000) / 10);
+  }
+
+  // 根据错误率降低质量
+  if (stateSyncErrors.value > 0) {
+    quality = Math.max(0, quality - stateSyncErrors.value * 10);
+  }
+
+  connectionQuality.value = Math.round(quality);
+};
+
+// 获取插值状态（用于平滑动画）
+const getInterpolatedState = (targetTime) => {
+  if (!stateInterpolationEnabled.value || stateUpdateHistory.value.length < 2) {
+    return simulationState.value;
+  }
+
+  // 找到最接近的时间点
+  const history = stateUpdateHistory.value;
+  let beforeIndex = -1;
+  let afterIndex = -1;
+
+  for (let i = 0; i < history.length - 1; i++) {
+    if (history[i].timestamp <= targetTime && history[i + 1].timestamp >= targetTime) {
+      beforeIndex = i;
+      afterIndex = i + 1;
+      break;
+    }
+  }
+
+  if (beforeIndex === -1 || afterIndex === -1) {
+    return simulationState.value;
+  }
+
+  const before = history[beforeIndex];
+  const after = history[afterIndex];
+
+  // 计算插值因子
+  const timeDiff = after.timestamp - before.timestamp;
+  const factor = (targetTime - before.timestamp) / timeDiff;
+
+  // 对关节角度进行插值
+  const interpolatedQpos = [];
+  for (let i = 0; i < Math.min(before.state.qpos.length, after.state.qpos.length); i++) {
+    const interpolated = before.state.qpos[i] + (after.state.qpos[i] - before.state.qpos[i]) * factor;
+    interpolatedQpos.push(interpolated);
+  }
+
+  // 返回插值后的状态
+  return {
+    ...after.state,
+    qpos: interpolatedQpos
+  };
+};
+
+// 重置状态同步
+const resetStateSync = () => {
+  simulationState.value = null;
+  stateUpdateHistory.value = [];
+  networkLatency.value = 0;
+  stateSyncErrors.value = 0;
+  actualUpdateRate.value = 0;
+  connectionQuality.value = 0;
+  lastStateUpdate.value = 0;
+};
+
+// 切换状态插值
+const toggleStateInterpolation = () => {
+  stateInterpolationEnabled.value = !stateInterpolationEnabled.value;
+  console.log(`状态插值: ${stateInterpolationEnabled.value ? '启用' : '禁用'}`);
+};
+
+// 调整目标更新率
+const setTargetUpdateRate = (rate) => {
+  targetUpdateRate.value = rate;
+  console.log(`目标更新率设置为: ${rate} Hz`);
+};
+
+// 调整缓冲区大小
+const setStateBufferSize = (size) => {
+  stateBufferSize.value = size;
+  console.log(`状态缓冲区大小设置为: ${size}`);
+};
+
+// 获取状态同步状态
+const getStateSyncStatus = () => {
+  return {
+    isConnected: isWebSocketConnected.value,
+    status: websocketStatus.value,
+    lastUpdate: lastStateUpdate.value,
+    latency: networkLatency.value,
+    actualRate: actualUpdateRate.value,
+    targetRate: targetUpdateRate.value,
+    quality: connectionQuality.value,
+    errors: stateSyncErrors.value,
+    bufferSize: stateUpdateHistory.value.length,
+    interpolationEnabled: stateInterpolationEnabled.value
+  };
+};
+
 onMounted(() => {
-  fetchData();
+  // 设置WebSocket状态同步
+  setupWebSocketStateSync();
+
+  // 如果WebSocket未连接，尝试连接
+  if (!isWebSocketConnected.value) {
+    setTimeout(() => {
+      websocketManager.connect();
+    }, 1000);
+  }
+
+  // 保持原有的初始化逻辑
+  fetchData(); // 作为后备
   document.getElementById("webgl").appendChild(renderer.domElement);
   render();
 
@@ -668,19 +955,15 @@ onMounted(() => {
       updateTaskProgress();
     }
   }, 2000);
-
-  // 移除这个定时器，因为render函数已经在每帧更新位置信息
-  // positionUpdateInterval.value = setInterval(() => {
-  //   if (robot && robot.joints) {
-  //     calculateEndEffectorPosition();
-  //   }
-  // }, 100);
 });
-// 在onBeforeUnmount中也需要移除对应的清除代码
+
 onBeforeUnmount(() => {
   stopFetchingData();
-  // 移除清除定时器的代码
-  // clearInterval(positionUpdateInterval.value);
+  // 清理WebSocket监听器
+  websocketManager.off('statusChange');
+  websocketManager.off('stateUpdate');
+  websocketManager.off('error');
+  websocketManager.off('disconnected');
 });
 </script>
 
@@ -1146,6 +1429,84 @@ onBeforeUnmount(() => {
   font-size: 14px;
 }
 
+/* 状态同步样式 */
+.sync-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.sync-status-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #f5f5f5;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.sync-label {
+  color: #606266;
+  font-weight: 500;
+}
+
+.sync-value {
+  color: #303133;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.sync-connected {
+  color: #67c23a;
+}
+
+.sync-disconnected {
+  color: #f56c6c;
+}
+
+.sync-good {
+  color: #67c23a;
+}
+
+.sync-fair {
+  color: #e6a23c;
+}
+
+.sync-poor {
+  color: #f56c6c;
+}
+
+.sync-high-latency {
+  color: #e6a23c;
+}
+
+.sync-has-errors {
+  color: #f56c6c;
+}
+
+.interpolation-toggle {
+  padding: 2px 6px;
+  border: 1px solid #dcdfe6;
+  border-radius: 3px;
+  background-color: white;
+  color: #606266;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.2s;
+}
+
+.interpolation-toggle:hover {
+  border-color: #409eff;
+  color: #409eff;
+}
+
+.interpolation-toggle.active {
+  background-color: #409eff;
+  border-color: #409eff;
+  color: white;
+}
+
 /* 在小屏幕上调整布局 */
 @media (max-width: 1200px) {
   .panel-controls {
@@ -1153,6 +1514,10 @@ onBeforeUnmount(() => {
     justify-content: center;
     width: calc(100% - 40px);
     max-width: 600px;
+  }
+
+  .sync-status-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
