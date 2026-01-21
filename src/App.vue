@@ -257,6 +257,10 @@ const showTaskProgress = ref(true); // 任务进度默认显示
 const showStateSyncStatus = ref(true); // 状态同步状态默认显示
 const angleInput = ref(""); // 新增用于存储输入角度的变量
 const angles = ref([0, 0, 0, 0, 0, 0]); // 新增数组用于存储六个角度
+// 自动返回设置
+const enableAutoReturn = ref(false); // 如果启用，发送位置后自动返回home
+const autoReturnDelayMs = ref(2000); // 自动返回延迟（ms）
+const homeAnglesDeg = ref([0, -90, 90, -90, -90, 0]); // 默认home角度（度）
 
 const inputText = ref(""); // 新增用于存储输入字符的变量
 
@@ -269,6 +273,8 @@ const setAnglesResponse = ref([]); // 用于存储设置的角度值的响应
 const fetchInterval = ref(null); // 用于存储定时器的引用
 const testvalue = ref(null); // 用于存储从后端获取的数值
 const isFetching = ref(false);
+const fetchFailures = ref(0); // 连续获取失败计数
+const sendCommandPending = ref(false); // 命令发送等待回复标志
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -328,18 +334,67 @@ const updateTaskProgress = () => {
   }
 };
 
-// 修改fetchData函数，确保从后端获取数据后立即更新位置
+// 修改fetchData函数，优先使用 /sim/state/，失败时回退到 /data/，并实现简单退避
 const fetchData = async () => {
   if (!isFetching.value) return;
+
+  const trySimState = async () => {
+    const resp = await axios.get("http://localhost:8000/sim/state/", { timeout: 3000 });
+    return resp.data;
+  };
+
+  const tryLegacy = async () => {
+    const resp = await axios.get("http://localhost:8000/data/", { timeout: 3000 });
+    return resp.data;
+  };
+
   try {
-    const response = await axios.get("http://localhost:8000/data/");
-    jointAngles.value = response.data.value.split(" ").map(Number);
-    setRobotAngles(jointAngles.value);
-    updateTaskProgress();
-    // 确保在设置角度后立即更新位置信息
-    calculateEndEffectorPosition();
+    // 尝试获取最新仿真状态
+    const data = await trySimState();
+
+    // data 应包含 qpos 数组
+    if (data && data.qpos && Array.isArray(data.qpos)) {
+      // 将弧度转换为角度
+      const anglesDeg = data.qpos.slice(0, 6).map((v) => v * (180 / Math.PI));
+      jointAngles.value = anglesDeg;
+      setRobotAngles(anglesDeg);
+      updateTaskProgress();
+      calculateEndEffectorPosition();
+      fetchFailures.value = 0;
+      return;
+    }
+
+    // 回退到 legacy /data/ 接口（兼容）
+    const legacy = await tryLegacy();
+    if (legacy && legacy.value) {
+      // legacy.value 可能是字符串或数组
+      let vals = legacy.value;
+      if (typeof vals === "string") {
+        vals = vals.split(" ").map(Number);
+      }
+      jointAngles.value = vals.map((v) => Number(v));
+      setRobotAngles(jointAngles.value);
+      updateTaskProgress();
+      calculateEndEffectorPosition();
+      fetchFailures.value = 0;
+      return;
+    }
+
+    throw new Error("无效的仿真状态响应");
   } catch (error) {
-    console.error("Error fetching data:", error);
+    // 避免控制台被刷屏：记录失败次数并在首次失败时打印日志
+    fetchFailures.value += 1;
+    if (fetchFailures.value === 1) {
+      console.warn("Error fetching data (first failure):", error.message || error);
+    } else if (fetchFailures.value % 10 === 0) {
+      console.warn(`Error fetching data (${fetchFailures.value}次失败):`, error.message || error);
+    }
+
+    // 如果连续失败过多，自动停止获取以避免频繁请求（用户可重新连接）
+    if (fetchFailures.value >= 50) {
+      console.error("连续多次获取失败，已停止自动同步。请检查后端服务。");
+      stopFetchingData();
+    }
   }
 };
 
@@ -368,16 +423,30 @@ const testSendData = async () => {
     };
 
     receivedText.value = "正在发送测试命令...";
-    const response = await axios.post(
-      "http://localhost:8000/test-data/",
-      testData
-    );
-    receivedText.value = response.data.message || "命令已发送";
-    console.log("测试命令响应:", response.data);
-    updateTaskProgress();
-
-    // 更新界面显示的角度值
-    setAnglesResponse.value = [...testAngles];
+    // 使用 WebSocket 发送控制命令（兼容后端）
+    const radians = testAngles.map((v) => (v * Math.PI) / 180);
+    const sent = websocketManager.sendControlCommand(radians, { n_steps: 50, control_mode: "position" });
+    if (sent) {
+      receivedText.value = "命令已发送（通过 WebSocket）";
+      sendCommandPending.value = true;
+      setAnglesResponse.value = [...testAngles];
+      updateTaskProgress();
+    } else {
+      // 回退到 HTTP 接口 /sim/step/
+      try {
+        const resp = await axios.post("http://localhost:8000/sim/step/", {
+          target_positions: radians,
+          n_steps: 50,
+          control_mode: "position",
+        });
+        receivedText.value = resp.data.message || "命令已发送(HTTP)";
+        setAnglesResponse.value = [...testAngles];
+        updateTaskProgress();
+      } catch (err) {
+        receivedText.value = "命令发送失败: " + (err.message || err);
+        console.error("发送测试命令失败:", err);
+      }
+    }
   } catch (error) {
     receivedText.value = "命令发送失败: " + error.message;
     console.error("发送测试命令失败:", error);
@@ -426,6 +495,10 @@ function setPresetAngles(preset) {
 // 优化角度输入函数
 function inputRobotAngles() {
   // 将输入的角度字符串转换为数组
+  if (sendCommandPending.value) {
+    alert("上一个命令尚未完成，请稍候再发送。");
+    return;
+  }
   const angles_input = angleInput.value
     .split(",")
     .map((angle) => parseFloat(angle.trim()));
@@ -446,13 +519,49 @@ function inputRobotAngles() {
   // 将角度转换为弧度并更新
   const radians = angles_input.map((v) => v * (Math.PI / 180));
 
-  // 应用到机器人
+  // 先在本地应用到Three.js机器人（即时视觉反馈）
   sliderInput(radians[0], "link1_joint");
   sliderInput(radians[1], "link2_joint");
   sliderInput(radians[2], "link3_joint");
   sliderInput(radians[3], "link4_joint");
   sliderInput(radians[4], "link5_joint");
   sliderInput(radians[5], "link6_joint");
+
+  // 发送控制命令到后端仿真（通过 WebSocketManager）
+  try {
+    const sent = websocketManager.sendControlCommand(radians, { n_steps: 50, control_mode: "position" });
+    if (!sent) {
+      console.warn("控制命令未立即发送（已入队列或未连接）");
+    } else {
+      console.log("控制命令已发送到后端仿真");
+    }
+  } catch (e) {
+    console.error("发送控制命令失败:", e);
+  }
+
+  // 如果启用了自动返回，安排返回到home位置
+  if (enableAutoReturn.value) {
+    const homeRad = homeAnglesDeg.value.map((v) => v * (Math.PI / 180));
+    setTimeout(() => {
+      try {
+        const sentBack = websocketManager.sendControlCommand(homeRad, { n_steps: 60, control_mode: "position" });
+        if (!sentBack) {
+          console.warn("自动返回命令未立即发送（已入队列或未连接）");
+        } else {
+          console.log("自动返回命令已发送");
+        }
+      } catch (err) {
+        console.error("自动返回命令发送失败:", err);
+      }
+      // 同时在本地更新显示（以应对后端延迟）
+      sliderInput(homeRad[0], "link1_joint");
+      sliderInput(homeRad[1], "link2_joint");
+      sliderInput(homeRad[2], "link3_joint");
+      sliderInput(homeRad[3], "link4_joint");
+      sliderInput(homeRad[4], "link5_joint");
+      sliderInput(homeRad[5], "link6_joint");
+    }, autoReturnDelayMs.value);
+  }
 
   // 保存设置的角度值以便显示
   setAnglesResponse.value = [...angles_input];
@@ -737,6 +846,12 @@ const setupWebSocketStateSync = () => {
   // 状态更新监听
   websocketManager.on('stateUpdate', (data) => {
     handleStateUpdate(data);
+  });
+
+  // 控制结果监听：用于清理命令等待标志
+  websocketManager.on('controlResult', (data) => {
+    console.log('收到 controlResult:', data);
+    sendCommandPending.value = false;
   });
 
   // 错误处理

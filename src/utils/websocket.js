@@ -178,11 +178,15 @@ class WebSocketManager {
   }
 
   handleMessageData(message) {
-    const { type, data } = message;
+    // Some server messages put the payload under `data`, others (legacy) place fields at top-level.
+    // Be defensive: prefer `message.data` but fall back to the message itself.
+    const type = message && message.type ? message.type : null;
+    const data = message && (message.data !== undefined) ? message.data : message;
 
     switch (type) {
       case 'welcome':
-        console.log('收到服务器欢迎消息:', data.message);
+        // welcome may contain a top-level `message` string (legacy) or be under `data.message`.
+        console.log('收到服务器欢迎消息:', data && data.message ? data.message : message.message);
         this.emit('welcome', data);
         break;
 

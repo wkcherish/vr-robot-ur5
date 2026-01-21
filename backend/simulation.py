@@ -522,23 +522,30 @@ class Simulation:
         # 关节角度限制处理
         target_pos_clipped = self._apply_joint_limits(target_pos)
 
-        # 控制循环
+        # 当前关节初始位置（用于插值）
+        current_pos = self.data.qpos[:len(target_pos_clipped)].copy()
+
+        # 控制循环：对 position 模式使用逐步插值将 ctrl 设为目标位置（MuJoCo 的 position actuator 使用 ctrl 作为目标位置）
         for step in range(n_steps):
             try:
                 if control_mode == "position":
-                    # PD 位置控制
-                    control_signal = self._compute_pd_control(target_pos_clipped)
+                    # 线性插值目标位置，避免一次性设置巨大目标导致震动或不稳定
+                    alpha = float(step + 1) / float(n_steps)
+                    step_target = current_pos + (target_pos_clipped - current_pos) * alpha
+                    # 将插值后的目标位置直接写入 ctrl（position actuator 在 xml 中有 kp/kv 会将 ctrl 当作目标位置）
+                    self.data.ctrl[:len(step_target)] = step_target
+
                 elif control_mode == "velocity":
-                    # 速度控制
+                    # 速度控制：直接计算速度控制信号并写入 ctrl
                     control_signal = self._compute_velocity_control(target_pos_clipped)
+                    self.data.ctrl[:len(control_signal)] = control_signal
+
                 elif control_mode == "torque":
-                    # 力矩控制
-                    control_signal = target_pos_clipped
+                    # 力矩控制：直接把目标值作为力矩写入 ctrl
+                    self.data.ctrl[:len(target_pos_clipped)] = target_pos_clipped
+
                 else:
                     raise ValueError(f"未知控制模式: {control_mode}")
-
-                # 设置控制信号
-                self.data.ctrl[:len(control_signal)] = control_signal
 
                 # 执行仿真步进
                 mujoco.mj_step(self.model, self.data)
@@ -546,7 +553,7 @@ class Simulation:
                 # 检查仿真状态
                 if not self._check_simulation_health():
                     print(f"警告: 仿真状态异常，在步骤 {step + 1}/{n_steps}")
-                    # 可以选择继续或停止，暂时继续
+                    # 暂时继续执行后续步进
 
             except Exception as e:
                 print(f"控制步骤 {step + 1} 失败: {e}")
