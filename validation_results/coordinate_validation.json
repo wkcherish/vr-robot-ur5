@@ -1,5 +1,8 @@
 {
   "position_roundtrip_error": 0.0,
+  "quaternion_roundtrip_error": 0.0,
+  "position_transforms_consistent": true,
+  "quaternion_transforms_consistent": true,
   "transforms_consistent": true,
   "urdf_to_threejs_matrix": [
     [
@@ -78,5 +81,17 @@
       0.0,
       1.0
     ]
+  ],
+  "quaternion_mjcf_to_threejs": [
+    0.7071067811865476,
+    -0.7071067811865475,
+    0.0,
+    0.0
+  ],
+  "quaternion_threejs_to_mjcf": [
+    0.7071067811865476,
+    0.7071067811865475,
+    0.0,
+    0.0
   ]
 }

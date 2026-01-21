@@ -44,8 +44,8 @@
             <div class="sync-status-grid">
               <div class="sync-status-item">
                 <span class="sync-label">连接状态:</span>
-                <span class="sync-value" :class="{ 'sync-connected': isWebSocketConnected, 'sync-disconnected': !isWebSocketConnected }">
-                  {{ isWebSocketConnected ? '已连接' : '未连接' }}
+                <span class="sync-value" :class="{ 'sync-connected': isFetching, 'sync-disconnected': !isFetching }">
+                  {{ isFetching ? '已连接' : '未连接' }}
                 </span>
               </div>
               <div class="sync-status-item">
@@ -423,8 +423,26 @@ const testSendData = async () => {
     };
 
     receivedText.value = "正在发送测试命令...";
-    // 使用 WebSocket 发送控制命令（兼容后端）
+    // 将角度转换为弧度
     const radians = testAngles.map((v) => (v * Math.PI) / 180);
+
+    // 如果当前未与服务器/仿真连接，则仅在本地应用角度（不接入 mujoco）
+    if (!isFetching.value) {
+      // 直接在本地 Three.js 模型上应用角度（即时视觉反馈）
+      sliderInput(radians[0], "link1_joint");
+      sliderInput(radians[1], "link2_joint");
+      sliderInput(radians[2], "link3_joint");
+      sliderInput(radians[3], "link4_joint");
+      sliderInput(radians[4], "link5_joint");
+      sliderInput(radians[5], "link6_joint");
+
+      receivedText.value = "已在本地设置角度（未接入仿真）";
+      setAnglesResponse.value = [...testAngles];
+      updateTaskProgress();
+      return;
+    }
+
+    // 否则尝试通过 WebSocket/HTTP 发送到后端仿真（mujoco）
     const sent = websocketManager.sendControlCommand(radians, { n_steps: 50, control_mode: "position" });
     if (sent) {
       receivedText.value = "命令已发送（通过 WebSocket）";
@@ -527,6 +545,14 @@ function inputRobotAngles() {
   sliderInput(radians[4], "link5_joint");
   sliderInput(radians[5], "link6_joint");
 
+  // 如果未与服务器/仿真连接，则只在本地应用角度（不接入 mujoco）
+  if (!isFetching.value) {
+    receivedText.value = "已在本地设置角度（未接入仿真）";
+    setAnglesResponse.value = [...angles_input];
+    updateTaskProgress();
+    return;
+  }
+
   // 发送控制命令到后端仿真（通过 WebSocketManager）
   try {
     const sent = websocketManager.sendControlCommand(radians, { n_steps: 50, control_mode: "position" });
@@ -539,8 +565,9 @@ function inputRobotAngles() {
     console.error("发送控制命令失败:", e);
   }
 
-  // 如果启用了自动返回，安排返回到home位置
-  if (enableAutoReturn.value) {
+  // 如果启用了自动返回并且当前未连接服务器，则安排返回到home位置
+  // 在已连接（isFetching）时跳过自动返回，以保持机械臂到达目标角度后停留
+  if (enableAutoReturn.value && !isFetching.value) {
     const homeRad = homeAnglesDeg.value.map((v) => v * (Math.PI / 180));
     setTimeout(() => {
       try {
@@ -561,6 +588,8 @@ function inputRobotAngles() {
       sliderInput(homeRad[4], "link5_joint");
       sliderInput(homeRad[5], "link6_joint");
     }, autoReturnDelayMs.value);
+  } else if (enableAutoReturn.value && isFetching.value) {
+    console.log("已连接仿真，跳过自动返回以保持目标姿态");
   }
 
   // 保存设置的角度值以便显示
