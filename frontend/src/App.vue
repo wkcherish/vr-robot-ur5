@@ -560,6 +560,27 @@ function inputRobotAngles() {
       console.warn("控制命令未立即发送（已入队列或未连接）");
     } else {
       console.log("控制命令已发送到后端仿真");
+      // 标记为命令等待状态，忽略来自服务器的临时状态更新
+      // 以防仿真在命令执行过程中短暂回到初始位导致前端覆盖目标姿态。
+      sendCommandPending.value = true;
+
+      // 额外发送一次短时“保持”命令，确保后端 ctrl 被设置为目标位置并保持
+      // （某些后端实现会在多步控制后更新 ctrl，这里再发一次保证最后的 ctrl 值）
+      setTimeout(() => {
+        try {
+          websocketManager.sendControlCommand(radians, { n_steps: 1, control_mode: "position" });
+        } catch (err) {
+          console.warn("发送保持命令失败:", err);
+        }
+      }, 120);
+
+      // 安全超时：如果很长时间没有收到 controlResult，自动清除等待标志（防止永久屏蔽状态同步）
+      setTimeout(() => {
+        if (sendCommandPending.value) {
+          console.warn("controlResult 超时，自动清除等待标志");
+          sendCommandPending.value = false;
+        }
+      }, 7000);
     }
   } catch (e) {
     console.error("发送控制命令失败:", e);
@@ -927,6 +948,13 @@ const handleStateUpdate = (data) => {
 
 // 更新关节角度
 const updateJointAngles = (qpos) => {
+  // 如果正在等待控制命令结果，则暂时忽略来自服务器的 qpos 更新，
+  // 保持前端当前显示的目标角度，直到收到 controlResult 清除等待标志。
+  if (sendCommandPending.value) {
+    // 可选：打印调试信息，但避免频繁日志打印
+    // console.log('忽略状态更新（等待控制结果）');
+    return;
+  }
   // 将弧度转换为角度
   const anglesInDegrees = qpos.slice(0, 6).map(rad => rad * (180 / Math.PI));
   jointAngles.value = anglesInDegrees;

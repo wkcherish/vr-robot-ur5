@@ -12,7 +12,9 @@
     "axios": "^1.7.7",
     "element-plus": "^2.3.7",
     "gsap": "^3.12.1",
+    "lil-gui": "^0.21.0",
     "modbus-serial": "^8.0.11",
+    "mujoco-js": "^0.0.7",
     "three": "^0.174.0",
     "urdf-loader": "^0.12.1",
     "vue": "^3.2.47"
