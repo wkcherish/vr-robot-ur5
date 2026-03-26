@@ -5,6 +5,7 @@
         <!-- 现有面板添加显示条件 -->
         <Menu
           :show-slider-controls="showSlider"
+          :joint-values="sliderJointValues"
           @sliderInput="sliderInput"
           v-show="showSlider"
         />
@@ -88,7 +89,7 @@
               <input
                 v-model="angleInput"
                 type="text"
-                placeholder="输入关节角度: J1,J2,J3,J4,J5,J6"
+                placeholder="输入关节角度: J1,J2,J3,J4,J5,J6,Grip"
                 class="angle-input"
               />
               <div class="preset-angles">
@@ -230,7 +231,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import Menu from "./components/robot.vue";
 import Camera from "./components/camera.vue"; // 引入相机组件
 import Control from "./components/control.vue"; // 引入仿真控制组件
@@ -239,11 +240,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import axios from "axios";
 import websocketManager from "./utils/websocket.js"; // 引入WebSocket管理器
-import endEffectorPose from "./components/robot.vue"; // 引入末端执行器位姿
 
 // 修改视角控制为下拉菜单
 const selectedView = ref("perspective"); // 默认选择透视视角
-// console.log("endEffectorPose", endEffectorPose);
 // 新增任务进度变量
 const taskProgress = ref(0);
 
@@ -255,12 +254,36 @@ const showControlPanel = ref(false); // 仿真控制面板默认显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
 const showStateSyncStatus = ref(true); // 状态同步状态默认显示
+const ARM_JOINT_COUNT = 6;
+const TOTAL_INPUT_JOINT_COUNT = 7;
+const GRIPPER_MIN_RAD = 0;
+const GRIPPER_MAX_RAD = 0.87;
+const GRIPPER_MIN_DEG = 0;
+const GRIPPER_MAX_DEG = (GRIPPER_MAX_RAD * 180) / Math.PI;
+const DEFAULT_ANGLES_DEG = [0, -90, 90, -90, -90, 0, 0];
+const DEFAULT_TEST_ANGLES_DEG = [60, -90, 90, -140, -90, 0, 0];
+const ARM_JOINT_NAMES = [
+  "link1_joint",
+  "link2_joint",
+  "link3_joint",
+  "link4_joint",
+  "link5_joint",
+  "link6_joint",
+];
+const GRIPPER_JOINT_NAMES = [
+  "left_driver_joint",
+  "right_driver_joint",
+  "left_spring_link_joint",
+  "right_spring_link_joint",
+  "left_follower_joint",
+  "right_follower_joint",
+];
+
 const angleInput = ref(""); // 新增用于存储输入角度的变量
-const angles = ref([0, 0, 0, 0, 0, 0]); // 新增数组用于存储六个角度
 // 自动返回设置
 const enableAutoReturn = ref(false); // 如果启用，发送位置后自动返回home
 const autoReturnDelayMs = ref(2000); // 自动返回延迟（ms）
-const homeAnglesDeg = ref([0, -90, 90, -90, -90, 0]); // 默认home角度（度）
+const homeAnglesDeg = ref([...DEFAULT_ANGLES_DEG]); // 默认home角度（度）
 
 const inputText = ref(""); // 新增用于存储输入字符的变量
 
@@ -269,6 +292,14 @@ const fetchedValue = ref(null); // 新增用于存储从后端获取的数值
 
 const jointAngles = ref([]); // 新增用于存储关节角度的变量
 const setAnglesResponse = ref([]); // 用于存储设置的角度值的响应
+const gripperAngleDeg = ref(0);
+const sliderJointValues = computed(() => {
+  const armAngles =
+    jointAngles.value.length >= ARM_JOINT_COUNT
+      ? jointAngles.value.slice(0, ARM_JOINT_COUNT)
+      : DEFAULT_ANGLES_DEG.slice(0, ARM_JOINT_COUNT);
+  return [...armAngles, gripperAngleDeg.value];
+});
 
 const fetchInterval = ref(null); // 用于存储定时器的引用
 const testvalue = ref(null); // 用于存储从后端获取的数值
@@ -335,6 +366,73 @@ const calculateEndEffectorPosition = () => {
   };
 };
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function normalizeInputAngles(values) {
+  if (!Array.isArray(values)) return null;
+
+  const parsed = values.map((v) => Number(v));
+  if (parsed.length === ARM_JOINT_COUNT) {
+    parsed.push(gripperAngleDeg.value);
+  }
+
+  if (
+    parsed.length !== TOTAL_INPUT_JOINT_COUNT ||
+    parsed.some((value) => !Number.isFinite(value))
+  ) {
+    return null;
+  }
+
+  parsed[ARM_JOINT_COUNT] = clamp(
+    parsed[ARM_JOINT_COUNT],
+    GRIPPER_MIN_DEG,
+    GRIPPER_MAX_DEG
+  );
+
+  return parsed;
+}
+
+function parseAngleText(inputText) {
+  const rawAngles = inputText
+    .split(",")
+    .map((angle) => parseFloat(angle.trim()));
+  return normalizeInputAngles(rawAngles);
+}
+
+function getGripperDegFromQpos(qpos) {
+  if (!Array.isArray(qpos) || qpos.length <= ARM_JOINT_COUNT) {
+    return gripperAngleDeg.value;
+  }
+
+  const qposValue = Number(qpos[ARM_JOINT_COUNT]);
+  if (!Number.isFinite(qposValue)) return gripperAngleDeg.value;
+
+  return clamp(
+    (qposValue * 180) / Math.PI,
+    GRIPPER_MIN_DEG,
+    GRIPPER_MAX_DEG
+  );
+}
+
+function applyAnglesToRobot(anglesDeg) {
+  const normalizedAngles = normalizeInputAngles(anglesDeg);
+  if (!normalizedAngles) return null;
+
+  const radians = normalizedAngles.map((value) => (value * Math.PI) / 180);
+
+  ARM_JOINT_NAMES.forEach((jointName, index) => {
+    sliderInput(radians[index], jointName);
+  });
+  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint");
+
+  return {
+    normalizedAngles,
+    radians,
+  };
+}
+
 // 用于更新任务进度的函数（示例）
 const updateTaskProgress = () => {
   // 这里可以根据实际需求更新任务进度
@@ -368,9 +466,14 @@ const fetchData = async () => {
     // data 应包含 qpos 数组
     if (data && data.qpos && Array.isArray(data.qpos)) {
       // 将弧度转换为角度
-      const anglesDeg = data.qpos.slice(0, 6).map((v) => v * (180 / Math.PI));
-      jointAngles.value = anglesDeg;
-      setRobotAngles(anglesDeg);
+      const armAnglesDeg = data.qpos
+        .slice(0, ARM_JOINT_COUNT)
+        .map((v) => v * (180 / Math.PI));
+      const gripperDeg = getGripperDegFromQpos(data.qpos);
+      const fullAngles = [...armAnglesDeg, gripperDeg];
+      jointAngles.value = fullAngles;
+      gripperAngleDeg.value = gripperDeg;
+      setRobotAngles(fullAngles);
       updateTaskProgress();
       calculateEndEffectorPosition();
       fetchFailures.value = 0;
@@ -385,8 +488,12 @@ const fetchData = async () => {
       if (typeof vals === "string") {
         vals = vals.split(" ").map(Number);
       }
-      jointAngles.value = vals.map((v) => Number(v));
-      setRobotAngles(jointAngles.value);
+      const normalizedAngles = normalizeInputAngles(vals.map((v) => Number(v)));
+      if (normalizedAngles) {
+        jointAngles.value = normalizedAngles;
+        gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
+        setRobotAngles(normalizedAngles);
+      }
       updateTaskProgress();
       calculateEndEffectorPosition();
       fetchFailures.value = 0;
@@ -414,64 +521,56 @@ const fetchData = async () => {
 // 优化测试发送数据的函数
 const testSendData = async () => {
   try {
-    // 首先检查是否有输入角度
     let testAngles;
     if (angleInput.value.trim()) {
-      testAngles = angleInput.value
-        .split(",")
-        .map((angle) => parseFloat(angle.trim()));
-      if (testAngles.length !== 6 || testAngles.some(isNaN)) {
-        alert("请先输入6个有效的关节角度值");
+      testAngles = parseAngleText(angleInput.value);
+      if (!testAngles) {
+        alert("请先输入6或7个有效的关节角度值（J1..J6[,Grip]）");
         return;
       }
     } else {
-      // 使用默认测试角度
-      testAngles = [60, -90, 90, -140, -90, 0];
+      testAngles = [...DEFAULT_TEST_ANGLES_DEG];
       angleInput.value = testAngles.join(", ");
     }
 
-    const testData = {
-      angles: testAngles,
-      command: "move_to_position",
-    };
-
     receivedText.value = "正在发送测试命令...";
-    // 将角度转换为弧度
-    const radians = testAngles.map((v) => (v * Math.PI) / 180);
+    const applyResult = applyAnglesToRobot(testAngles);
+    if (!applyResult) {
+      alert("角度格式不正确，请检查后重试");
+      return;
+    }
 
-    // 如果当前未与服务器/仿真连接，则仅在本地应用角度（不接入 mujoco）
+    const { normalizedAngles, radians } = applyResult;
+    const armRadians = radians.slice(0, ARM_JOINT_COUNT);
+    gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
+    jointAngles.value = normalizedAngles;
+
     if (!isFetching.value) {
-      // 直接在本地 Three.js 模型上应用角度（即时视觉反馈）
-      sliderInput(radians[0], "link1_joint");
-      sliderInput(radians[1], "link2_joint");
-      sliderInput(radians[2], "link3_joint");
-      sliderInput(radians[3], "link4_joint");
-      sliderInput(radians[4], "link5_joint");
-      sliderInput(radians[5], "link6_joint");
-
       receivedText.value = "已在本地设置角度（未接入仿真）";
-      setAnglesResponse.value = [...testAngles];
+      setAnglesResponse.value = [...normalizedAngles];
       updateTaskProgress();
       return;
     }
 
-    // 否则尝试通过 WebSocket/HTTP 发送到后端仿真（mujoco）
-    const sent = websocketManager.sendControlCommand(radians, { n_steps: 50, control_mode: "position" });
+    // 后端默认按6轴接收；手抓在前端可视化控制
+    const sent = websocketManager.sendControlCommand(armRadians, {
+      n_steps: 50,
+      control_mode: "position",
+    });
     if (sent) {
       receivedText.value = "命令已发送（通过 WebSocket）";
       sendCommandPending.value = true;
-      setAnglesResponse.value = [...testAngles];
+      setAnglesResponse.value = [...normalizedAngles];
       updateTaskProgress();
     } else {
-      // 回退到 HTTP 接口 /sim/step/
       try {
         const resp = await axios.post("http://localhost:8000/sim/step/", {
-          target_positions: radians,
+          target_positions: armRadians,
           n_steps: 50,
           control_mode: "position",
         });
         receivedText.value = resp.data.message || "命令已发送(HTTP)";
-        setAnglesResponse.value = [...testAngles];
+        setAnglesResponse.value = [...normalizedAngles];
         updateTaskProgress();
       } catch (err) {
         receivedText.value = "命令发送失败: " + (err.message || err);
@@ -511,64 +610,63 @@ function formatAngles(angles) {
 // 设置预设角度
 function setPresetAngles(preset) {
   if (preset === "home") {
-    angleInput.value = "0, -90, 90, -90, -90, 0";
+    angleInput.value = "0, -90, 90, -90, -90, 0, 0";
   } else if (preset === "work") {
-    angleInput.value = "45, -45, 45, -90, -45, 90";
+    angleInput.value = "45, -45, 45, -90, -45, 90, 20";
   } else if (preset === "safe-1") {
-    angleInput.value = "-70, -90, 90, -90, -90, 0";
+    angleInput.value = "-70, -90, 90, -90, -90, 0, 0";
   } else if (preset === "safe-2") {
-    angleInput.value = "-30, -90, 90, -90, -90, 0";
+    angleInput.value = "-30, -90, 90, -90, -90, 0, 0";
   } else if (preset === "safe-3") {
-    angleInput.value = "-45, -70, 70, -90, -90, 0";
+    angleInput.value = "-45, -70, 70, -90, -90, 0, 0";
   }
 }
 
 // 优化角度输入函数
 function inputRobotAngles() {
-  // 将输入的角度字符串转换为数组
   if (sendCommandPending.value) {
     alert("上一个命令尚未完成，请稍候再发送。");
     return;
   }
-  const angles_input = angleInput.value
-    .split(",")
-    .map((angle) => parseFloat(angle.trim()));
 
-  // 验证输入
-  if (angles_input.length !== 6) {
-    alert("请输入6个关节角度值，用逗号分隔");
+  const normalizedAngles = parseAngleText(angleInput.value);
+  if (!normalizedAngles) {
+    alert("请输入6或7个关节角度值，用逗号分隔（J1..J6[,Grip]）");
     return;
   }
 
-  if (angles_input.some(isNaN)) {
-    alert("输入包含无效的数字");
+  console.log("正在发送角度命令:", normalizedAngles);
+
+  const applyResult = applyAnglesToRobot(normalizedAngles);
+  if (!applyResult) {
+    alert("角度格式不正确，请检查后重试");
     return;
   }
 
-  console.log("正在发送角度命令:", angles_input);
+  const { radians } = applyResult;
+  const armRadians = radians.slice(0, ARM_JOINT_COUNT);
+  gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
+  jointAngles.value = normalizedAngles;
 
-  // 将角度转换为弧度并更新
-  const radians = angles_input.map((v) => v * (Math.PI / 180));
-
-  // 先在本地应用到Three.js机器人（即时视觉反馈）
-  sliderInput(radians[0], "link1_joint");
-  sliderInput(radians[1], "link2_joint");
-  sliderInput(radians[2], "link3_joint");
-  sliderInput(radians[3], "link4_joint");
-  sliderInput(radians[4], "link5_joint");
-  sliderInput(radians[5], "link6_joint");
-
-  // 如果未与服务器/仿真连接，则只在本地应用角度（不接入 mujoco）
   if (!isFetching.value) {
     receivedText.value = "已在本地设置角度（未接入仿真）";
-    setAnglesResponse.value = [...angles_input];
+    setAnglesResponse.value = [...normalizedAngles];
     updateTaskProgress();
+
+    if (enableAutoReturn.value) {
+      setTimeout(() => {
+        setRobotAngles(homeAnglesDeg.value);
+      }, autoReturnDelayMs.value);
+    }
+
     return;
   }
 
-  // 发送控制命令到后端仿真（通过 WebSocketManager）
   try {
-    const sent = websocketManager.sendControlCommand(radians, { n_steps: 50, control_mode: "position" });
+    const sent = websocketManager.sendControlCommand(armRadians, {
+      n_steps: 50,
+      control_mode: "position",
+    });
     if (!sent) {
       console.warn("控制命令未立即发送（已入队列或未连接）");
     } else {
@@ -581,7 +679,10 @@ function inputRobotAngles() {
       // （某些后端实现会在多步控制后更新 ctrl，这里再发一次保证最后的 ctrl 值）
       setTimeout(() => {
         try {
-          websocketManager.sendControlCommand(radians, { n_steps: 1, control_mode: "position" });
+          websocketManager.sendControlCommand(armRadians, {
+            n_steps: 1,
+            control_mode: "position",
+          });
         } catch (err) {
           console.warn("发送保持命令失败:", err);
         }
@@ -599,35 +700,11 @@ function inputRobotAngles() {
     console.error("发送控制命令失败:", e);
   }
 
-  // 如果启用了自动返回并且当前未连接服务器，则安排返回到home位置
-  // 在已连接（isFetching）时跳过自动返回，以保持机械臂到达目标角度后停留
-  if (enableAutoReturn.value && !isFetching.value) {
-    const homeRad = homeAnglesDeg.value.map((v) => v * (Math.PI / 180));
-    setTimeout(() => {
-      try {
-        const sentBack = websocketManager.sendControlCommand(homeRad, { n_steps: 60, control_mode: "position" });
-        if (!sentBack) {
-          console.warn("自动返回命令未立即发送（已入队列或未连接）");
-        } else {
-          console.log("自动返回命令已发送");
-        }
-      } catch (err) {
-        console.error("自动返回命令发送失败:", err);
-      }
-      // 同时在本地更新显示（以应对后端延迟）
-      sliderInput(homeRad[0], "link1_joint");
-      sliderInput(homeRad[1], "link2_joint");
-      sliderInput(homeRad[2], "link3_joint");
-      sliderInput(homeRad[3], "link4_joint");
-      sliderInput(homeRad[4], "link5_joint");
-      sliderInput(homeRad[5], "link6_joint");
-    }, autoReturnDelayMs.value);
-  } else if (enableAutoReturn.value && isFetching.value) {
+  if (enableAutoReturn.value && isFetching.value) {
     console.log("已连接仿真，跳过自动返回以保持目标姿态");
   }
 
-  // 保存设置的角度值以便显示
-  setAnglesResponse.value = [...angles_input];
+  setAnglesResponse.value = [...normalizedAngles];
 
   updateTaskProgress();
 }
@@ -678,8 +755,51 @@ function resolveJointName(name) {
   return null;
 }
 
+function setGripperJointValue(value) {
+  const clampedValue = clamp(value, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+  gripperAngleDeg.value = (clampedValue * 180) / Math.PI;
+
+  if (!robot || !robot.joints) return;
+
+  const targetValues = {
+    left_driver_joint: clampedValue,
+    right_driver_joint: clampedValue,
+    left_spring_link_joint: clampedValue,
+    right_spring_link_joint: clampedValue,
+    left_follower_joint: -clampedValue,
+    right_follower_joint: -clampedValue,
+  };
+
+  let hasApplied = false;
+  Object.entries(targetValues).forEach(([jointName, jointValue]) => {
+    const joint = robot.joints[jointName];
+    if (!joint) return;
+    joint.setJointValue(jointValue);
+    hasApplied = true;
+  });
+
+  if (!hasApplied && !warnedMissingJoints.has("gripper_joint")) {
+    warnedMissingJoints.add("gripper_joint");
+    console.warn(
+      "未找到手抓相关关节:",
+      GRIPPER_JOINT_NAMES,
+      "可用关节:",
+      Object.keys(robot.joints || {})
+    );
+  }
+}
+
 // 修改sliderInput函数，确保每次角度变化时更新位置信息
 function sliderInput(value, name) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return;
+
+  if (name === "gripper_joint") {
+    setGripperJointValue(numericValue);
+    calculateEndEffectorPosition();
+    return;
+  }
+
   const resolvedName = resolveJointName(name);
   if (!resolvedName) {
     if (!warnedMissingJoints.has(name)) {
@@ -689,30 +809,22 @@ function sliderInput(value, name) {
     return;
   }
 
-  robot.joints[resolvedName].setJointValue(value);
+  robot.joints[resolvedName].setJointValue(numericValue);
   // 在每次关节变化后立即更新位置信息
   calculateEndEffectorPosition();
 }
 
 // 新增设置机器臂六个角度的函数
 function setRobotAngles(angles) {
-  // 将输入的角度字符串转换为数组
-
-  if (angles.length === 6) {
-    // 将角度转换为弧度并更新六个角度
-    const radians = angles.map((v) => v * (Math.PI / 180));
-    // 假设关节名称为 'link1_joint', 'link2_joint', 'link3_joint', 'link4_joint', 'link5_joint', 'link6_joint'
-    sliderInput(radians[0], "link1_joint");
-    sliderInput(radians[1], "link2_joint");
-    sliderInput(radians[2], "link3_joint");
-    sliderInput(radians[3], "link4_joint");
-    sliderInput(radians[4], "link5_joint");
-    sliderInput(radians[5], "link6_joint");
-  } else {
-    console.error("必须提供六个角度值");
-    // 更新位置信息
+  const applyResult = applyAnglesToRobot(angles);
+  if (!applyResult) {
+    console.error("必须提供6或7个角度值");
     calculateEndEffectorPosition();
+    return;
   }
+
+  jointAngles.value = [...applyResult.normalizedAngles];
+  gripperAngleDeg.value = applyResult.normalizedAngles[ARM_JOINT_COUNT];
 }
 
 // 修改为视角切换函数
@@ -920,6 +1032,9 @@ function initRobot() {
     sliderInput(Math.PI / 2, "link3_joint");
     sliderInput(-Math.PI / 2, "link4_joint");
     sliderInput(-Math.PI / 2, "link5_joint");
+    sliderInput(0, "gripper_joint");
+    jointAngles.value = [...DEFAULT_ANGLES_DEG];
+    gripperAngleDeg.value = DEFAULT_ANGLES_DEG[ARM_JOINT_COUNT];
 
     // 初始化后计算位置信息
     calculateEndEffectorPosition();
@@ -1013,12 +1128,17 @@ const updateJointAngles = (qpos) => {
     // console.log('忽略状态更新（等待控制结果）');
     return;
   }
-  // 将弧度转换为角度
-  const anglesInDegrees = qpos.slice(0, 6).map(rad => rad * (180 / Math.PI));
-  jointAngles.value = anglesInDegrees;
+  const armAnglesInDegrees = qpos
+    .slice(0, ARM_JOINT_COUNT)
+    .map((rad) => rad * (180 / Math.PI));
+  const gripperDeg = getGripperDegFromQpos(qpos);
+  const fullAngles = [...armAnglesInDegrees, gripperDeg];
+
+  jointAngles.value = fullAngles;
+  gripperAngleDeg.value = gripperDeg;
 
   // 应用到机器人模型
-  setRobotAngles(anglesInDegrees);
+  setRobotAngles(fullAngles);
 
   // 更新末端执行器位置
   calculateEndEffectorPosition();
