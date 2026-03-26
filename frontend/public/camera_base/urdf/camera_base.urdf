@@ -26,7 +26,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://camera_base/meshes/base.stl" />
+          filename="../meshes/base.stl" />
       </geometry>
       <material
         name="">
@@ -40,7 +40,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://camera_base/meshes/base.stl" />
+          filename="../meshes/base.stl" />
       </geometry>
     </collision>
   </link>
