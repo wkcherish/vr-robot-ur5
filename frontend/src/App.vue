@@ -289,6 +289,19 @@ const targetUpdateRate = ref(50); // 目标更新率 (Hz)
 const actualUpdateRate = ref(0); // 实际更新率
 const stateBufferSize = ref(10); // 状态缓冲区大小
 const connectionQuality = ref(100); // 连接质量百分比
+const robotPosition = ref({ x: 0, y: 0, z: 0 });
+const robotOrientation = ref({ roll: 0, pitch: 0, yaw: 0 });
+
+// 兼容旧 UI 关节名(link*_joint)与当前 URDF 关节名
+const jointNameMap = {
+  link1_joint: "shoulder_pan_joint",
+  link2_joint: "shoulder_lift_joint",
+  link3_joint: "elbow_joint",
+  link4_joint: "wrist_1_joint",
+  link5_joint: "wrist_2_joint",
+  link6_joint: "wrist_3_joint",
+};
+const warnedMissingJoints = new Set();
 
 // 新增: 计算机器臂末端位置的函数
 const calculateEndEffectorPosition = () => {
@@ -657,9 +670,26 @@ function togglePanel(panel) {
   }
 }
 
+function resolveJointName(name) {
+  if (!robot || !robot.joints) return null;
+  if (robot.joints[name]) return name;
+  const mappedName = jointNameMap[name];
+  if (mappedName && robot.joints[mappedName]) return mappedName;
+  return null;
+}
+
 // 修改sliderInput函数，确保每次角度变化时更新位置信息
 function sliderInput(value, name) {
-  robot.joints[name].setJointValue(value);
+  const resolvedName = resolveJointName(name);
+  if (!resolvedName) {
+    if (!warnedMissingJoints.has(name)) {
+      warnedMissingJoints.add(name);
+      console.warn("未找到关节:", name, "可用关节:", robot && robot.joints ? Object.keys(robot.joints) : []);
+    }
+    return;
+  }
+
+  robot.joints[resolvedName].setJointValue(value);
   // 在每次关节变化后立即更新位置信息
   calculateEndEffectorPosition();
 }
@@ -737,6 +767,7 @@ function initBase() {
 
   // 设置渲染器尺寸
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
 
   // 设置渲染器颜色
   renderer.setClearColor("#DCDCDC");
@@ -744,6 +775,9 @@ function initBase() {
 
 // 添加光线
 function addLight() {
+  const ambient = new THREE.AmbientLight("#ffffff", 0.75);
+  scene.add(ambient);
+
   const positions = [
     { x: 15, y: 15, z: 15 },
     { x: -15, y: -15, z: -15 },
@@ -784,6 +818,37 @@ function addHelpLine() {
   scene.add(gridHelper);
 }
 
+function loadUrdfModel(modelPath, onLoad) {
+  const loader = new URDFLoader();
+  loader.load(
+    modelPath,
+    (result) => {
+      console.log("URDF加载成功:", modelPath);
+      onLoad(result);
+    },
+    undefined,
+    (error) => {
+      console.error("URDF加载失败:", modelPath, error);
+    }
+  );
+}
+
+function focusCameraOnObject(object) {
+  if (!object || !camera || !controls) return;
+  const box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const distance = Math.max(maxDim * 2.2, 1.5);
+
+  camera.position.set(center.x + distance, center.y + distance * 0.7, center.z + distance);
+  controls.target.copy(center);
+  camera.lookAt(center);
+  controls.update();
+}
+
 // 初始化
 initBase();
 // 添加灯光
@@ -794,20 +859,18 @@ initOrbitControls();
 addHelpLine();
 
 function initCamera() {
-  const loader = new URDFLoader();
-  loader.load(real_camera, (result) => {
+  loadUrdfModel(real_camera, (result) => {
     // 调整相机位置和大小
     result.scale.set(1, 1, 1);
     result.position.set(-0.205, 0.832, 0.4);
-    result.rotation.y = Math.PI; // 旋转90度
+    result.rotation.y = Math.PI*0.65; // 旋转相机以正确朝向场景
 
     scene.add(result);
   });
 }
 
 function initCameraBase() {
-  const loader = new URDFLoader();
-  loader.load(camera_base, (result) => {
+  loadUrdfModel(camera_base, (result) => {
     // 调整相机三脚架位置和大小
     result.scale.set(0.01, 0.01, 0.01);
     result.position.set(-0.1, 0.68, 0.4);
@@ -818,8 +881,7 @@ function initCameraBase() {
 
 // 添加实验台模型加载函数
 function initRack() {
-  const loader = new URDFLoader();
-  loader.load(rack, (result) => {
+  loadUrdfModel(rack, (result) => {
     // 调整实验台位置和大小
     result.scale.set(1, 1, 1);
     result.position.set(0.5, 0, 0);
@@ -829,11 +891,10 @@ function initRack() {
 
 // 添加电池模型加载函数
 function initBattery() {
-  const loader = new URDFLoader();
-  loader.load(battery, (result) => {
+  loadUrdfModel(battery, (result) => {
     // 调整电池位置和大小
     result.scale.set(0.8, 0.8, 0.8);
-    result.position.set(0.3, 1.085, 0.5);
+    result.position.set(0.1, 1.085, 0.5);
     // 添加90度旋转（绕Y轴）
     result.rotation.y = Math.PI / 2; // 旋转90度
     // 添加调试代码，查看电池的包围盒
@@ -845,19 +906,16 @@ function initBattery() {
 }
 
 function initRobot() {
-  // 实例化 URDF模型加载器
-  const loader = new URDFLoader();
-
-  // 导入URDF模型
-  loader.load(urdf, (result) => {
+  loadUrdfModel(urdf, (result) => {
     robot = result;
-    console.log(robot.joints);
+    console.log("机器人关节:", Object.keys(robot.joints || {}));
 
     //设置ROBOT坐标z朝上
     robot.rotation.x = -Math.PI / 2;
-    robot.rotation.z = -Math.PI;
+    robot.rotation.z = 0;
     robot.position.set(-0.2, 0.5, -0.1); // 将机械臂放置在实验台上
     scene.add(robot);
+    focusCameraOnObject(robot);
     sliderInput(-Math.PI / 2, "link2_joint");
     sliderInput(Math.PI / 2, "link3_joint");
     sliderInput(-Math.PI / 2, "link4_joint");
@@ -1119,7 +1177,7 @@ onMounted(() => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.innerWidth / window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
   });
 
   setInterval(() => {
