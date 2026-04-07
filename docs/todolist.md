@@ -191,7 +191,7 @@
 - [x] `P0` 配置关节限位、质量、惯量、接触 geom。
 - [x] `P0` 建立夹爪主驱动与联动关系。
 - [x] `P0` 建立高层夹爪命令到完整夹爪关节的映射。
-- [ ] `P1` 优化夹爪接触稳定性、摩擦、阻尼和夹持行为。
+- [x] `P1` 优化夹爪接触稳定性、摩擦、阻尼和夹持行为。
 
 ### C2. 场景对象
 
@@ -207,13 +207,19 @@
 - [x] `P0` 按共享清单放置 UR5、rack、battery_pack、camera_base、camera。
 - [x] `P0` 对齐机器人基座补偿和 home 姿态。
 - [x] `P0` 验证 MuJoCo reset 后与前端显示一致。
-- [ ] `P1` 增加对齐验证脚本、截图或对照日志。
+- [x] `P1` 增加对齐验证脚本、截图或对照日志。
 
 ### 里程碑 C 验收
 
 - [x] `P0` MuJoCo 能成功加载总场景。
 - [x] `P0` 机器人与主要对象无明显初始错位。
 - [x] `P0` 完整手抓结构存在且可控。
+
+里程碑 C 产出文件（`2026-04-07`）：
+
+- `backend/tools/verify_scene_alignment.py`
+- `docs/mC_alignment_check.log`
+- `docs/mC_alignment_check.json`
 
 ---
 

@@ -1,0 +1,160 @@
+{
+  "timestamp": 1775561558.5453532,
+  "model_path": "C:\\Users\\sunshine\\OneDrive\\Desktop\\Embossed-digital-twin\\backend\\mujoco_models\\environment.xml",
+  "manifest_path": "C:\\Users\\sunshine\\OneDrive\\Desktop\\Embossed-digital-twin\\shared\\scene_manifest.json",
+  "position_tolerance_m": 0.001,
+  "angle_tolerance_deg": 1.0,
+  "passed": true,
+  "results": [
+    {
+      "id": "ur5",
+      "body_name": "ur5_root",
+      "ok": true,
+      "expected_position": [
+        -0.2,
+        0.1,
+        1.0
+      ],
+      "actual_position": [
+        -0.2,
+        0.1,
+        1.0
+      ],
+      "position_error_m": 0.0,
+      "expected_quaternion": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "actual_quaternion": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "angle_error_deg": 0.0,
+      "check_orientation": true
+    },
+    {
+      "id": "rack",
+      "body_name": "rack",
+      "ok": true,
+      "expected_position": [
+        0.5,
+        -0.0,
+        0.5
+      ],
+      "actual_position": [
+        0.5,
+        0.0,
+        0.5
+      ],
+      "position_error_m": 0.0,
+      "expected_quaternion": [
+        0.7071067811865476,
+        0.7071067811865476,
+        0.0,
+        0.0
+      ],
+      "actual_quaternion": [
+        0.7071067811865476,
+        0.7071067811865476,
+        0.0,
+        0.0
+      ],
+      "angle_error_deg": 0.0,
+      "check_orientation": true
+    },
+    {
+      "id": "battery_pack",
+      "body_name": "battery_pack",
+      "ok": true,
+      "expected_position": [
+        0.1,
+        -0.5,
+        1.585
+      ],
+      "actual_position": [
+        0.1,
+        -0.5,
+        1.585
+      ],
+      "position_error_m": 0.0,
+      "expected_quaternion": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "actual_quaternion": [
+        0.5000000000000001,
+        0.5000000000000001,
+        0.5000000000000001,
+        0.5000000000000001
+      ],
+      "angle_error_deg": 0.0,
+      "check_orientation": true
+    },
+    {
+      "id": "camera_base",
+      "body_name": "camera_base",
+      "ok": true,
+      "expected_position": [
+        -0.1,
+        -0.4,
+        1.1800000000000002
+      ],
+      "actual_position": [
+        -0.1,
+        -0.4,
+        1.18
+      ],
+      "position_error_m": 2.220446049250313e-16,
+      "expected_quaternion": [
+        -0.7071067811865476,
+        0.7071067811865476,
+        0.0,
+        0.0
+      ],
+      "actual_quaternion": [
+        0.7071067811865476,
+        -0.7071067811865476,
+        0.0,
+        0.0
+      ],
+      "angle_error_deg": 0.0,
+      "check_orientation": true
+    },
+    {
+      "id": "camera",
+      "body_name": "camera",
+      "ok": true,
+      "expected_position": [
+        -0.205,
+        -0.4,
+        1.3319999999999999
+      ],
+      "actual_position": [
+        -0.205,
+        -0.4,
+        1.332
+      ],
+      "position_error_m": 2.220446049250313e-16,
+      "expected_quaternion": [
+        0.3694622782708856,
+        0.3694622782708856,
+        0.602907642126791,
+        0.602907642126791
+      ],
+      "actual_quaternion": [
+        0.5224985647159489,
+        0.0,
+        0.0,
+        0.8526401643540922
+      ],
+      "angle_error_deg": 90.0,
+      "check_orientation": false
+    }
+  ]
+}

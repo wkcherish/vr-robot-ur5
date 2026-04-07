@@ -97,3 +97,13 @@ python backend/main.py --open-viewer no --no-reload
   - `reset_result`
   - `task_result`
   - `error`
+
+## Milestone C Verification
+
+- Gripper contact stability tuning is applied in `backend/mujoco_models/ur5.xml`:
+  - decoupled visual meshes and contact geoms for finger pads
+  - higher joint damping/frictionloss on Robotiq linkage
+  - dedicated pad collision friction/solver settings for more stable pinch contact
+- Scene alignment verification script:
+  - `python backend/tools/verify_scene_alignment.py`
+  - optional JSON report: `python backend/tools/verify_scene_alignment.py --json-out docs/mC_alignment_check.json`
