@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_version": "v1.0.0-milestone-a",
+  "updated_at": "2026-04-07T00:00:00+08:00",
+  "units": {
+    "position": "meter",
+    "rotation": "radian"
+  },
+  "integration_policy": {
+    "frontend_must_read_manifest": true,
+    "backend_must_read_manifest": true,
+    "notes": [
+      "Frontend and backend are not allowed to hardcode scene transforms outside this manifest.",
+      "MuJoCo scene files should be generated from this manifest or manually kept strictly aligned with this manifest."
+    ]
+  },
+  "robot": {
+    "id": "ur5",
+    "name": "UR5 + Robotiq 2F-85",
+    "resource_path": "frontend/public/ur5/ur5.urdf",
+    "transform": {
+      "position": [-0.2, 0.5, -0.1],
+      "rotation_rpy": [-1.5707963267948966, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0]
+    },
+    "base_compensation": {
+      "applied_in_frontend": "robot.rotation.x = -PI/2",
+      "reason": "Align URDF default orientation with current Three.js world baseline.",
+      "must_be_reproduced_in_backend": true
+    },
+    "frames": {
+      "base": "base",
+      "base_link": "base_link",
+      "tool0": "tool0"
+    },
+    "home_pose": {
+      "joint_order": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ],
+      "qpos_arm": [0.0, -1.5707963267948966, 1.5707963267948966, -1.5707963267948966, -1.5707963267948966, 0.0],
+      "gripper_opening": 0.0
+    }
+  },
+  "objects": [
+    {
+      "id": "rack",
+      "resource_path": "frontend/public/rack/urdf/rack.urdf",
+      "transform": {
+        "position": [0.5, 0.0, 0.0],
+        "rotation_rpy": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "notes": "Workbench/rack baseline."
+    },
+    {
+      "id": "battery_pack",
+      "resource_path": "frontend/public/battery/urdf/battery.urdf",
+      "transform": {
+        "position": [0.1, 1.085, 0.5],
+        "rotation_rpy": [0.0, 1.5707963267948966, 0.0],
+        "scale": [0.8, 0.8, 0.8]
+      },
+      "physics_model": "single_rigid_body_v1",
+      "notes": "Milestone v1 treats battery + case as one rigid body."
+    },
+    {
+      "id": "camera_base",
+      "resource_path": "frontend/public/camera_base/urdf/camera_base.urdf",
+      "transform": {
+        "position": [-0.1, 0.68, 0.4],
+        "rotation_rpy": [3.141592653589793, 0.0, 0.0],
+        "scale": [0.01, 0.01, 0.01]
+      },
+      "notes": "Tripod/base support of scene camera."
+    },
+    {
+      "id": "camera",
+      "resource_path": "frontend/public/camera/urdf/camera.urdf",
+      "transform": {
+        "position": [-0.205, 0.832, 0.4],
+        "rotation_rpy": [0.0, 2.0420352248333655, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "notes": "Current scene camera model used for alignment only."
+    }
+  ],
+  "gripper": {
+    "must_keep_full_structure": true,
+    "high_level_command": {
+      "name": "gripper_opening",
+      "range": [0.0, 1.0],
+      "semantic": "0=open, 1=closed"
+    },
+    "primary_joints": [
+      "left_driver_joint",
+      "right_driver_joint"
+    ],
+    "mimic_joints": [
+      "left_spring_link_joint",
+      "right_spring_link_joint",
+      "left_follower_joint",
+      "right_follower_joint"
+    ]
+  }
+}
