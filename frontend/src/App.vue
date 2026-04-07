@@ -416,6 +416,19 @@ function getGripperDegFromQpos(qpos) {
   );
 }
 
+function applyBackendQposToScene(qpos) {
+  if (!Array.isArray(qpos)) return;
+  const armAnglesDeg = qpos
+    .slice(0, ARM_JOINT_COUNT)
+    .map((v) => v * (180 / Math.PI));
+  const gripperDeg = getGripperDegFromQpos(qpos);
+  const fullAngles = [...armAnglesDeg, gripperDeg];
+  jointAngles.value = fullAngles;
+  gripperAngleDeg.value = gripperDeg;
+  setRobotAngles(fullAngles);
+  calculateEndEffectorPosition();
+}
+
 function applyAnglesToRobot(anglesDeg) {
   const normalizedAngles = normalizeInputAngles(anglesDeg);
   if (!normalizedAngles) return null;
@@ -465,17 +478,13 @@ const fetchData = async () => {
 
     // data 应包含 qpos 数组
     if (data && data.qpos && Array.isArray(data.qpos)) {
-      // 将弧度转换为角度
-      const armAnglesDeg = data.qpos
-        .slice(0, ARM_JOINT_COUNT)
-        .map((v) => v * (180 / Math.PI));
-      const gripperDeg = getGripperDegFromQpos(data.qpos);
-      const fullAngles = [...armAnglesDeg, gripperDeg];
-      jointAngles.value = fullAngles;
-      gripperAngleDeg.value = gripperDeg;
-      setRobotAngles(fullAngles);
+      // 在命令执行确认前，避免轮询状态把前端目标姿态覆盖回旧状态
+      if (sendCommandPending.value) {
+        fetchFailures.value = 0;
+        return;
+      }
+      applyBackendQposToScene(data.qpos);
       updateTaskProgress();
-      calculateEndEffectorPosition();
       fetchFailures.value = 0;
       return;
     }
@@ -489,7 +498,7 @@ const fetchData = async () => {
         vals = vals.split(" ").map(Number);
       }
       const normalizedAngles = normalizeInputAngles(vals.map((v) => Number(v)));
-      if (normalizedAngles) {
+      if (normalizedAngles && !sendCommandPending.value) {
         jointAngles.value = normalizedAngles;
         gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
         setRobotAngles(normalizedAngles);
@@ -515,6 +524,69 @@ const fetchData = async () => {
       console.error("连续多次获取失败，已停止自动同步。请检查后端服务。");
       stopFetchingData();
     }
+  }
+};
+
+const sendArmCommandToBackend = async (armRadians, options = {}) => {
+  const n_steps = options.n_steps || 50;
+  const control_mode = options.control_mode || "position";
+
+  // WebSocket 可用时优先走 WS，确保与实时广播链路一致
+  if (websocketManager.isConnected) {
+    const sent = websocketManager.sendControlCommand(armRadians, {
+      n_steps,
+      control_mode,
+    });
+
+    if (sent) {
+      sendCommandPending.value = true;
+
+      // 额外发送一次短时“保持”命令，避免后端控制目标被中间状态覆盖
+      setTimeout(() => {
+        try {
+          if (websocketManager.isConnected) {
+            websocketManager.sendControlCommand(armRadians, {
+              n_steps: 1,
+              control_mode: "position",
+            });
+          }
+        } catch (err) {
+          console.warn("发送保持命令失败:", err);
+        }
+      }, 120);
+
+      // 安全超时：防止 controlResult 丢失导致前端永久 pending
+      setTimeout(() => {
+        if (sendCommandPending.value) {
+          console.warn("controlResult 超时，自动清除等待标志");
+          sendCommandPending.value = false;
+        }
+      }, 7000);
+
+      return { ok: true, message: "命令已发送（通过 WebSocket）" };
+    }
+
+    console.warn("WebSocket 已连接但命令发送失败，将回退到 HTTP /sim/step/");
+  }
+
+  // WS 不可用时直接 HTTP 下发，避免前端先动后被旧状态拉回
+  sendCommandPending.value = true;
+  try {
+    const resp = await axios.post("http://localhost:8000/sim/step/", {
+      target_positions: armRadians,
+      n_steps,
+      control_mode,
+    });
+
+    if (resp?.data?.state?.qpos && Array.isArray(resp.data.state.qpos)) {
+      applyBackendQposToScene(resp.data.state.qpos);
+    }
+
+    return { ok: true, message: resp.data?.message || "命令已发送（HTTP）" };
+  } catch (err) {
+    return { ok: false, message: "命令发送失败: " + (err.message || err) };
+  } finally {
+    sendCommandPending.value = false;
   }
 };
 
@@ -552,31 +624,13 @@ const testSendData = async () => {
       return;
     }
 
-    // 后端默认按6轴接收；手抓在前端可视化控制
-    const sent = websocketManager.sendControlCommand(armRadians, {
+    const result = await sendArmCommandToBackend(armRadians, {
       n_steps: 50,
       control_mode: "position",
     });
-    if (sent) {
-      receivedText.value = "命令已发送（通过 WebSocket）";
-      sendCommandPending.value = true;
-      setAnglesResponse.value = [...normalizedAngles];
-      updateTaskProgress();
-    } else {
-      try {
-        const resp = await axios.post("http://localhost:8000/sim/step/", {
-          target_positions: armRadians,
-          n_steps: 50,
-          control_mode: "position",
-        });
-        receivedText.value = resp.data.message || "命令已发送(HTTP)";
-        setAnglesResponse.value = [...normalizedAngles];
-        updateTaskProgress();
-      } catch (err) {
-        receivedText.value = "命令发送失败: " + (err.message || err);
-        console.error("发送测试命令失败:", err);
-      }
-    }
+    receivedText.value = result.message;
+    setAnglesResponse.value = [...normalizedAngles];
+    updateTaskProgress();
   } catch (error) {
     receivedText.value = "命令发送失败: " + error.message;
     console.error("发送测试命令失败:", error);
@@ -585,6 +639,10 @@ const testSendData = async () => {
 
 // 优化开始获取数据的函数
 const startFetchingData = () => {
+  if (!websocketManager.isConnected) {
+    websocketManager.connect();
+  }
+
   isFetching.value = true;
   fetchData(); // 立即调用一次
   fetchInterval.value = setInterval(fetchData, 100); // 每100ms同步一次
@@ -623,7 +681,7 @@ function setPresetAngles(preset) {
 }
 
 // 优化角度输入函数
-function inputRobotAngles() {
+async function inputRobotAngles() {
   if (sendCommandPending.value) {
     alert("上一个命令尚未完成，请稍候再发送。");
     return;
@@ -663,38 +721,13 @@ function inputRobotAngles() {
   }
 
   try {
-    const sent = websocketManager.sendControlCommand(armRadians, {
+    const result = await sendArmCommandToBackend(armRadians, {
       n_steps: 50,
       control_mode: "position",
     });
-    if (!sent) {
-      console.warn("控制命令未立即发送（已入队列或未连接）");
-    } else {
-      console.log("控制命令已发送到后端仿真");
-      // 标记为命令等待状态，忽略来自服务器的临时状态更新
-      // 以防仿真在命令执行过程中短暂回到初始位导致前端覆盖目标姿态。
-      sendCommandPending.value = true;
-
-      // 额外发送一次短时“保持”命令，确保后端 ctrl 被设置为目标位置并保持
-      // （某些后端实现会在多步控制后更新 ctrl，这里再发一次保证最后的 ctrl 值）
-      setTimeout(() => {
-        try {
-          websocketManager.sendControlCommand(armRadians, {
-            n_steps: 1,
-            control_mode: "position",
-          });
-        } catch (err) {
-          console.warn("发送保持命令失败:", err);
-        }
-      }, 120);
-
-      // 安全超时：如果很长时间没有收到 controlResult，自动清除等待标志（防止永久屏蔽状态同步）
-      setTimeout(() => {
-        if (sendCommandPending.value) {
-          console.warn("controlResult 超时，自动清除等待标志");
-          sendCommandPending.value = false;
-        }
-      }, 7000);
+    receivedText.value = result.message;
+    if (!result.ok) {
+      console.error("发送控制命令失败:", result.message);
     }
   } catch (e) {
     console.error("发送控制命令失败:", e);
