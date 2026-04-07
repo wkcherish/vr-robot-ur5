@@ -138,41 +138,41 @@
 
 ### B1. 后端工程初始化
 
-- [ ] `P0` 创建 `backend/` 目录。
-- [ ] `P0` 创建 `backend/main.py` 作为 FastAPI 入口。
-- [ ] `P0` 创建 `backend/schemas.py`。
-- [ ] `P0` 创建 `backend/sim/` 模块目录。
-- [ ] `P0` 创建 `backend/tasks/` 模块目录。
-- [ ] `P0` 创建 `backend/rl/` 模块目录。
-- [ ] `P0` 创建依赖安装说明和启动命令说明。
-- [ ] `P1` 补充开发环境配置文件与 `.env.example`。
+- [x] `P0` 创建 `backend/` 目录。
+- [x] `P0` 创建 `backend/main.py` 作为 FastAPI 入口。
+- [x] `P0` 创建 `backend/schemas.py`。
+- [x] `P0` 创建 `backend/sim/` 模块目录。
+- [x] `P0` 创建 `backend/tasks/` 模块目录。
+- [x] `P0` 创建 `backend/rl/` 模块目录。
+- [x] `P0` 创建依赖安装说明和启动命令说明。
+- [x] `P1` 补充开发环境配置文件与 `.env.example`。
 
 ### B2. MuJoCo 仿真核心
 
-- [ ] `P0` 创建 `backend/sim/simulation.py`。
-- [ ] `P0` 实现模型加载。
-- [ ] `P0` 实现 reset。
-- [ ] `P0` 实现 step。
-- [ ] `P0` 实现状态采集：`qpos`、`qvel`、末端位姿、对象位姿。
-- [ ] `P0` 实现仿真锁、并发保护和命令队列。
-- [ ] `P0` 支持切换控制源：`manual | task | policy`。
-- [ ] `P1` 实现性能统计、日志和步进耗时监控。
+- [x] `P0` 创建 `backend/sim/simulation.py`。
+- [x] `P0` 实现模型加载。
+- [x] `P0` 实现 reset。
+- [x] `P0` 实现 step。
+- [x] `P0` 实现状态采集：`qpos`、`qvel`、末端位姿、对象位姿。
+- [x] `P0` 实现仿真锁、并发保护和命令队列。
+- [x] `P0` 支持切换控制源：`manual | task | policy`。
+- [x] `P1` 实现性能统计、日志和步进耗时监控。
 
 ### B3. 对外接口
 
-- [ ] `P0` 实现 `/health/`。
-- [ ] `P0` 实现 `GET /sim/state/`。
-- [ ] `P0` 实现 `POST /sim/step/`。
-- [ ] `P0` 实现 `POST /sim/reset/`。
-- [ ] `P0` 实现 `WebSocket /sim/ws`。
-- [ ] `P0` 支持周期性 `state_broadcast`。
-- [ ] `P1` 增加错误码、调试日志和统一异常处理。
+- [x] `P0` 实现 `/health/`。
+- [x] `P0` 实现 `GET /sim/state/`。
+- [x] `P0` 实现 `POST /sim/step/`。
+- [x] `P0` 实现 `POST /sim/reset/`。
+- [x] `P0` 实现 `WebSocket /sim/ws`。
+- [x] `P0` 支持周期性 `state_broadcast`。
+- [x] `P1` 增加错误码、调试日志和统一异常处理。
 
 ### 里程碑 B 验收
 
-- [ ] `P0` 后端能独立启动。
-- [ ] `P0` 前端至少能连上 `/health/` 和 `/sim/ws`。
-- [ ] `P0` `/sim/state/` 可以返回有效数据结构。
+- [x] `P0` 后端能独立启动。
+- [x] `P0` 前端至少能连上 `/health/` 和 `/sim/ws`。
+- [x] `P0` `/sim/state/` 可以返回有效数据结构。
 
 ---
 
