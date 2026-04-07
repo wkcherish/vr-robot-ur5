@@ -2,8 +2,8 @@
   <worldbody>
     <body
       name="camera"
-      pos="-0.205 0.832 0.4"
-      euler="0 2.0420352248333655 0"
+      pos="-0.205 -0.4 1.332"
+      euler="0 0 2.0420352248333655"
     >
       <geom
         name="camera_body_geom"
