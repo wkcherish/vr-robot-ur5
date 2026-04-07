@@ -20,7 +20,7 @@
     <mesh name="pad" content_type="model/stl" file="meshes/ur5/robotiq_2f85_v4/pad.stl"/>
   </asset>
   <worldbody>
-    <body name="ur5_root" pos="-0.2 0.5 -0.1" euler="-1.5707963267948966 0 0">
+    <body name="ur5_root" pos="-0.2 0.1 1.0" euler="0 0 0">
       <geom quat="-1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="ur5_base"/>
       <body name="shoulder_link" pos="0 0 0.089159" quat="0 0 0 1">
         <inertial pos="0 0 0" mass="3.7" diaginertia="0.0149724 0.0149724 0.0104063"/>
@@ -46,8 +46,8 @@
                   <inertial pos="0 -2.17763e-05 0.0255955" quat="1 0.000252812 0 0" mass="0.965341" diaginertia="0.00073016 0.000695256 0.000284825"/>
                   <joint name="wrist_3_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28"/>
                   <geom pos="0 0 -0.0818" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="wrist3"/>
-                  <geom pos="0 0 0.0108" quat="1 0 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="robotiq_base"/>
-                  <geom pos="0 0 0.004" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="base_coupling"/>
+                  <geom pos="0 0 0.0108" quat="1 0 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="robotiq_base"/>
+                  <geom pos="0 0 0.004" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="base_coupling"/>
                   <geom pos="0 0 0.0108" quat="1 0 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="c-a01-85-open"/>
                   <body name="left_driver_link" pos="-0.0306011 0.00475 0.0657045" quat="0.707107 -0.707107 0 0">
                     <inertial pos="-0.0191837 0.0115217 0.00836471" quat="0.512236 -0.243929 -0.335886 0.75186" mass="0.023093" diaginertia="1.19933e-05 9.08259e-06 4.7089e-06"/>
@@ -62,7 +62,7 @@
                     <body name="left_follower_link" pos="-0.0382079 -0.0425003 0.00295" quat="0 1 0 0">
                       <inertial pos="0.000753095 -0.0238361 0.0273243" quat="0.941472 0.336116 0.0114751 0.0229154" mass="0.0145222" diaginertia="3.77386e-05 3.67538e-05 1.46985e-06"/>
                       <joint name="left_follower_joint" pos="0 0 0" axis="0 0 1" range="-0.872664 0.9" actuatorfrcrange="-10 10" damping="0.01"/>
-                      <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="follower"/>
+                      <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="follower"/>
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="tongue"/>
                       <geom pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.88 0.88 0.88 1" mesh="pad"/>
                     </body>
@@ -80,7 +80,7 @@
                     <body name="right_follower_link" pos="-0.0382079 -0.0425003 0.00295" quat="0 1 0 0">
                       <inertial pos="0.000753095 -0.0238361 0.0273243" quat="0.941472 0.336116 0.0114751 0.0229154" mass="0.0145222" diaginertia="3.77386e-05 3.67538e-05 1.46985e-06"/>
                       <joint name="right_follower_joint" pos="0 0 0" axis="0 0 1" range="-0.872664 0.9" actuatorfrcrange="-10 10" damping="0.01"/>
-                      <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="follower"/>
+                      <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="follower"/>
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="tongue"/>
                       <geom pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.88 0.88 0.88 1" mesh="pad"/>
                     </body>

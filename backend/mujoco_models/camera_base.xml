@@ -10,8 +10,8 @@
   <worldbody>
     <body
       name="camera_base"
-      pos="-0.1 0.68 0.4"
-      euler="3.141592653589793 0 0"
+      pos="-0.1 -0.4 1.18"
+      euler="-1.5707963267948966 0 0"
     >
       <geom
         name="camera_base_geom"

@@ -10,8 +10,8 @@
   <worldbody>
     <body
       name="battery_pack"
-      pos="0.1 1.085 0.5"
-      euler="0 1.5707963267948966 0"
+      pos="0.1 -0.5 1.585"
+      euler="0 1.5707963267948966 1.5707963267948966"
     >
       <geom
         name="battery_pack_geom"
