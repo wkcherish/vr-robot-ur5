@@ -1,0 +1,32 @@
+<mujoco model="embossed_digital_twin_environment">
+  <compiler angle="radian" autolimits="true" />
+  <option timestep="0.002" gravity="0 0 0" integrator="implicitfast" />
+
+  <visual>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.55 0.55 0.55" specular="0.2 0.2 0.2" />
+    <rgba haze="0.97 0.97 0.98 1" />
+  </visual>
+
+  <asset>
+    <texture
+      name="ground_tex"
+      type="2d"
+      builtin="checker"
+      width="512"
+      height="512"
+      rgb1="0.20 0.30 0.40"
+      rgb2="0.14 0.24 0.33"
+    />
+    <material name="ground_mat" texture="ground_tex" texrepeat="10 10" />
+  </asset>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 0.05" material="ground_mat" />
+  </worldbody>
+
+  <include file="ur5.xml" />
+  <include file="rack.xml" />
+  <include file="battery_pack.xml" />
+  <include file="camera_base.xml" />
+  <include file="camera.xml" />
+</mujoco>

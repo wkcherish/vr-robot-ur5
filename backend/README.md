@@ -1,10 +1,11 @@
-# Backend (Milestone B)
+# Backend (Milestone C)
 
-本目录是里程碑 B 的后端仿真骨架，目标是先打通可运行服务与协议链路。
+本目录已从里程碑 B 的骨架升级到里程碑 C 的 MuJoCo 场景落地版本。
 
 ## 当前能力
 
-- FastAPI 服务入口：`backend/main.py`
+- FastAPI 服务入口：`backend/api_app.py`
+- 统一启动入口（后端 + 可选 MuJoCo viewer）：`backend/main.py`
 - 协议模型：`backend/schemas.py`
 - 仿真核心：`backend/sim/simulation.py`
 - 接口：
@@ -16,10 +17,27 @@
 - 周期状态广播：`state_broadcast`（默认 20Hz）
 - 兼容接口：`GET /data/`
 
+## 里程碑 C 新增内容
+
+- MuJoCo 场景文件：
+  - `backend/mujoco_models/environment.xml`
+  - `backend/mujoco_models/ur5.xml`
+  - `backend/mujoco_models/rack.xml`
+  - `backend/mujoco_models/battery_pack.xml`
+  - `backend/mujoco_models/camera_base.xml`
+  - `backend/mujoco_models/camera.xml`
+- 场景 mesh 目录：
+  - `backend/mujoco_models/meshes/`
+- `SimulationCore` 默认加载 `environment.xml`，并从 MuJoCo 实时回传：
+  - `qpos` / `qvel`
+  - `ee_pose`
+  - `gripper_opening` / `gripper_joints`
+  - `objects`
+
 说明：
 
-- 目前仿真核心为里程碑 B 的可运行骨架，会读取 `shared/scene_manifest.json`。
-- MuJoCo 场景与完整机器人模型落地在里程碑 C 继续实现。
+- 后端仍以 `shared/scene_manifest.json` 作为场景位姿与 home 基线来源。
+- `battery_pack` 网格已在后端模型目录做降采样，以满足 MuJoCo 面片数量限制。
 
 ## 安装依赖
 
@@ -36,10 +54,31 @@ pip install -r backend/requirements.txt
 在仓库根目录执行：
 
 ```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn backend.api_app:app --reload --host 0.0.0.0 --port 8000
 ```
 
 如果你使用环境变量，可参考 `backend/.env.example`。
+
+## 打开 MuJoCo 可视化界面
+
+在仓库根目录执行：
+
+```bash
+python backend/main.py
+```
+
+行为说明：
+
+- 脚本会先启动 FastAPI 后端（等价于开发命令 `uvicorn backend.api_app:app --app-dir .. --reload --host 0.0.0.0 --port 8000`）。
+- 后端健康检查通过后，终端会提示 `yes/no`：是否加载 MuJoCo 仿真窗口。
+- 后端会持续运行，按 `Ctrl+C` 停止。
+
+可选参数：
+
+```bash
+python backend/main.py --open-viewer ask --model backend/mujoco_models/environment.xml --fps 60
+python backend/main.py --open-viewer no --no-reload
+```
 
 ## WebSocket 协议（首版）
 
