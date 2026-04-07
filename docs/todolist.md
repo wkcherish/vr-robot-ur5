@@ -53,19 +53,23 @@
 
 ### ToDo
 
-- [ ] `P0` 确认当前工作分支、目录命名规则和文档维护方式。
-- [ ] `P0` 确认后端主技术栈：`FastAPI + Python MuJoCo`。
-- [ ] `P0` 确认第一版任务名：`battery_transfer_v1`。
-- [ ] `P0` 确认第一版对象范围：`UR5 + 完整 Robotiq 手抓 + battery_pack + rack + camera_base + camera`。
-- [ ] `P0` 确认 battery 第一版先按“电池与电池箱整体刚体”处理。
-- [ ] `P0` 确认默认“连接机器人”是连接仿真后端，而不是实体机器人。
-- [ ] `P0` 明确后端 MuJoCo 手抓不得简化为单自由度抽象夹爪。
-- [ ] `P1` 确认后续 RL 框架选型，例如 `stable-baselines3` 或其他方案。
+- [x] `P0` 确认当前工作分支、目录命名规则和文档维护方式。
+- [x] `P0` 确认后端主技术栈：`FastAPI + Python MuJoCo`。
+- [x] `P0` 确认第一版任务名：`battery_transfer_v1`。
+- [x] `P0` 确认第一版对象范围：`UR5 + 完整 Robotiq 手抓 + battery_pack + rack + camera_base + camera`。
+- [x] `P0` 确认 battery 第一版先按“电池与电池箱整体刚体”处理。
+- [x] `P0` 确认默认“连接机器人”是连接仿真后端，而不是实体机器人。
+- [x] `P0` 明确后端 MuJoCo 手抓不得简化为单自由度抽象夹爪。
+- [x] `P1` 确认后续 RL 框架选型，例如 `stable-baselines3` 或其他方案。
 
 ### 产出
 
-- [ ] `P0` 一份稳定的项目范围说明。
-- [ ] `P0` 一份第一版成功标准清单。
+- [x] `P0` 一份稳定的项目范围说明。
+- [x] `P0` 一份第一版成功标准清单。
+
+里程碑 0 产出文件（`2026-04-07`）：
+
+- `docs/m0_scope_and_success.md`
 
 ---
 
@@ -77,47 +81,52 @@
 
 ### A1. 共享场景单一数据源
 
-- [ ] `P0` 新建 `shared/scene_manifest.json` 或等价共享配置。
-- [ ] `P0` 在共享清单中为每个对象定义：名称、资源路径、位置、旋转、缩放、备注。
-- [ ] `P0` 在共享清单中记录 UR5 的基座补偿信息。
-- [ ] `P0` 在共享清单中记录机器人 home 姿态。
-- [ ] `P0` 在共享清单中记录 battery_pack、rack、camera_base、camera 的初始位姿。
-- [ ] `P1` 在共享清单中加入版本号与更新时间。
-- [ ] `P0` 明确前端后续必须读取这份清单，而不是继续手写场景位姿。
-- [ ] `P0` 明确后端/MuJoCo 侧也必须读取或至少由这份清单生成场景配置。
+- [x] `P0` 新建 `shared/scene_manifest.json` 或等价共享配置。
+- [x] `P0` 在共享清单中为每个对象定义：名称、资源路径、位置、旋转、缩放、备注。
+- [x] `P0` 在共享清单中记录 UR5 的基座补偿信息。
+- [x] `P0` 在共享清单中记录机器人 home 姿态。
+- [x] `P0` 在共享清单中记录 battery_pack、rack、camera_base、camera 的初始位姿。
+- [x] `P1` 在共享清单中加入版本号与更新时间。
+- [x] `P0` 明确前端后续必须读取这份清单，而不是继续手写场景位姿。
+- [x] `P0` 明确后端/MuJoCo 侧也必须读取或至少由这份清单生成场景配置。
 
 ### A2. 坐标系与零位统一
 
-- [ ] `P0` 明确 Three.js 世界坐标系与 MuJoCo 世界坐标系的差异。
-- [ ] `P0` 明确 `robot.rotation.x = -PI/2` 的补偿意义。
-- [ ] `P0` 明确位置单位统一为米、角度统一为弧度。
-- [ ] `P0` 明确 UR5 `base`、`base_link`、`tool0` 在前后端的对应关系。
-- [ ] `P0` 明确 reset 后的 home 姿态定义。
-- [ ] `P1` 形成一份坐标和零位对照表。
+- [x] `P0` 明确 Three.js 世界坐标系与 MuJoCo 世界坐标系的差异。
+- [x] `P0` 明确 `robot.rotation.x = -PI/2` 的补偿意义。
+- [x] `P0` 明确位置单位统一为米、角度统一为弧度。
+- [x] `P0` 明确 UR5 `base`、`base_link`、`tool0` 在前后端的对应关系。
+- [x] `P0` 明确 reset 后的 home 姿态定义。
+- [x] `P1` 形成一份坐标和零位对照表。
 
 ### A3. 手臂与完整手抓映射
 
-- [ ] `P0` 固定 UR5 手臂主控制顺序：`shoulder_pan_joint`、`shoulder_lift_joint`、`elbow_joint`、`wrist_1_joint`、`wrist_2_joint`、`wrist_3_joint`。
-- [ ] `P0` 梳理前端旧关节名与 UR5 真实关节名映射。
-- [ ] `P0` 梳理完整 Robotiq 关键关节链。
-- [ ] `P0` 明确哪些夹爪关节是主驱动，哪些是联动/从动。
-- [ ] `P0` 定义前端“高层开合量”到后端完整夹爪关节状态的映射规则。
-- [ ] `P0` 定义后端完整夹爪状态回传到前端显示层的映射规则。
-- [ ] `P1` 明确夹爪限位、联动、对称性和安全边界。
+- [x] `P0` 固定 UR5 手臂主控制顺序：`shoulder_pan_joint`、`shoulder_lift_joint`、`elbow_joint`、`wrist_1_joint`、`wrist_2_joint`、`wrist_3_joint`。
+- [x] `P0` 梳理前端旧关节名与 UR5 真实关节名映射。
+- [x] `P0` 梳理完整 Robotiq 关键关节链。
+- [x] `P0` 明确哪些夹爪关节是主驱动，哪些是联动/从动。
+- [x] `P0` 定义前端“高层开合量”到后端完整夹爪关节状态的映射规则。
+- [x] `P0` 定义后端完整夹爪状态回传到前端显示层的映射规则。
+- [x] `P1` 明确夹爪限位、联动、对称性和安全边界。
 
 ### A4. 通信协议冻结
 
-- [ ] `P0` 冻结 WebSocket 消息类型：`get_state`、`control`、`reset`、`execute_task`、`stop_task`。
-- [ ] `P0` 冻结状态广播字段：`qpos`、`qvel`、`ee_pose`、`gripper_opening`、`gripper_joints`、`objects`、`task_state`、`source`。
-- [ ] `P0` 冻结 HTTP 接口：`/health/`、`/sim/state/`、`/sim/step/`、`/sim/reset/`、`/sim/camera.jpg`。
-- [ ] `P0` 定义时间戳格式、更新频率和错误返回格式。
-- [ ] `P1` 定义重试、超时、任务停止和异常中断消息。
+- [x] `P0` 冻结 WebSocket 消息类型：`get_state`、`control`、`reset`、`execute_task`、`stop_task`。
+- [x] `P0` 冻结状态广播字段：`qpos`、`qvel`、`ee_pose`、`gripper_opening`、`gripper_joints`、`objects`、`task_state`、`source`。
+- [x] `P0` 冻结 HTTP 接口：`/health/`、`/sim/state/`、`/sim/step/`、`/sim/reset/`、`/sim/camera.jpg`。
+- [x] `P0` 定义时间戳格式、更新频率和错误返回格式。
+- [x] `P1` 定义重试、超时、任务停止和异常中断消息。
 
 ### 里程碑 A 验收
 
-- [ ] `P0` 形成共享场景清单。
-- [ ] `P0` 形成坐标/关节/夹爪映射文档。
-- [ ] `P0` 形成稳定协议，不再随意改字段。
+- [x] `P0` 形成共享场景清单。
+- [x] `P0` 形成坐标/关节/夹爪映射文档。
+- [x] `P0` 形成稳定协议，不再随意改字段。
+
+里程碑 A 产出文件（`2026-04-07`）：
+
+- `shared/scene_manifest.json`
+- `docs/mA_alignment_and_protocol.md`
 
 ---
 
@@ -453,8 +462,8 @@
 ## 当前建议最先做的 8 项
 
 - [ ] `P0` 创建 `backend/` 基础目录和 FastAPI 入口。
-- [ ] `P0` 创建 `shared/scene_manifest.json`，把前端当前场景参数固化下来。
-- [ ] `P0` 明确前端和后端都要使用同一份场景清单。
+- [x] `P0` 创建 `shared/scene_manifest.json`，把前端当前场景参数固化下来。
+- [x] `P0` 明确前端和后端都要使用同一份场景清单。
 - [ ] `P0` 先在 MuJoCo 中搭起 `UR5 + 完整 Robotiq 手抓 + rack + battery_pack` 静态场景。
 - [ ] `P0` 打通 `/sim/ws` 和前端 `websocketManager`。
 - [ ] `P0` 实现前端对 `gripper_command`、`gripper_joints`、`objects` 的接收与发送改造。
