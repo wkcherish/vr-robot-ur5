@@ -463,7 +463,7 @@ shared/
 
 产出：
 
-- `backend/main.py`
+- `backend/api_app.py`（当前 `backend/main.py` 为统一启动入口）
 - `backend/sim/simulation.py`
 - `/health/`
 - `/sim/state/`

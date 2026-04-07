@@ -1,266 +1,254 @@
 from __future__ import annotations
 
-import asyncio
-import math
-import os
+import argparse
+import json
+import subprocess
+import sys
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+import mujoco
+import mujoco.viewer
 
-from backend.schemas import CommandResult, ErrorResponse, HealthResponse, ResetRequest, StepRequest, WSMessage
-from backend.sim import SimulationCore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
-SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "20"))
-STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
-
-simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)
-
-
-class ConnectionManager:
-    def __init__(self) -> None:
-        self._connections: set[WebSocket] = set()
-
-    @property
-    def active_count(self) -> int:
-        return len(self._connections)
-
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self._connections.add(websocket)
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        self._connections.discard(websocket)
-
-    async def send(self, websocket: WebSocket, payload: dict[str, Any]) -> None:
-        await websocket.send_json(payload)
-
-    async def broadcast(self, payload: dict[str, Any]) -> None:
-        if not self._connections:
-            return
-
-        stale_connections: list[WebSocket] = []
-        for websocket in list(self._connections):
-            try:
-                await websocket.send_json(payload)
-            except Exception:
-                stale_connections.append(websocket)
-
-        for websocket in stale_connections:
-            self.disconnect(websocket)
+GRIPPER_DRIVER_LIMIT = 0.87
+GRIPPER_JOINT_NAMES = [
+    "left_driver_joint",
+    "right_driver_joint",
+    "left_spring_link_joint",
+    "right_spring_link_joint",
+    "left_follower_joint",
+    "right_follower_joint",
+]
 
 
-manager = ConnectionManager()
+def _resolve_path(raw: str | None, default_path: Path) -> Path:
+    if raw is None:
+        return default_path
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (REPO_ROOT / candidate).resolve()
 
 
-def _error_payload(code: str, message: str, detail: str | None = None) -> dict[str, Any]:
-    body = ErrorResponse(code=code, message=message, detail=detail, timestamp=time.time())
-    return {"type": "error", "data": body.model_dump()}
+def _read_home_pose(manifest_path: Path) -> tuple[list[str], list[float]]:
+    if not manifest_path.exists():
+        return [], []
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    home = manifest.get("robot", {}).get("home_pose", {})
+    names = [str(x) for x in home.get("joint_order", [])]
+    qpos = [float(x) for x in home.get("qpos_arm", [])]
+    return names, qpos
 
 
-async def _state_broadcast_loop() -> None:
-    while True:
-        if manager.active_count > 0:
-            state = await simulation.get_state()
-            await manager.broadcast({"type": "state_broadcast", "data": state})
-        await asyncio.sleep(STATE_BROADCAST_INTERVAL)
+def _apply_home_pose(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    joint_names: list[str],
+    arm_qpos: list[float],
+) -> None:
+    data.qpos[:] = 0.0
+    data.qvel[:] = 0.0
+
+    for idx, name in enumerate(joint_names):
+        if idx >= len(arm_qpos):
+            break
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if joint_id < 0:
+            continue
+        qpos_addr = int(model.jnt_qposadr[joint_id])
+        data.qpos[qpos_addr] = arm_qpos[idx]
+
+    # Keep gripper in fully open baseline.
+    driver = 0.0 * GRIPPER_DRIVER_LIMIT
+    gripper_values = {
+        "left_driver_joint": driver,
+        "right_driver_joint": driver,
+        "left_spring_link_joint": driver,
+        "right_spring_link_joint": driver,
+        "left_follower_joint": -driver,
+        "right_follower_joint": -driver,
+    }
+    for name in GRIPPER_JOINT_NAMES:
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if joint_id < 0:
+            continue
+        qpos_addr = int(model.jnt_qposadr[joint_id])
+        data.qpos[qpos_addr] = gripper_values[name]
+
+    mujoco.mj_forward(model, data)
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    await simulation.start()
-    broadcast_task = asyncio.create_task(_state_broadcast_loop(), name="state-broadcast-loop")
-    try:
-        yield
-    finally:
-        broadcast_task.cancel()
+def run_viewer(model_path: Path, manifest_path: Path, fps: float) -> None:
+    model = mujoco.MjModel.from_xml_path(str(model_path))
+    data = mujoco.MjData(model)
+
+    names, qpos = _read_home_pose(manifest_path)
+    _apply_home_pose(model, data, names, qpos)
+
+    dt = max(1e-4, 1.0 / max(1.0, fps))
+    print(f"[viewer] loading: {model_path}")
+    print("[viewer] controls: left-drag rotate, right-drag pan, wheel zoom")
+    print("[viewer] close the window to return to backend console")
+
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+        while viewer.is_running():
+            start = time.perf_counter()
+            mujoco.mj_step(model, data)
+            viewer.sync()
+            sleep_time = dt - (time.perf_counter() - start)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+
+def _start_backend(host: str, port: int, reload_enabled: bool) -> subprocess.Popen[bytes]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "backend.api_app:app",
+        "--app-dir",
+        "..",
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+    if reload_enabled:
+        cmd.append("--reload")
+
+    backend_cwd = REPO_ROOT / "backend"
+    print("[backend] starting:", " ".join(cmd))
+    return subprocess.Popen(cmd, cwd=str(backend_cwd))
+
+
+def _health_check_host(host: str) -> str:
+    if host in {"0.0.0.0", "::"}:
+        return "127.0.0.1"
+    return host
+
+
+def _wait_backend_ready(process: subprocess.Popen[bytes], host: str, port: int, timeout_s: float) -> None:
+    check_host = _health_check_host(host)
+    health_url = f"http://{check_host}:{port}/health/"
+    deadline = time.time() + timeout_s
+
+    while time.time() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"Backend exited early with code {process.returncode}.")
         try:
-            await broadcast_task
-        except asyncio.CancelledError:
+            with urlopen(health_url, timeout=1.0) as resp:
+                if 200 <= int(resp.status) < 300:
+                    print(f"[backend] ready: {health_url}")
+                    return
+        except URLError:
             pass
-        await simulation.stop()
+        time.sleep(0.4)
+
+    raise TimeoutError(f"Backend health check timed out after {timeout_s:.1f}s: {health_url}")
 
 
-app = FastAPI(
-    title="Embossed Digital Twin Backend",
-    version="0.1.0-milestone-b",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def _ask_yes_no(prompt: str) -> bool:
+    raw = input(prompt).strip().lower()
+    return raw == "yes"
 
 
-@app.get("/health/", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    return HealthResponse(
-        status="healthy",
-        service="embossed-digital-twin-backend",
-        timestamp=time.time(),
-        model_backend=simulation.model_backend,
-        scene_manifest=simulation.scene_manifest_path,
+def _stop_backend(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=8.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5.0)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Start FastAPI backend and optionally open MuJoCo desktop viewer."
     )
-
-
-@app.get("/sim/state/")
-async def get_sim_state() -> dict[str, Any]:
-    return await simulation.get_state()
-
-
-@app.post("/sim/step/", response_model=CommandResult)
-async def post_sim_step(request: StepRequest) -> CommandResult:
-    try:
-        state = await simulation.enqueue_step(request)
-    except Exception as exc:
-        return CommandResult(status="error", message=f"step failed: {exc}")
-
-    return CommandResult(status="success", message="step executed", state=state)
-
-
-@app.post("/sim/reset/", response_model=CommandResult)
-async def post_sim_reset(request: ResetRequest) -> CommandResult:
-    try:
-        state = await simulation.reset(model_path=request.model_path)
-    except Exception as exc:
-        return CommandResult(status="error", message=f"reset failed: {exc}")
-
-    return CommandResult(status="success", message="simulation reset", state=state)
-
-
-@app.get("/data/")
-async def legacy_data() -> dict[str, str]:
-    state = await simulation.get_state()
-    qpos = state.get("qpos", [])
-    deg = [math.degrees(v) for v in qpos]
-    serialized = " ".join(f"{value:.3f}" for value in deg)
-    return {"value": serialized}
-
-
-@app.websocket("/sim/ws")
-async def websocket_sim(websocket: WebSocket) -> None:
-    await manager.connect(websocket)
-    await manager.send(
-        websocket,
-        {
-            "type": "welcome",
-            "data": {
-                "message": "Connected to simulation backend",
-                "timestamp": time.time(),
-            },
-        },
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Path to MuJoCo XML model. Default: backend/mujoco_models/environment.xml",
     )
-    await manager.send(websocket, {"type": "state_update", "data": await simulation.get_state()})
-
-    try:
-        while True:
-            raw_message = await websocket.receive_json()
-            payload = await _handle_ws_message(raw_message)
-            if payload is not None:
-                await manager.send(websocket, payload)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception:
-        manager.disconnect(websocket)
-
-
-@app.exception_handler(ValidationError)
-async def validation_exception_handler(_, exc: ValidationError):
-    return JSONResponse(
-        status_code=422,
-        content=ErrorResponse(
-            code="VALIDATION_ERROR",
-            message="Request validation failed",
-            detail=str(exc),
-            timestamp=time.time(),
-        ).model_dump(),
+    parser.add_argument(
+        "--manifest",
+        type=str,
+        default=None,
+        help="Path to scene manifest. Default: shared/scene_manifest.json",
     )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=60.0,
+        help="Viewer stepping FPS (default: 60).",
+    )
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Backend host (default: 0.0.0.0).")
+    parser.add_argument("--port", type=int, default=8000, help="Backend port (default: 8000).")
+    parser.add_argument(
+        "--backend-timeout",
+        type=float,
+        default=30.0,
+        help="Seconds to wait for backend /health/ ready (default: 30).",
+    )
+    parser.add_argument(
+        "--open-viewer",
+        choices=["ask", "yes", "no"],
+        default="ask",
+        help="Open MuJoCo viewer after backend starts: ask|yes|no (default: ask).",
+    )
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Disable uvicorn --reload (enabled by default to match current dev command).",
+    )
+    args = parser.parse_args()
 
+    model_path = _resolve_path(args.model, DEFAULT_MODEL)
+    manifest_path = _resolve_path(args.manifest, DEFAULT_MANIFEST)
 
-async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
+    backend_process: subprocess.Popen[bytes] | None = None
     try:
-        message = WSMessage.model_validate(raw_message)
-    except ValidationError as exc:
-        return _error_payload("INVALID_MESSAGE", "Malformed websocket message", str(exc))
+        backend_process = _start_backend(host=args.host, port=args.port, reload_enabled=not args.no_reload)
+        _wait_backend_ready(
+            process=backend_process,
+            host=args.host,
+            port=args.port,
+            timeout_s=max(3.0, args.backend_timeout),
+        )
 
-    message_type = message.type
-    message_data = message.data or {}
+        if args.open_viewer == "yes":
+            should_open_viewer = True
+        elif args.open_viewer == "no":
+            should_open_viewer = False
+        else:
+            should_open_viewer = _ask_yes_no(
+                "是否加载 MuJoCo 仿真环境? 输入 yes 才加载，其他输入均不加载: ",
+            )
 
-    if message_type == "ping":
-        return {"type": "pong", "data": {"timestamp": time.time()}}
+        if should_open_viewer:
+            if not model_path.exists():
+                raise FileNotFoundError(f"Model file not found: {model_path}")
+            run_viewer(model_path=model_path, manifest_path=manifest_path, fps=args.fps)
 
-    if message_type == "get_state":
-        state = await simulation.get_state()
-        return {"type": "state_update", "data": state}
+        print("[backend] running. Press Ctrl+C to stop backend.")
+        while backend_process.poll() is None:
+            time.sleep(0.8)
 
-    if message_type == "control":
-        try:
-            request = StepRequest.model_validate(message_data)
-            request.source = "manual"
-            state = await simulation.enqueue_step(request)
-            return {
-                "type": "control_result",
-                "data": {
-                    "status": "success",
-                    "message": "control command executed",
-                    "state": state,
-                },
-            }
-        except ValidationError as exc:
-            return _error_payload("CONTROL_VALIDATION_ERROR", "Invalid control payload", str(exc))
-        except Exception as exc:
-            return _error_payload("CONTROL_EXECUTION_ERROR", "Control command failed", str(exc))
+        raise RuntimeError(f"Backend exited unexpectedly with code {backend_process.returncode}.")
+    except KeyboardInterrupt:
+        print("\n[launcher] stopping backend...")
+    finally:
+        _stop_backend(backend_process)
 
-    if message_type == "reset":
-        try:
-            request = ResetRequest.model_validate(message_data)
-            state = await simulation.reset(model_path=request.model_path)
-            return {
-                "type": "reset_result",
-                "data": {
-                    "status": "success",
-                    "message": "simulation reset",
-                    "state": state,
-                },
-            }
-        except ValidationError as exc:
-            return _error_payload("RESET_VALIDATION_ERROR", "Invalid reset payload", str(exc))
-        except Exception as exc:
-            return _error_payload("RESET_EXECUTION_ERROR", "Reset failed", str(exc))
 
-    if message_type == "execute_task":
-        task_name = str(message_data.get("task_name", "battery_transfer_v1"))
-        state = await simulation.start_task(task_name)
-        return {
-            "type": "task_result",
-            "data": {
-                "status": "accepted",
-                "message": f"task '{task_name}' marked as running (stub runtime)",
-                "task_name": task_name,
-                "state": state,
-            },
-        }
-
-    if message_type == "stop_task":
-        state = await simulation.stop_task()
-        return {
-            "type": "task_result",
-            "data": {
-                "status": "stopped",
-                "message": "task stopped",
-                "state": state,
-            },
-        }
-
-    return _error_payload("UNKNOWN_MESSAGE_TYPE", f"Unsupported message type: {message_type}")
+if __name__ == "__main__":
+    main()

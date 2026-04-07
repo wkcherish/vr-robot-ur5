@@ -139,7 +139,7 @@
 ### B1. 后端工程初始化
 
 - [x] `P0` 创建 `backend/` 目录。
-- [x] `P0` 创建 `backend/main.py` 作为 FastAPI 入口。
+- [x] `P0` 创建 FastAPI 入口（当前为 `backend/api_app.py`，`backend/main.py` 作为统一启动器）。
 - [x] `P0` 创建 `backend/schemas.py`。
 - [x] `P0` 创建 `backend/sim/` 模块目录。
 - [x] `P0` 创建 `backend/tasks/` 模块目录。
@@ -184,36 +184,36 @@
 
 ### C1. UR5 与完整 Robotiq 手抓
 
-- [ ] `P0` 创建 `backend/mujoco_models/ur5.xml`。
-- [ ] `P0` 在 MuJoCo 中复现 UR5 六轴关节。
-- [ ] `P0` 在 MuJoCo 中复现完整 Robotiq 手抓，不能简化。
-- [ ] `P0` 导入所需 mesh。
-- [ ] `P0` 配置关节限位、质量、惯量、接触 geom。
-- [ ] `P0` 建立夹爪主驱动与联动关系。
-- [ ] `P0` 建立高层夹爪命令到完整夹爪关节的映射。
+- [x] `P0` 创建 `backend/mujoco_models/ur5.xml`。
+- [x] `P0` 在 MuJoCo 中复现 UR5 六轴关节。
+- [x] `P0` 在 MuJoCo 中复现完整 Robotiq 手抓，不能简化。
+- [x] `P0` 导入所需 mesh。
+- [x] `P0` 配置关节限位、质量、惯量、接触 geom。
+- [x] `P0` 建立夹爪主驱动与联动关系。
+- [x] `P0` 建立高层夹爪命令到完整夹爪关节的映射。
 - [ ] `P1` 优化夹爪接触稳定性、摩擦、阻尼和夹持行为。
 
 ### C2. 场景对象
 
-- [ ] `P0` 创建 `battery_pack.xml`。
-- [ ] `P0` 创建 `rack.xml`。
-- [ ] `P0` 创建 `camera_base.xml`。
-- [ ] `P1` 评估 `camera.xml` 是否需要在 MuJoCo 中作为独立对象保留。
-- [ ] `P0` 整理所有 MuJoCo 需要的 mesh 到 `backend/mujoco_models/meshes/`。
+- [x] `P0` 创建 `battery_pack.xml`。
+- [x] `P0` 创建 `rack.xml`。
+- [x] `P0` 创建 `camera_base.xml`。
+- [x] `P1` 评估 `camera.xml` 是否需要在 MuJoCo 中作为独立对象保留（当前以独立几何标记保留）。
+- [x] `P0` 整理所有 MuJoCo 需要的 mesh 到 `backend/mujoco_models/meshes/`。
 
 ### C3. 总场景集成
 
-- [ ] `P0` 创建 `environment.xml`。
-- [ ] `P0` 按共享清单放置 UR5、rack、battery_pack、camera_base、camera。
-- [ ] `P0` 对齐机器人基座补偿和 home 姿态。
-- [ ] `P0` 验证 MuJoCo reset 后与前端显示一致。
+- [x] `P0` 创建 `environment.xml`。
+- [x] `P0` 按共享清单放置 UR5、rack、battery_pack、camera_base、camera。
+- [x] `P0` 对齐机器人基座补偿和 home 姿态。
+- [x] `P0` 验证 MuJoCo reset 后与前端显示一致。
 - [ ] `P1` 增加对齐验证脚本、截图或对照日志。
 
 ### 里程碑 C 验收
 
-- [ ] `P0` MuJoCo 能成功加载总场景。
-- [ ] `P0` 机器人与主要对象无明显初始错位。
-- [ ] `P0` 完整手抓结构存在且可控。
+- [x] `P0` MuJoCo 能成功加载总场景。
+- [x] `P0` 机器人与主要对象无明显初始错位。
+- [x] `P0` 完整手抓结构存在且可控。
 
 ---
 
@@ -461,11 +461,11 @@
 
 ## 当前建议最先做的 8 项
 
-- [ ] `P0` 创建 `backend/` 基础目录和 FastAPI 入口。
+- [x] `P0` 创建 `backend/` 基础目录和 FastAPI 入口。
 - [x] `P0` 创建 `shared/scene_manifest.json`，把前端当前场景参数固化下来。
 - [x] `P0` 明确前端和后端都要使用同一份场景清单。
-- [ ] `P0` 先在 MuJoCo 中搭起 `UR5 + 完整 Robotiq 手抓 + rack + battery_pack` 静态场景。
-- [ ] `P0` 打通 `/sim/ws` 和前端 `websocketManager`。
+- [x] `P0` 先在 MuJoCo 中搭起 `UR5 + 完整 Robotiq 手抓 + rack + battery_pack` 静态场景。
+- [x] `P0` 打通 `/sim/ws` 和前端 `websocketManager`。
 - [ ] `P0` 实现前端对 `gripper_command`、`gripper_joints`、`objects` 的接收与发送改造。
 - [ ] `P0` 实现 `battery_pack` 的抓取判定与附着/释放机制。
 - [ ] `P0` 先完成脚本化 `battery_transfer_v1`，再进入 RL。
