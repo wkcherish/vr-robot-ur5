@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -26,10 +26,21 @@ DEFAULT_ARM_JOINT_NAMES = [
     "wrist_2_joint",
     "wrist_3_joint",
 ]
+DEFAULT_GRIPPER_JOINT_NAMES = [
+    "left_driver_joint",
+    "right_driver_joint",
+    "left_spring_link_joint",
+    "right_spring_link_joint",
+    "left_follower_joint",
+    "right_follower_joint",
+]
 
 DEFAULT_HOME_QPOS = [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0]
 DEFAULT_DT = 0.02
 GRIPPER_DRIVER_LIMIT = 0.87
+TOOL_FRAME_CANDIDATES = ["tool0", "wrist_3_link"]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
 
 
 @dataclass
@@ -67,9 +78,18 @@ class SimulationCore:
 
         self._model_backend = "mujoco" if _mujoco is not None else "stub"
         self._loaded_model_path: str | None = None
+        self._model_load_error: str | None = None
+        self._default_model_path = DEFAULT_MUJOCO_MODEL_PATH
         self._arm_joint_names = list(DEFAULT_ARM_JOINT_NAMES)
         self._home_arm_qpos = list(DEFAULT_HOME_QPOS)
         self._scene_objects_template: dict[str, dict[str, Any]] = {}
+
+        self._mj_model: Any | None = None
+        self._mj_data: Any | None = None
+        self._arm_joint_qpos_addr: dict[str, int] = {}
+        self._gripper_joint_qpos_addr: dict[str, int] = {}
+        self._object_body_ids: dict[str, int] = {}
+        self._tool_body_id: int | None = None
 
         self._arm_qpos = list(DEFAULT_HOME_QPOS)
         self._arm_qvel = [0.0 for _ in self._arm_qpos]
@@ -210,9 +230,89 @@ class SimulationCore:
                 "attached_to_gripper": False,
             }
 
+    def _resolve_model_path(self, model_path: str | None) -> Path:
+        if model_path is None:
+            return self._default_model_path
+        requested = Path(model_path).expanduser()
+        if requested.is_absolute():
+            return requested
+        return (REPO_ROOT / requested).resolve()
+
+    def _set_stub_mode(self) -> None:
+        self._model_backend = "stub"
+        self._mj_model = None
+        self._mj_data = None
+        self._arm_joint_qpos_addr = {}
+        self._gripper_joint_qpos_addr = {}
+        self._object_body_ids = {}
+        self._tool_body_id = None
+        self._dt = DEFAULT_DT
+
+    def _using_mujoco_model(self) -> bool:
+        return self._model_backend == "mujoco" and self._mj_model is not None and self._mj_data is not None
+
     def _load_model(self, model_path: str | None) -> None:
-        # Milestone B keeps a model-loading seam without requiring MuJoCo assets yet.
-        self._loaded_model_path = model_path or str(self._manifest_path)
+        explicit_request = model_path is not None
+        resolved_path = self._resolve_model_path(model_path)
+        self._loaded_model_path = str(resolved_path)
+        self._model_load_error = None
+
+        if _mujoco is None:
+            self._set_stub_mode()
+            if explicit_request:
+                raise RuntimeError("MuJoCo Python package is not available in this environment.")
+            return
+
+        if not resolved_path.exists():
+            self._set_stub_mode()
+            if explicit_request:
+                raise FileNotFoundError(f"MuJoCo model not found: {resolved_path}")
+            return
+
+        try:
+            model = _mujoco.MjModel.from_xml_path(str(resolved_path))
+            data = _mujoco.MjData(model)
+        except Exception as exc:
+            self._set_stub_mode()
+            self._model_load_error = str(exc)
+            if explicit_request:
+                raise RuntimeError(f"Failed to load MuJoCo model '{resolved_path}': {exc}") from exc
+            return
+
+        self._mj_model = model
+        self._mj_data = data
+        self._model_backend = "mujoco"
+        self._dt = float(model.opt.timestep) if float(model.opt.timestep) > 0.0 else DEFAULT_DT
+        self._cache_mujoco_handles()
+
+    def _cache_mujoco_handles(self) -> None:
+        if _mujoco is None or self._mj_model is None:
+            return
+
+        model = self._mj_model
+        self._arm_joint_qpos_addr = {}
+        for name in self._arm_joint_names:
+            joint_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id >= 0:
+                self._arm_joint_qpos_addr[name] = int(model.jnt_qposadr[joint_id])
+
+        self._gripper_joint_qpos_addr = {}
+        for name in DEFAULT_GRIPPER_JOINT_NAMES:
+            joint_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id >= 0:
+                self._gripper_joint_qpos_addr[name] = int(model.jnt_qposadr[joint_id])
+
+        self._object_body_ids = {}
+        for obj_id in self._scene_objects_template:
+            body_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_BODY, obj_id)
+            self._object_body_ids[obj_id] = int(body_id) if body_id >= 0 else -1
+
+        self._tool_body_id = None
+        for candidate in TOOL_FRAME_CANDIDATES:
+            body_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_BODY, candidate)
+            if body_id >= 0:
+                self._tool_body_id = int(body_id)
+                break
 
     def _reset_state_locked(self) -> None:
         self._arm_qpos = list(self._home_arm_qpos)
@@ -220,7 +320,24 @@ class SimulationCore:
         self._gripper_opening = 0.0
         self._gripper_velocity = 0.0
         self._gripper_joints = self._map_gripper_joints(self._gripper_opening)
-        self._objects_state = deepcopy(self._scene_objects_template)
+
+        if self._using_mujoco_model():
+            assert _mujoco is not None
+            assert self._mj_model is not None
+            assert self._mj_data is not None
+            self._mj_data.qpos[:] = 0.0
+            self._mj_data.qvel[:] = 0.0
+            for idx, name in enumerate(self._arm_joint_names):
+                qpos_addr = self._arm_joint_qpos_addr.get(name)
+                if qpos_addr is not None:
+                    self._mj_data.qpos[qpos_addr] = float(self._home_arm_qpos[idx])
+            for name, value in self._gripper_joints.items():
+                qpos_addr = self._gripper_joint_qpos_addr.get(name)
+                if qpos_addr is not None:
+                    self._mj_data.qpos[qpos_addr] = float(value)
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+        self._objects_state = self._collect_objects_state_locked()
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
         self._sim_time = 0.0
@@ -235,10 +352,24 @@ class SimulationCore:
             return
 
         current = list(self._arm_qpos)
+        if self._using_mujoco_model() and self._mj_data is not None:
+            current = []
+            for name in self._arm_joint_names:
+                qpos_addr = self._arm_joint_qpos_addr.get(name)
+                current.append(float(self._mj_data.qpos[qpos_addr]) if qpos_addr is not None else 0.0)
+
         target = [float(v) for v in target_positions]
         duration = max(self._dt, n_steps * self._dt)
         self._arm_qvel = [(target[i] - current[i]) / duration for i in range(len(target))]
-        self._arm_qpos = target
+        self._arm_qpos = list(target)
+
+        if self._using_mujoco_model() and self._mj_data is not None:
+            for idx, name in enumerate(self._arm_joint_names):
+                qpos_addr = self._arm_joint_qpos_addr.get(name)
+                if qpos_addr is not None:
+                    self._mj_data.qpos[qpos_addr] = float(target[idx])
+            if _mujoco is not None and self._mj_model is not None:
+                _mujoco.mj_forward(self._mj_model, self._mj_data)
 
     def _apply_gripper_command(self, command: GripperCommand | None, n_steps: int) -> None:
         if command is None:
@@ -254,6 +385,14 @@ class SimulationCore:
         self._gripper_opening = target_opening
         self._gripper_joints = self._map_gripper_joints(self._gripper_opening)
 
+        if self._using_mujoco_model() and self._mj_data is not None:
+            for name, value in self._gripper_joints.items():
+                qpos_addr = self._gripper_joint_qpos_addr.get(name)
+                if qpos_addr is not None:
+                    self._mj_data.qpos[qpos_addr] = float(value)
+            if _mujoco is not None and self._mj_model is not None:
+                _mujoco.mj_forward(self._mj_model, self._mj_data)
+
     def _map_gripper_joints(self, opening: float) -> dict[str, float]:
         driver = _clamp(opening, 0.0, 1.0) * GRIPPER_DRIVER_LIMIT
         return {
@@ -265,8 +404,28 @@ class SimulationCore:
             "right_follower_joint": -driver,
         }
 
+    def _collect_objects_state_locked(self) -> dict[str, dict[str, Any]]:
+        objects = deepcopy(self._scene_objects_template)
+        if not self._using_mujoco_model() or self._mj_data is None:
+            return objects
+
+        for obj_id in objects:
+            body_id = self._object_body_ids.get(obj_id, -1)
+            if body_id < 0:
+                continue
+            objects[obj_id]["position"] = [float(v) for v in self._mj_data.xpos[body_id]]
+            objects[obj_id]["quaternion"] = [float(v) for v in self._mj_data.xquat[body_id]]
+            objects[obj_id]["attached_to_gripper"] = False
+        return objects
+
     def _compute_ee_pose_locked(self) -> dict[str, list[float]]:
-        # Placeholder FK for milestone B to keep a stable response schema.
+        if self._using_mujoco_model() and self._mj_data is not None and self._tool_body_id is not None:
+            return {
+                "position": [float(v) for v in self._mj_data.xpos[self._tool_body_id]],
+                "quaternion": [float(v) for v in self._mj_data.xquat[self._tool_body_id]],
+            }
+
+        # Fallback FK for stub mode.
         base = self._manifest_data.get("robot", {}).get("transform", {}).get("position", [-0.2, 0.5, -0.1])
         q1, q2, q3, q4, q5, q6 = self._arm_qpos
         reach_xy = 0.45 + 0.05 * math.cos(q3)
@@ -277,7 +436,18 @@ class SimulationCore:
         return {"position": [x, y, z], "quaternion": quat}
 
     def _build_state_locked(self) -> dict[str, Any]:
-        gripper_driver = self._gripper_joints["left_driver_joint"]
+        if self._using_mujoco_model() and self._mj_data is not None:
+            arm_qpos = []
+            for idx, name in enumerate(self._arm_joint_names):
+                qpos_addr = self._arm_joint_qpos_addr.get(name)
+                if qpos_addr is None:
+                    arm_qpos.append(self._arm_qpos[idx])
+                else:
+                    arm_qpos.append(float(self._mj_data.qpos[qpos_addr]))
+            self._arm_qpos = arm_qpos
+            self._objects_state = self._collect_objects_state_locked()
+
+        gripper_driver = float(self._gripper_joints["left_driver_joint"])
         qpos = list(self._arm_qpos) + [gripper_driver]
         qvel = list(self._arm_qvel) + [self._gripper_velocity]
         return {
