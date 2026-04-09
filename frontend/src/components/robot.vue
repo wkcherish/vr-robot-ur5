@@ -59,6 +59,7 @@
               :max="joint.max"
               :step="joint.step"
               @input="sliderInput(joint.value, joint.name)"
+              @change="sliderCommit(joint.value, joint.name)"
             />
             <el-input-number
               v-model="joint.value"
@@ -67,6 +68,7 @@
               :step="joint.step"
               type="number"
               @input="sliderInput(joint.value, joint.name)"
+              @change="sliderCommit(joint.value, joint.name)"
             />
           </div>
         </div>
@@ -100,7 +102,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["sliderInput"]);
+const emit = defineEmits(["sliderInput", "sliderCommit"]);
 
 const joints = ref(
   JOINT_CONFIG.map((joint, index) => ({
@@ -129,6 +131,13 @@ const sliderInput = (value, name) => {
   if (!Number.isFinite(numericValue)) return;
   const radianValue = (numericValue * Math.PI) / 180;
   emit("sliderInput", radianValue, name);
+};
+
+const sliderCommit = (value, name) => {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return;
+  const radianValue = (numericValue * Math.PI) / 180;
+  emit("sliderCommit", radianValue, name);
 };
 
 const endEffectorPose = computed(() => {

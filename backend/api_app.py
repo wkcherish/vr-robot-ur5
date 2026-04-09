@@ -19,7 +19,7 @@ from backend.sim import SimulationCore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
 SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "20"))
+STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "50"))
 STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
 
 simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)

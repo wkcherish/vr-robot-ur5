@@ -223,6 +223,37 @@ const presetPositions = ref([
   { name: "存放处", x: 0, y: 0.4, z: 0.2 },
 ]);
 
+const extractDetectedToolsFromState = (state) => {
+  const batteryPose = state?.objects?.battery_pack;
+  if (!batteryPose || !Array.isArray(batteryPose.position) || batteryPose.position.length < 3) {
+    return [];
+  }
+
+  const [x, y, z] = batteryPose.position.map((v) => Number(v));
+  if (![x, y, z].every((v) => Number.isFinite(v))) {
+    return [];
+  }
+
+  return [
+    {
+      id: "battery_pack",
+      name: "电池包",
+      icon: "🔋",
+      position: { x, y, z },
+    },
+  ];
+};
+
+const updateDetectedToolsFromState = (state) => {
+  const tools = extractDetectedToolsFromState(state);
+  if (tools.length === 0) return;
+
+  detectedTools.value = tools;
+  if (selectedToolIndex.value === null || selectedToolIndex.value >= tools.length) {
+    selectedToolIndex.value = 0;
+  }
+};
+
 // 计算当前操作文本
 const currentOperationText = computed(() => {
   switch (currentOperation.value) {
@@ -251,6 +282,7 @@ const setupWebSocketListeners = () => {
   websocketManager.on('connected', () => {
     operationMessage.value = "已连接到仿真服务器";
     operationSuccess.value = true;
+    websocketManager.requestState();
   });
 
   websocketManager.on('disconnected', () => {
@@ -263,11 +295,23 @@ const setupWebSocketListeners = () => {
   websocketManager.on('controlResult', (data) => {
     commandPending.value = false;
     if (data.status === 'success') {
-      operationMessage.value = "控制命令执行成功";
+      if (isGrabbing.value) {
+        isToolGrabbed.value = true;
+        operationMessage.value = "抓取命令执行成功";
+      } else if (isMoving.value) {
+        operationMessage.value = "移动命令执行成功";
+      } else if (isPlacing.value) {
+        isToolGrabbed.value = false;
+        operationMessage.value = "放置命令执行成功";
+      } else {
+        operationMessage.value = "控制命令执行成功";
+      }
       operationSuccess.value = true;
+      resetOperationStates();
     } else {
       operationMessage.value = `控制命令失败: ${data.message || '未知错误'}`;
       operationSuccess.value = false;
+      resetOperationStates();
     }
   });
 
@@ -286,6 +330,32 @@ const setupWebSocketListeners = () => {
     }
   });
 
+  websocketManager.on('stateUpdate', (data) => {
+    if (data?.task_state && typeof data.task_state.running === 'boolean') {
+      isSimulationRunning.value = Boolean(data.task_state.running);
+    }
+    updateDetectedToolsFromState(data);
+  });
+
+  websocketManager.on('taskResult', (data) => {
+    commandPending.value = false;
+    if (data?.status === "accepted") {
+      isSimulationRunning.value = true;
+      operationMessage.value = data.message || "任务已启动";
+      operationSuccess.value = true;
+      return;
+    }
+    if (data?.status === "stopped") {
+      isSimulationRunning.value = false;
+      operationMessage.value = data.message || "任务已停止";
+      operationSuccess.value = true;
+      resetOperationStates();
+      return;
+    }
+    operationMessage.value = data?.message || "任务状态更新";
+    operationSuccess.value = true;
+  });
+
   websocketManager.on('error', (error) => {
     commandPending.value = false;
     operationMessage.value = `WebSocket 错误: ${error.message || '未知错误'}`;
@@ -301,14 +371,27 @@ const toggleSimulation = () => {
     return;
   }
 
-  isSimulationRunning.value = !isSimulationRunning.value;
-  if (isSimulationRunning.value) {
-    operationMessage.value = "仿真已启动";
-    operationSuccess.value = true;
+  commandPending.value = true;
+  if (!isSimulationRunning.value) {
+    const success = websocketManager.sendExecuteTask("battery_transfer_v1");
+    if (!success) {
+      commandPending.value = false;
+      operationMessage.value = "发送任务启动命令失败";
+      operationSuccess.value = false;
+    } else {
+      operationMessage.value = "正在启动任务...";
+      operationSuccess.value = true;
+    }
   } else {
-    operationMessage.value = "仿真已停止";
-    operationSuccess.value = true;
-    resetOperationStates();
+    const success = websocketManager.sendStopTask();
+    if (!success) {
+      commandPending.value = false;
+      operationMessage.value = "发送停止任务命令失败";
+      operationSuccess.value = false;
+    } else {
+      operationMessage.value = "正在停止任务...";
+      operationSuccess.value = true;
+    }
   }
 };
 
@@ -351,30 +434,21 @@ const detectTools = () => {
   currentOperation.value = "detecting";
   operationMessage.value = "正在识别桌面工具...";
 
-  // 发送工具识别请求（这里先用模拟数据，实际应该调用后端AI服务）
-  setTimeout(() => {
-    detectedTools.value = [
-      {
-        name: "螺丝刀",
-        icon: "🔧",
-        position: { x: 0.15, y: 0.12, z: 0.05 },
-      },
-      {
-        name: "扳手",
-        icon: "🔨",
-        position: { x: -0.12, y: 0.08, z: 0.05 },
-      },
-      {
-        name: "剪钳",
-        icon: "✂️",
-        position: { x: 0.05, y: 0.2, z: 0.05 },
-      },
-    ];
+  const state = websocketManager.getStatus().simulationState;
+  const tools = extractDetectedToolsFromState(state);
+  currentOperation.value = "idle";
 
-    currentOperation.value = "idle";
-    operationMessage.value = "成功识别到 " + detectedTools.value.length + " 个工具";
-    operationSuccess.value = true;
-  }, 1500);
+  if (tools.length === 0) {
+    websocketManager.requestState();
+    operationMessage.value = "暂未获取到可识别对象，请稍后重试";
+    operationSuccess.value = false;
+    return;
+  }
+
+  detectedTools.value = tools;
+  selectedToolIndex.value = 0;
+  operationMessage.value = `成功识别到 ${tools.length} 个对象`;
+  operationSuccess.value = true;
 };
 
 // 选择工具
@@ -404,12 +478,15 @@ const grabTool = () => {
 
   const success = websocketManager.sendControlCommand(grabPose, {
     n_steps: 20,
-    control_mode: 'position'
+    control_mode: 'position',
+    gripper_command: {
+      mode: "open_close",
+      value: 1.0,
+    },
   });
 
   if (!success) {
-    isGrabbing.value = false;
-    currentOperation.value = "idle";
+    resetOperationStates();
     commandPending.value = false;
     operationMessage.value = "发送抓取命令失败";
     operationSuccess.value = false;
@@ -442,12 +519,15 @@ const moveToPosition = (position) => {
 
   const success = websocketManager.sendControlCommand(targetPose, {
     n_steps: 15,
-    control_mode: 'position'
+    control_mode: 'position',
+    gripper_command: {
+      mode: "open_close",
+      value: 1.0,
+    },
   });
 
   if (!success) {
-    isMoving.value = false;
-    currentOperation.value = "idle";
+    resetOperationStates();
     commandPending.value = false;
     operationMessage.value = "发送移动命令失败";
     operationSuccess.value = false;
@@ -472,12 +552,15 @@ const placeTool = () => {
 
   const success = websocketManager.sendControlCommand(releasePose, {
     n_steps: 10,
-    control_mode: 'position'
+    control_mode: 'position',
+    gripper_command: {
+      mode: "open_close",
+      value: 0.0,
+    },
   });
 
   if (!success) {
-    isPlacing.value = false;
-    currentOperation.value = "idle";
+    resetOperationStates();
     commandPending.value = false;
     operationMessage.value = "发送放置命令失败";
     operationSuccess.value = false;
@@ -505,6 +588,7 @@ const disconnectWebSocket = () => {
 
   websocketManager.disconnect();
   isSimulationRunning.value = false;
+  commandPending.value = false;
   resetOperationStates();
   operationMessage.value = "已断开与仿真服务器的连接";
   operationSuccess.value = true;
@@ -518,6 +602,12 @@ onMounted(() => {
   const status = websocketManager.getStatus();
   isConnected.value = status.isConnected;
   connectionStatus.value = status.status;
+  if (status.simulationState) {
+    updateDetectedToolsFromState(status.simulationState);
+    if (typeof status.simulationState?.task_state?.running === "boolean") {
+      isSimulationRunning.value = Boolean(status.simulationState.task_state.running);
+    }
+  }
 });
 
 onBeforeUnmount(() => {
@@ -527,6 +617,8 @@ onBeforeUnmount(() => {
   websocketManager.off('disconnected');
   websocketManager.off('controlResult');
   websocketManager.off('resetResult');
+  websocketManager.off('stateUpdate');
+  websocketManager.off('taskResult');
   websocketManager.off('error');
 });
 </script>
