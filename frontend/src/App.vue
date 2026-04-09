@@ -7,6 +7,7 @@
           :show-slider-controls="showSlider"
           :joint-values="sliderJointValues"
           @sliderInput="sliderInput"
+          @sliderCommit="sliderCommit"
           v-show="showSlider"
         />
 
@@ -14,8 +15,8 @@
         <div class="robot-control-panel" v-show="showRobotPanel">
           <div class="panel-header">
             <h3>机器人双向映射系统</h3>
-            <div class="connection-status" :class="{ connected: isFetching }">
-              {{ isFetching ? "已连接" : "未连接" }}
+            <div class="connection-status" :class="{ connected: isWebSocketConnected }">
+              {{ isWebSocketConnected ? "已连接" : "未连接" }}
             </div>
           </div>
 
@@ -25,16 +26,16 @@
           <div class="panel-section">
             <h4 class="section-title">机器人连接</h4>
             <button
-              @click="isFetching ? stopFetchingData() : startFetchingData()"
+              @click="isWebSocketConnected ? stopFetchingData() : startFetchingData()"
               class="control-button"
               :class="{
-                'connected-btn': isFetching,
-                'disconnected-btn': !isFetching,
+                'connected-btn': isWebSocketConnected,
+                'disconnected-btn': !isWebSocketConnected,
               }"
             >
-              {{ isFetching ? "断开连接" : "连接机器人" }}
+              {{ isWebSocketConnected ? "断开连接" : "连接机器人" }}
             </button>
-            <div v-if="isFetching" class="status-indicator">
+            <div v-if="isWebSocketConnected" class="status-indicator">
               <span class="status-dot pulse"></span> 正在实时同步机器人位置...
             </div>
           </div>
@@ -45,8 +46,8 @@
             <div class="sync-status-grid">
               <div class="sync-status-item">
                 <span class="sync-label">连接状态:</span>
-                <span class="sync-value" :class="{ 'sync-connected': isFetching, 'sync-disconnected': !isFetching }">
-                  {{ isFetching ? '已连接' : '未连接' }}
+                <span class="sync-value" :class="{ 'sync-connected': isWebSocketConnected, 'sync-disconnected': !isWebSocketConnected }">
+                  {{ isWebSocketConnected ? '已连接' : '未连接' }}
                 </span>
               </div>
               <div class="sync-status-item">
@@ -306,6 +307,17 @@ const testvalue = ref(null); // 用于存储从后端获取的数值
 const isFetching = ref(false);
 const fetchFailures = ref(0); // 连续获取失败计数
 const sendCommandPending = ref(false); // 命令发送等待回复标志
+const isApplyingBackendState = ref(false); // 防止回放后端状态时触发反向发送
+const sliderSyncTimer = ref(null);
+const lastRealtimeSliderSendAt = ref(0);
+const pendingManualTarget = ref(null);
+const realtimeSliderFallbackInFlight = ref(false);
+
+const REALTIME_SLIDER_DEBOUNCE_MS = 20;
+const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 30;
+const MANUAL_STATE_GUARD_MS = 800;
+const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
+const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -370,6 +382,125 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+const BACKEND_FRAME_Z_OFFSET = 0.5;
+const BACKEND_TO_FRONTEND_ROT = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(1, 0, 0),
+  -Math.PI / 2
+);
+
+function toRadians(degrees) {
+  return (Number(degrees) * Math.PI) / 180;
+}
+
+function toDegrees(radians) {
+  return (Number(radians) * 180) / Math.PI;
+}
+
+function getCurrentArmRadians() {
+  const sourceAngles =
+    jointAngles.value.length >= ARM_JOINT_COUNT
+      ? jointAngles.value.slice(0, ARM_JOINT_COUNT)
+      : DEFAULT_ANGLES_DEG.slice(0, ARM_JOINT_COUNT);
+  return sourceAngles.map((deg) => toRadians(deg));
+}
+
+function getCurrentGripperRadians() {
+  return clamp(toRadians(gripperAngleDeg.value), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+}
+
+function toGripperOpening(gripperRadians) {
+  return clamp(gripperRadians / GRIPPER_MAX_RAD, 0, 1);
+}
+
+function buildGripperCommand(options = {}) {
+  if (options.gripper_command && typeof options.gripper_command === "object") {
+    const commandValue = Number(options.gripper_command.value);
+    return {
+      mode: "open_close",
+      value: Number.isFinite(commandValue)
+        ? clamp(commandValue, 0, 1)
+        : toGripperOpening(getCurrentGripperRadians()),
+    };
+  }
+
+  if (Number.isFinite(Number(options.gripper_opening))) {
+    const opening = Number(options.gripper_opening);
+    return {
+      mode: "open_close",
+      value: clamp(opening, 0, 1),
+    };
+  }
+
+  return {
+    mode: "open_close",
+    value: toGripperOpening(getCurrentGripperRadians()),
+  };
+}
+
+function rememberPendingManualTarget(armRadians, gripperOpening) {
+  if (!Array.isArray(armRadians) || armRadians.length < ARM_JOINT_COUNT) {
+    pendingManualTarget.value = null;
+    return;
+  }
+
+  const opening = Number.isFinite(Number(gripperOpening))
+    ? clamp(Number(gripperOpening), 0, 1)
+    : toGripperOpening(getCurrentGripperRadians());
+
+  pendingManualTarget.value = {
+    sentAt: Date.now(),
+    arm: armRadians.slice(0, ARM_JOINT_COUNT).map((v) => Number(v)),
+    gripper: opening * GRIPPER_MAX_RAD,
+  };
+}
+
+function clearPendingManualTarget() {
+  pendingManualTarget.value = null;
+}
+
+function isBackendStateAlignedWithPendingTarget(state) {
+  const pending = pendingManualTarget.value;
+  if (!pending || !Array.isArray(state?.qpos) || state.qpos.length < ARM_JOINT_COUNT) {
+    return true;
+  }
+
+  let maxArmError = 0;
+  for (let i = 0; i < ARM_JOINT_COUNT; i++) {
+    const backendValue = Number(state.qpos[i]);
+    if (!Number.isFinite(backendValue)) continue;
+    const error = Math.abs(backendValue - pending.arm[i]);
+    if (error > maxArmError) maxArmError = error;
+  }
+
+  const backendGripper = getGripperRadiansFromBackendState(state);
+  const gripperError =
+    backendGripper === null ? 0 : Math.abs(Number(backendGripper) - Number(pending.gripper));
+
+  return maxArmError <= ARM_STATE_MATCH_THRESHOLD_RAD && gripperError <= GRIPPER_STATE_MATCH_THRESHOLD_RAD;
+}
+
+function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
+  const pending = pendingManualTarget.value;
+  if (!pending) return true;
+
+  if (state?.source && state.source !== "manual") {
+    clearPendingManualTarget();
+    return true;
+  }
+
+  if (nowMs - Number(pending.sentAt) > MANUAL_STATE_GUARD_MS) {
+    clearPendingManualTarget();
+    return true;
+  }
+
+  if (isBackendStateAlignedWithPendingTarget(state)) {
+    clearPendingManualTarget();
+    return true;
+  }
+
+  return false;
+}
+
 function normalizeInputAngles(values) {
   if (!Array.isArray(values)) return null;
 
@@ -394,6 +525,12 @@ function normalizeInputAngles(values) {
   return parsed;
 }
 
+function ensureJointAnglesBuffer() {
+  if (!Array.isArray(jointAngles.value) || jointAngles.value.length < TOTAL_INPUT_JOINT_COUNT) {
+    jointAngles.value = [...DEFAULT_ANGLES_DEG];
+  }
+}
+
 function parseAngleText(inputText) {
   const rawAngles = inputText
     .split(",")
@@ -409,36 +546,113 @@ function getGripperDegFromQpos(qpos) {
   const qposValue = Number(qpos[ARM_JOINT_COUNT]);
   if (!Number.isFinite(qposValue)) return gripperAngleDeg.value;
 
-  return clamp(
-    (qposValue * 180) / Math.PI,
-    GRIPPER_MIN_DEG,
-    GRIPPER_MAX_DEG
-  );
+  return clamp(toDegrees(qposValue), GRIPPER_MIN_DEG, GRIPPER_MAX_DEG);
 }
 
-function applyBackendQposToScene(qpos) {
-  if (!Array.isArray(qpos)) return;
-  const armAnglesDeg = qpos
-    .slice(0, ARM_JOINT_COUNT)
-    .map((v) => v * (180 / Math.PI));
-  const gripperDeg = getGripperDegFromQpos(qpos);
-  const fullAngles = [...armAnglesDeg, gripperDeg];
-  jointAngles.value = fullAngles;
-  gripperAngleDeg.value = gripperDeg;
-  setRobotAngles(fullAngles);
-  calculateEndEffectorPosition();
+function getGripperRadiansFromBackendState(state) {
+  if (!state || typeof state !== "object") return null;
+
+  if (Number.isFinite(Number(state.gripper_opening))) {
+    return clamp(Number(state.gripper_opening), 0, 1) * GRIPPER_MAX_RAD;
+  }
+
+  const driver = state?.gripper_joints?.left_driver_joint;
+  if (Number.isFinite(Number(driver))) {
+    return clamp(Number(driver), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+  }
+
+  if (Array.isArray(state.qpos) && Number.isFinite(Number(state.qpos[ARM_JOINT_COUNT]))) {
+    return clamp(Number(state.qpos[ARM_JOINT_COUNT]), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+  }
+
+  return null;
 }
 
-function applyAnglesToRobot(anglesDeg) {
+function backendPositionToFrontend(position) {
+  if (!Array.isArray(position) || position.length < 3) {
+    return null;
+  }
+
+  const [xMj, yMj, zMj] = position.map((v) => Number(v));
+  if (![xMj, yMj, zMj].every((v) => Number.isFinite(v))) {
+    return null;
+  }
+
+  return [xMj, zMj - BACKEND_FRAME_Z_OFFSET, -yMj];
+}
+
+function backendQuaternionToFrontend(quaternionWXYZ) {
+  if (!Array.isArray(quaternionWXYZ) || quaternionWXYZ.length < 4) {
+    return null;
+  }
+
+  const [w, x, y, z] = quaternionWXYZ.map((v) => Number(v));
+  if (![w, x, y, z].every((v) => Number.isFinite(v))) {
+    return null;
+  }
+
+  const qBackend = new THREE.Quaternion(x, y, z, w);
+  return BACKEND_TO_FRONTEND_ROT.clone().multiply(qBackend).normalize();
+}
+
+function applyBatteryPoseFromBackend(batteryState) {
+  if (!batteryModel) return;
+  if (!batteryState || typeof batteryState !== "object") return;
+
+  const positionFrontend = backendPositionToFrontend(batteryState.position);
+  if (positionFrontend) {
+    batteryModel.position.set(
+      positionFrontend[0],
+      positionFrontend[1],
+      positionFrontend[2]
+    );
+  }
+
+  const quaternionFrontend = backendQuaternionToFrontend(batteryState.quaternion);
+  if (quaternionFrontend) {
+    batteryModel.quaternion.copy(quaternionFrontend);
+  }
+}
+
+function applyBackendStateToScene(state) {
+  if (!state || typeof state !== "object") return;
+
+  isApplyingBackendState.value = true;
+  try {
+    if (Array.isArray(state.qpos) && state.qpos.length >= ARM_JOINT_COUNT) {
+      const armAnglesDeg = state.qpos
+        .slice(0, ARM_JOINT_COUNT)
+        .map((rad) => toDegrees(rad));
+      const gripperRadians = getGripperRadiansFromBackendState(state);
+      const gripperDeg =
+        gripperRadians !== null
+          ? clamp(toDegrees(gripperRadians), GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)
+          : getGripperDegFromQpos(state.qpos);
+      const fullAngles = [...armAnglesDeg, gripperDeg];
+
+      jointAngles.value = fullAngles;
+      gripperAngleDeg.value = gripperDeg;
+      setRobotAngles(fullAngles);
+      calculateEndEffectorPosition();
+    }
+
+    applyBatteryPoseFromBackend(state?.objects?.battery_pack);
+  } finally {
+    isApplyingBackendState.value = false;
+  }
+}
+
+function applyAnglesToRobot(anglesDeg, options = {}) {
+  const skipBackendSync = options.skipBackendSync !== false;
   const normalizedAngles = normalizeInputAngles(anglesDeg);
   if (!normalizedAngles) return null;
 
-  const radians = normalizedAngles.map((value) => (value * Math.PI) / 180);
+  const radians = normalizedAngles.map((value) => toRadians(value));
 
   ARM_JOINT_NAMES.forEach((jointName, index) => {
-    sliderInput(radians[index], jointName);
+    sliderInput(radians[index], jointName, { skipBackendSync });
   });
-  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint");
+  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint", { skipBackendSync });
 
   return {
     normalizedAngles,
@@ -461,6 +675,7 @@ const updateTaskProgress = () => {
 // 修改fetchData函数，优先使用 /sim/state/，失败时回退到 /data/，并实现简单退避
 const fetchData = async () => {
   if (!isFetching.value) return;
+  if (websocketManager.isConnected) return;
 
   const trySimState = async () => {
     const resp = await axios.get("http://localhost:8000/sim/state/", { timeout: 3000 });
@@ -476,14 +691,9 @@ const fetchData = async () => {
     // 尝试获取最新仿真状态
     const data = await trySimState();
 
-    // data 应包含 qpos 数组
-    if (data && data.qpos && Array.isArray(data.qpos)) {
-      // 在命令执行确认前，避免轮询状态把前端目标姿态覆盖回旧状态
-      if (sendCommandPending.value) {
-        fetchFailures.value = 0;
-        return;
-      }
-      applyBackendQposToScene(data.qpos);
+    // data 应包含 qpos 数组与对象状态
+    if (data && typeof data === "object") {
+      applyBackendStateToScene(data);
       updateTaskProgress();
       fetchFailures.value = 0;
       return;
@@ -498,7 +708,7 @@ const fetchData = async () => {
         vals = vals.split(" ").map(Number);
       }
       const normalizedAngles = normalizeInputAngles(vals.map((v) => Number(v)));
-      if (normalizedAngles && !sendCommandPending.value) {
+      if (normalizedAngles) {
         jointAngles.value = normalizedAngles;
         gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
         setRobotAngles(normalizedAngles);
@@ -530,12 +740,16 @@ const fetchData = async () => {
 const sendArmCommandToBackend = async (armRadians, options = {}) => {
   const n_steps = options.n_steps || 50;
   const control_mode = options.control_mode || "position";
+  const gripperCommand = buildGripperCommand(options);
+  rememberPendingManualTarget(armRadians, gripperCommand.value);
 
   // WebSocket 可用时优先走 WS，确保与实时广播链路一致
   if (websocketManager.isConnected) {
     const sent = websocketManager.sendControlCommand(armRadians, {
       n_steps,
       control_mode,
+      gripper_command: gripperCommand,
+      source: "manual",
     });
 
     if (sent) {
@@ -548,6 +762,8 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
             websocketManager.sendControlCommand(armRadians, {
               n_steps: 1,
               control_mode: "position",
+              gripper_command: gripperCommand,
+              source: "manual",
             });
           }
         } catch (err) {
@@ -567,6 +783,7 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
     }
 
     console.warn("WebSocket 已连接但命令发送失败，将回退到 HTTP /sim/step/");
+    clearPendingManualTarget();
   }
 
   // WS 不可用时直接 HTTP 下发，避免前端先动后被旧状态拉回
@@ -576,14 +793,18 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
       target_positions: armRadians,
       n_steps,
       control_mode,
+      gripper_command: gripperCommand,
+      source: "manual",
     });
 
     if (resp?.data?.state?.qpos && Array.isArray(resp.data.state.qpos)) {
-      applyBackendQposToScene(resp.data.state.qpos);
+      applyBackendStateToScene(resp.data.state);
+      clearPendingManualTarget();
     }
 
     return { ok: true, message: resp.data?.message || "命令已发送（HTTP）" };
   } catch (err) {
+    clearPendingManualTarget();
     return { ok: false, message: "命令发送失败: " + (err.message || err) };
   } finally {
     sendCommandPending.value = false;
@@ -617,7 +838,7 @@ const testSendData = async () => {
     gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
     jointAngles.value = normalizedAngles;
 
-    if (!isFetching.value) {
+    if (!websocketManager.isConnected) {
       receivedText.value = "已在本地设置角度（未接入仿真）";
       setAnglesResponse.value = [...normalizedAngles];
       updateTaskProgress();
@@ -627,6 +848,7 @@ const testSendData = async () => {
     const result = await sendArmCommandToBackend(armRadians, {
       n_steps: 50,
       control_mode: "position",
+      gripper_opening: toGripperOpening(radians[ARM_JOINT_COUNT]),
     });
     receivedText.value = result.message;
     setAnglesResponse.value = [...normalizedAngles];
@@ -641,11 +863,15 @@ const testSendData = async () => {
 const startFetchingData = () => {
   if (!websocketManager.isConnected) {
     websocketManager.connect();
+  } else {
+    websocketManager.requestState();
   }
 
   isFetching.value = true;
-  fetchData(); // 立即调用一次
-  fetchInterval.value = setInterval(fetchData, 100); // 每100ms同步一次
+  fetchData(); // 作为 WS 不可用时的兜底
+  if (!fetchInterval.value) {
+    fetchInterval.value = setInterval(fetchData, 200); // fallback
+  }
   console.log("已连接机器人，开始同步位置");
   // 重置任务进度
   taskProgress.value = 0;
@@ -654,8 +880,14 @@ const startFetchingData = () => {
 // 优化停止连接的函数
 const stopFetchingData = () => {
   isFetching.value = false;
+  sendCommandPending.value = false;
+  clearPendingManualTarget();
+  lastRealtimeSliderSendAt.value = 0;
   clearInterval(fetchInterval.value);
   fetchInterval.value = null;
+  if (websocketManager.isConnected) {
+    websocketManager.disconnect();
+  }
   console.log("已断开机器人连接");
   taskProgress.value = 100;
 };
@@ -706,7 +938,7 @@ async function inputRobotAngles() {
   gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
   jointAngles.value = normalizedAngles;
 
-  if (!isFetching.value) {
+  if (!websocketManager.isConnected) {
     receivedText.value = "已在本地设置角度（未接入仿真）";
     setAnglesResponse.value = [...normalizedAngles];
     updateTaskProgress();
@@ -724,6 +956,7 @@ async function inputRobotAngles() {
     const result = await sendArmCommandToBackend(armRadians, {
       n_steps: 50,
       control_mode: "position",
+      gripper_opening: toGripperOpening(radians[ARM_JOINT_COUNT]),
     });
     receivedText.value = result.message;
     if (!result.ok) {
@@ -733,7 +966,7 @@ async function inputRobotAngles() {
     console.error("发送控制命令失败:", e);
   }
 
-  if (enableAutoReturn.value && isFetching.value) {
+  if (enableAutoReturn.value && websocketManager.isConnected) {
     console.log("已连接仿真，跳过自动返回以保持目标姿态");
   }
 
@@ -790,7 +1023,9 @@ function resolveJointName(name) {
 
 function setGripperJointValue(value) {
   const clampedValue = clamp(value, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
-  gripperAngleDeg.value = (clampedValue * 180) / Math.PI;
+  gripperAngleDeg.value = toDegrees(clampedValue);
+  ensureJointAnglesBuffer();
+  jointAngles.value[ARM_JOINT_COUNT] = gripperAngleDeg.value;
 
   if (!robot || !robot.joints) return;
 
@@ -822,14 +1057,98 @@ function setGripperJointValue(value) {
   }
 }
 
+function sendRealtimeSliderControl(options = {}) {
+  const force = options.force === true;
+  if (isApplyingBackendState.value && !force) return;
+  const now = Date.now();
+  if (
+    !force &&
+    now - Number(lastRealtimeSliderSendAt.value) < REALTIME_SLIDER_MIN_SEND_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  const armRadians = getCurrentArmRadians();
+  const gripperCommand = {
+    mode: "open_close",
+    value: toGripperOpening(getCurrentGripperRadians()),
+  };
+  rememberPendingManualTarget(armRadians, gripperCommand.value);
+
+  const sent = websocketManager.isConnected
+    ? websocketManager.sendControlCommand(armRadians, {
+        n_steps: 20,
+        control_mode: "position",
+        gripper_command: gripperCommand,
+        source: "manual",
+      })
+    : false;
+
+  if (sent) {
+    lastRealtimeSliderSendAt.value = now;
+  } else {
+    if (realtimeSliderFallbackInFlight.value) {
+      return;
+    }
+    realtimeSliderFallbackInFlight.value = true;
+    axios
+      .post("http://localhost:8000/sim/step/", {
+        target_positions: armRadians,
+        n_steps: 20,
+        control_mode: "position",
+        gripper_command: gripperCommand,
+        source: "manual",
+      })
+      .then((resp) => {
+        if (resp?.data?.state) {
+          applyBackendStateToScene(resp.data.state);
+        }
+      })
+      .catch((error) => {
+        console.warn("实时滑条 HTTP 兜底失败:", error?.message || error);
+        clearPendingManualTarget();
+      })
+      .finally(() => {
+        realtimeSliderFallbackInFlight.value = false;
+        lastRealtimeSliderSendAt.value = Date.now();
+      });
+  }
+}
+
+function scheduleRealtimeSliderSync() {
+  if (sliderSyncTimer.value) {
+    clearTimeout(sliderSyncTimer.value);
+  }
+
+  sliderSyncTimer.value = setTimeout(() => {
+    sendRealtimeSliderControl();
+  }, REALTIME_SLIDER_DEBOUNCE_MS);
+}
+
+function flushRealtimeSliderSync() {
+  if (sliderSyncTimer.value) {
+    clearTimeout(sliderSyncTimer.value);
+    sliderSyncTimer.value = null;
+  }
+  sendRealtimeSliderControl({ force: true });
+}
+
 // 修改sliderInput函数，确保每次角度变化时更新位置信息
-function sliderInput(value, name) {
+function sliderInput(value, name, options = {}) {
+  const skipBackendSync = options.skipBackendSync === true;
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return;
 
   if (name === "gripper_joint") {
     setGripperJointValue(numericValue);
     calculateEndEffectorPosition();
+    if (!skipBackendSync) {
+      rememberPendingManualTarget(
+        getCurrentArmRadians(),
+        toGripperOpening(getCurrentGripperRadians())
+      );
+      scheduleRealtimeSliderSync();
+    }
     return;
   }
 
@@ -842,14 +1161,35 @@ function sliderInput(value, name) {
     return;
   }
 
+  ensureJointAnglesBuffer();
+  const armJointIndex = ARM_JOINT_NAMES.findIndex(
+    (legacyName) => legacyName === name || legacyName === resolvedName || jointNameMap[legacyName] === resolvedName
+  );
+  if (armJointIndex >= 0) {
+    jointAngles.value[armJointIndex] = toDegrees(numericValue);
+  }
+
   robot.joints[resolvedName].setJointValue(numericValue);
   // 在每次关节变化后立即更新位置信息
   calculateEndEffectorPosition();
+
+  if (!skipBackendSync) {
+    rememberPendingManualTarget(
+      getCurrentArmRadians(),
+      toGripperOpening(getCurrentGripperRadians())
+    );
+    scheduleRealtimeSliderSync();
+  }
+}
+
+function sliderCommit(value, name) {
+  sliderInput(value, name);
+  flushRealtimeSliderSync();
 }
 
 // 新增设置机器臂六个角度的函数
 function setRobotAngles(angles) {
-  const applyResult = applyAnglesToRobot(angles);
+  const applyResult = applyAnglesToRobot(angles, { skipBackendSync: true });
   if (!applyResult) {
     console.error("必须提供6或7个角度值");
     calculateEndEffectorPosition();
@@ -879,6 +1219,7 @@ const changeView = () => {
 
 // 创建场景->相机->渲染器->相机添加到场景中->渲染器渲染场景和相机->渲染器添加到dom中
 var robot = null;
+let batteryModel = null;
 let scene = "";
 let camera = "";
 let renderer = "";
@@ -1037,6 +1378,7 @@ function initRack() {
 // 添加电池模型加载函数
 function initBattery() {
   loadUrdfModel(battery, (result) => {
+    batteryModel = result;
     // 调整电池位置和大小
     result.scale.set(0.8, 0.8, 0.8);
     result.position.set(0.1, 1.085, 0.5);
@@ -1090,11 +1432,20 @@ const setupWebSocketStateSync = () => {
   websocketManager.on('statusChange', (status) => {
     websocketStatus.value = status;
     isWebSocketConnected.value = websocketManager.isConnected;
+    isFetching.value = isWebSocketConnected.value;
 
     if (isWebSocketConnected.value) {
       console.log('WebSocket状态同步已连接');
+      websocketManager.requestState();
+      if (fetchInterval.value) {
+        clearInterval(fetchInterval.value);
+        fetchInterval.value = null;
+      }
     } else {
       console.log('WebSocket状态同步已断开');
+      sendCommandPending.value = false;
+      clearPendingManualTarget();
+      lastRealtimeSliderSendAt.value = 0;
       resetStateSync();
     }
   });
@@ -1119,6 +1470,9 @@ const setupWebSocketStateSync = () => {
 
   // 连接断开
   websocketManager.on('disconnected', () => {
+    sendCommandPending.value = false;
+    clearPendingManualTarget();
+    lastRealtimeSliderSendAt.value = 0;
     resetStateSync();
   });
 };
@@ -1137,9 +1491,10 @@ const handleStateUpdate = (data) => {
   // 更新状态
   simulationState.value = data;
 
-  // 同步关节角度
-  if (data.qpos && Array.isArray(data.qpos)) {
-    updateJointAngles(data.qpos);
+  // 手动控制刚发出时，短时间忽略明显滞后的旧状态，避免前端“回弹到初始位”
+  if (shouldApplyIncomingBackendState(data, now)) {
+    // 以后端回传状态为准，统一驱动机器人/夹爪/对象
+    applyBackendStateToScene(data);
   }
 
   // 添加到状态历史缓冲区
@@ -1150,31 +1505,6 @@ const handleStateUpdate = (data) => {
   updateConnectionQuality();
 
   lastStateUpdate.value = now;
-};
-
-// 更新关节角度
-const updateJointAngles = (qpos) => {
-  // 如果正在等待控制命令结果，则暂时忽略来自服务器的 qpos 更新，
-  // 保持前端当前显示的目标角度，直到收到 controlResult 清除等待标志。
-  if (sendCommandPending.value) {
-    // 可选：打印调试信息，但避免频繁日志打印
-    // console.log('忽略状态更新（等待控制结果）');
-    return;
-  }
-  const armAnglesInDegrees = qpos
-    .slice(0, ARM_JOINT_COUNT)
-    .map((rad) => rad * (180 / Math.PI));
-  const gripperDeg = getGripperDegFromQpos(qpos);
-  const fullAngles = [...armAnglesInDegrees, gripperDeg];
-
-  jointAngles.value = fullAngles;
-  gripperAngleDeg.value = gripperDeg;
-
-  // 应用到机器人模型
-  setRobotAngles(fullAngles);
-
-  // 更新末端执行器位置
-  calculateEndEffectorPosition();
 };
 
 // 添加到状态缓冲区（用于插值）
@@ -1274,6 +1604,7 @@ const resetStateSync = () => {
   actualUpdateRate.value = 0;
   connectionQuality.value = 0;
   lastStateUpdate.value = 0;
+  clearPendingManualTarget();
 };
 
 // 切换状态插值
@@ -1310,6 +1641,15 @@ const getStateSyncStatus = () => {
   };
 };
 
+const handleWindowResize = () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+};
+
+const taskProgressInterval = ref(null);
+
 onMounted(() => {
   // 设置WebSocket状态同步
   setupWebSocketStateSync();
@@ -1326,14 +1666,9 @@ onMounted(() => {
   document.getElementById("webgl").appendChild(renderer.domElement);
   render();
 
-  window.addEventListener("resize", () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio || 1);
-  });
+  window.addEventListener("resize", handleWindowResize);
 
-  setInterval(() => {
+  taskProgressInterval.value = setInterval(() => {
     if (isFetching.value && taskProgress.value < 95) {
       updateTaskProgress();
     }
@@ -1342,9 +1677,19 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopFetchingData();
+  if (sliderSyncTimer.value) {
+    clearTimeout(sliderSyncTimer.value);
+    sliderSyncTimer.value = null;
+  }
+  if (taskProgressInterval.value) {
+    clearInterval(taskProgressInterval.value);
+    taskProgressInterval.value = null;
+  }
+  window.removeEventListener("resize", handleWindowResize);
   // 清理WebSocket监听器
   websocketManager.off('statusChange');
   websocketManager.off('stateUpdate');
+  websocketManager.off('controlResult');
   websocketManager.off('error');
   websocketManager.off('disconnected');
 });

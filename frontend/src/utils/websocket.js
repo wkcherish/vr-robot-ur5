@@ -80,19 +80,47 @@ class WebSocketManager {
 
   // 发送控制命令
   sendControlCommand(targetPositions, options = {}) {
+    const payload = {
+      target_positions: targetPositions,
+      n_steps: options.n_steps || 10,
+      kp: options.kp,
+      kd: options.kd,
+      control_mode: options.control_mode || 'position'
+    };
+
+    if (options.gripper_command && typeof options.gripper_command === 'object') {
+      payload.gripper_command = options.gripper_command;
+    } else if (Number.isFinite(Number(options.gripper_opening))) {
+      const opening = Math.min(Math.max(Number(options.gripper_opening), 0), 1);
+      payload.gripper_command = { mode: 'open_close', value: opening };
+    }
+
+    if (typeof options.source === 'string' && options.source.length > 0) {
+      payload.source = options.source;
+    }
+
     const message = {
       type: 'control',
-      data: {
-        target_positions: targetPositions,
-        n_steps: options.n_steps || 10,
-        kp: options.kp,
-        kd: options.kd,
-        control_mode: options.control_mode || 'position'
-      },
+      data: payload,
       timestamp: Date.now()
     };
 
     return this.sendMessage(message);
+  }
+
+  sendExecuteTask(taskName = 'battery_transfer_v1') {
+    return this.sendMessage({
+      type: 'execute_task',
+      data: { task_name: taskName },
+      timestamp: Date.now()
+    });
+  }
+
+  sendStopTask() {
+    return this.sendMessage({
+      type: 'stop_task',
+      timestamp: Date.now()
+    });
   }
 
   // 发送重置命令
@@ -125,12 +153,21 @@ class WebSocketManager {
   }
 
   off(event, callback) {
-    if (this.eventListeners.has(event)) {
-      const listeners = this.eventListeners.get(event);
-      const index = listeners.indexOf(callback);
-      if (index > -1) {
-        listeners.splice(index, 1);
-      }
+    if (!this.eventListeners.has(event)) return;
+
+    if (!callback) {
+      this.eventListeners.delete(event);
+      return;
+    }
+
+    const listeners = this.eventListeners.get(event);
+    const index = listeners.indexOf(callback);
+    if (index > -1) {
+      listeners.splice(index, 1);
+    }
+
+    if (listeners.length === 0) {
+      this.eventListeners.delete(event);
     }
   }
 
@@ -204,6 +241,10 @@ class WebSocketManager {
 
       case 'reset_result':
         this.emit('resetResult', data);
+        break;
+
+      case 'task_result':
+        this.emit('taskResult', data);
         break;
 
       case 'error':
