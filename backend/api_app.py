@@ -240,7 +240,7 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             return _error_payload("RESET_EXECUTION_ERROR", "Reset failed", str(exc))
 
     if message_type == "execute_task":
-        task_name = str(message_data.get("task_name", "battery_transfer_v1"))
+        task_name = str(message_data.get("task_name", "quest3_tool_sorting_v1"))
         state = await simulation.start_task(task_name)
         return {
             "type": "task_result",

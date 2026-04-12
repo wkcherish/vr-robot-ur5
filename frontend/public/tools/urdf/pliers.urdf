@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<robot name="pliers">
+  <material name="pliers_metal">
+    <color rgba="0.62 0.66 0.71 1.0" />
+  </material>
+
+  <link name="pliers_link">
+    <visual>
+      <origin xyz="-0.00004355 0.00005995 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/pliers.stl" scale="0.13 0.13 0.13" />
+      </geometry>
+      <material name="pliers_metal" />
+    </visual>
+    <collision>
+      <origin xyz="-0.00004355 0.00005995 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/pliers.stl" scale="0.13 0.13 0.13" />
+      </geometry>
+    </collision>
+  </link>
+</robot>
