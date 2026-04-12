@@ -21,7 +21,7 @@
     "name": "UR5 + Robotiq 2F-85",
     "resource_path": "frontend/public/ur5/ur5.urdf",
     "transform": {
-      "position": [-0.2, 0.5, -0.1],
+      "position": [-0.2, 0.5, 0.0],
       "rotation_rpy": [-1.5707963267948966, 0.0, 0.0],
       "scale": [1.0, 1.0, 1.0]
     },
@@ -119,30 +119,6 @@
       "reset_policy": {
         "mode": "fixed"
       }
-    },
-    {
-      "id": "camera_base",
-      "resource_path": "frontend/public/camera_base/urdf/camera_base.urdf",
-      "object_type": "debug",
-      "debug_only": true,
-      "transform": {
-        "position": [-0.1, 0.68, 0.4],
-        "rotation_rpy": [3.141592653589793, 0.0, 0.0],
-        "scale": [0.01, 0.01, 0.01]
-      },
-      "notes": "Tripod/base support of scene camera."
-    },
-    {
-      "id": "camera",
-      "resource_path": "frontend/public/camera/urdf/camera.urdf",
-      "object_type": "debug",
-      "debug_only": true,
-      "transform": {
-        "position": [-0.205, 0.832, 0.4],
-        "rotation_rpy": [0.0, 2.0420352248333655, 0.0],
-        "scale": [1.0, 1.0, 1.0]
-      },
-      "notes": "Current scene camera model used for alignment only."
     }
   ],
   "spawn_regions": [
