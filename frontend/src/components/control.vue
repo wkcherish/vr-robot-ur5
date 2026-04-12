@@ -223,25 +223,47 @@ const presetPositions = ref([
   { name: "存放处", x: 0, y: 0.4, z: 0.2 },
 ]);
 
+const TOOL_ICON_MAP = {
+  wrench: "🔧",
+  screwdriver: "🪛",
+  pliers: "🗜️",
+  toolbox: "🧰",
+};
+
+const NON_DETECTABLE_OBJECT_IDS = new Set(["rack", "camera", "camera_base", "toolbox"]);
+
+function formatToolDisplayName(objectId) {
+  const className = String(objectId || "").split("_")[0];
+  if (className === "wrench") return "扳手";
+  if (className === "screwdriver") return "螺丝刀";
+  if (className === "pliers") return "钳子";
+  if (className === "toolbox") return "工具箱";
+  return className || String(objectId || "未知对象");
+}
+
 const extractDetectedToolsFromState = (state) => {
-  const batteryPose = state?.objects?.battery_pack;
-  if (!batteryPose || !Array.isArray(batteryPose.position) || batteryPose.position.length < 3) {
+  const objects = state?.objects;
+  if (!objects || typeof objects !== "object") {
     return [];
   }
 
-  const [x, y, z] = batteryPose.position.map((v) => Number(v));
-  if (![x, y, z].every((v) => Number.isFinite(v))) {
-    return [];
-  }
-
-  return [
-    {
-      id: "battery_pack",
-      name: "电池包",
-      icon: "🔋",
-      position: { x, y, z },
-    },
-  ];
+  return Object.entries(objects)
+    .filter(([objectId]) => !NON_DETECTABLE_OBJECT_IDS.has(objectId))
+    .map(([objectId, pose]) => {
+      const position = Array.isArray(pose?.position) ? pose.position : [];
+      const [x, y, z] = position.map((v) => Number(v));
+      if (![x, y, z].every((v) => Number.isFinite(v))) {
+        return null;
+      }
+      const className = String(objectId).split("_")[0];
+      return {
+        id: objectId,
+        name: formatToolDisplayName(objectId),
+        icon: TOOL_ICON_MAP[className] || "🧩",
+        position: { x, y, z },
+      };
+    })
+    .filter(Boolean);
 };
 
 const updateDetectedToolsFromState = (state) => {
@@ -373,7 +395,7 @@ const toggleSimulation = () => {
 
   commandPending.value = true;
   if (!isSimulationRunning.value) {
-    const success = websocketManager.sendExecuteTask("battery_transfer_v1");
+    const success = websocketManager.sendExecuteTask("quest3_tool_sorting_v1");
     if (!success) {
       commandPending.value = false;
       operationMessage.value = "发送任务启动命令失败";

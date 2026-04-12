@@ -1,7 +1,7 @@
-# Quest3 工具抓取实验 ToDo（2026-04-10 修订）
+﻿# Quest3 工具抓取实验 ToDo（2026-04-12 修订）
 
 基于 [task.md](task.md) 重新整理。  
-本清单以 `2026-04-10` 主分支真实代码状态为基准，分成两部分：
+本清单以 `2026-04-12` 主分支真实代码状态为基准，分成两部分：
 
 1. 当前已经完成的基线总结
 2. 围绕 Quest3 工具抓取实验的新主链路任务
@@ -22,7 +22,7 @@
 ### A. 仓库与共享基线
 
 - [x] `P0` 已有 `shared/scene_manifest.json` 作为场景基线
-- [x] `P0` 已在 manifest 中定义 UR5、rack、battery_pack、camera_base、camera 的初始位姿
+- [x] `P0` 已在 manifest 中定义 UR5、rack、toolbox、wrench_01、screwdriver_01、pliers_01、camera_base、camera 的初始位姿
 - [x] `P0` 已在 manifest 中记录 UR5 home 姿态与夹爪高层语义
 - [x] `P0` 已明确前后端需要共享场景基线，而不是完全各写一套
 
@@ -45,12 +45,15 @@
 - [x] `P0` 已存在 `backend/mujoco_models/environment.xml`
 - [x] `P0` 已存在 `backend/mujoco_models/ur5.xml`
 - [x] `P0` 已存在 `backend/mujoco_models/rack.xml`
-- [x] `P0` 已存在 `backend/mujoco_models/battery_pack.xml`
+- [x] `P0` 已存在 `backend/mujoco_models/toolbox.xml`
+- [x] `P0` 已存在 `backend/mujoco_models/wrench.xml`
+- [x] `P0` 已存在 `backend/mujoco_models/screwdriver.xml`
+- [x] `P0` 已存在 `backend/mujoco_models/pliers.xml`
 - [x] `P0` 已存在 `backend/mujoco_models/camera_base.xml`
 - [x] `P0` 已存在 `backend/mujoco_models/camera.xml`
 - [x] `P0` 已整理 MuJoCo 所需 mesh 目录
 - [x] `P0` 已将 UR5 + Robotiq 结构落入 MuJoCo 模型
-- [x] `P1` 已将 battery pack 网格做后端可加载处理
+- [x] `P1` 已保留 `battery_pack.xml` 历史资产用于旧版本回溯
 
 ### D. 前后端状态同步基线
 
@@ -61,9 +64,17 @@
 - [x] `P0` 前端已支持接收 `state_update` 和 `state_broadcast`
 - [x] `P0` 前端已将后端 `qpos` 回放到 UR5 关节显示
 - [x] `P0` 前端已将后端夹爪状态回放到 Robotiq 显示
-- [x] `P0` 前端已将 `battery_pack` 位姿从后端同步到 Three.js 场景
+- [x] `P0` 前端已将 `toolbox + wrench_01 + screwdriver_01 + pliers_01` 位姿从后端同步到 Three.js 场景
 - [x] `P0` 前端已加入手动发送后的防回弹保护逻辑
 - [x] `P1` 前端已加入状态缓冲、连接质量与插值显示
+
+### D2. 工具箱与工具场景校准（2026-04-12）
+
+- [x] `P0` 工具箱尺寸已放大到当前基线（`scale=0.32`）
+- [x] `P0` 工具尺寸已放大到当前基线（`scale=0.13`）
+- [x] `P0` 工具箱与工具已分区放置，避免互相重叠
+- [x] `P0` 工具箱姿态已校准为开口朝上，且长边不带盖侧朝向机械臂
+- [x] `P0` 工具箱与工具位姿已在前端与 MuJoCo 侧一一对应
 
 ### E. 桌面 viewer 桥接基线
 
@@ -126,46 +137,47 @@
 
 ### S1.1 工具资产范围冻结
 
-- [ ] `P0` 冻结第一版工具范围为 `bolt + wrench + toolbox`
-- [ ] `P0` 明确是否保留 `camera` / `camera_base` 作为调试对象
-- [ ] `P0` 为每个工具定义唯一 ID、类别名和显示名
-- [ ] `P0` 为每类工具定义前端资产路径
-- [ ] `P0` 为每类工具定义 MuJoCo mesh / XML 路径
+- [x] `P0` 冻结第一版工具范围为 `wrench + screwdriver + pliers + toolbox`
+- [x] `P0` 明确是否保留 `camera` / `camera_base` 作为调试对象
+- [x] `P0` 为每个工具定义唯一 ID、类别名和显示名
+- [x] `P0` 为每类工具定义前端资产路径
+- [x] `P0` 为每类工具定义 MuJoCo mesh / XML 路径
 - [ ] `P1` 为每类工具定义抓取提示位姿或抓取推荐区域
 
 ### S1.2 共享配置重构
 
-- [ ] `P0` 更新 `shared/scene_manifest.json`，从 `battery_pack` 场景切换到 `tools + toolbox`
-- [ ] `P0` 新增 `shared/tool_catalog.json`
-- [ ] `P0` 在共享配置中定义工具箱槽位
-- [ ] `P0` 在共享配置中定义桌面随机投放区域
-- [ ] `P0` 在共享配置中定义对象质量、尺寸、缩放基线
-- [ ] `P1` 在共享配置中加入工具类别到目标槽位的映射
+- [x] `P0` 更新 `shared/scene_manifest.json`，从 `battery_pack` 场景切换到 `tools + toolbox`
+- [x] `P0` 新增 `shared/tool_catalog.json`
+- [x] `P0` 在共享配置中定义工具箱槽位
+- [x] `P0` 在共享配置中定义桌面随机投放区域
+- [x] `P0` 在共享配置中定义对象质量、尺寸、缩放基线
+- [x] `P1` 在共享配置中加入工具类别到目标槽位的映射
 
 ### S1.3 前端场景替换
 
-- [ ] `P0` 移除前端对 `battery_pack` 单对象逻辑的依赖
-- [ ] `P0` 新增前端 `toolbox` 模型加载逻辑
-- [ ] `P0` 新增前端多工具对象加载逻辑
-- [ ] `P0` 前端支持按对象 ID 更新多工具位姿
-- [ ] `P0` 旧控制面板中的“电池包”命名统一改为“工具对象”
-- [ ] `P1` 前端为不同工具类别显示不同图标或标签
+- [x] `P0` 移除前端对 `battery_pack` 单对象逻辑的依赖
+- [x] `P0` 新增前端 `toolbox` 模型加载逻辑
+- [x] `P0` 新增前端多工具对象加载逻辑
+- [x] `P0` 前端支持按对象 ID 更新多工具位姿
+- [x] `P0` 旧控制面板中的“电池包”命名统一改为“工具对象”
+- [x] `P1` 前端为不同工具类别显示不同图标或标签
 
 ### S1.4 后端场景替换
 
-- [ ] `P0` 将 `backend/mujoco_models/battery_pack.xml` 替换为工具对象模型结构
-- [ ] `P0` 新增 `toolbox.xml`
-- [ ] `P0` 将 `environment.xml` 改为加载工具箱和工具对象
-- [ ] `P0` `SimulationCore` 支持多工具对象状态收集
-- [ ] `P0` `SimulationCore` 支持 reset 时随机生成工具位置
-- [ ] `P1` 为不同工具设置合理的质量、摩擦和碰撞参数
+- [x] `P0` 在 `backend/mujoco_models/` 中落地 `toolbox/wrench/screwdriver/pliers` 工具对象模型结构
+- [x] `P0` 新增 `toolbox.xml`
+- [x] `P0` 将 `environment.xml` 改为加载工具箱和工具对象
+- [x] `P0` `SimulationCore` 支持多工具对象状态收集
+- [x] `P0` `SimulationCore` 支持 reset 时随机生成工具位置
+- [x] `P1` 为不同工具设置合理的质量、摩擦和碰撞参数
 
 ### S1.5 验收
 
-- [ ] `P0` 前后端均不再以 `battery_pack` 作为主任务对象
-- [ ] `P0` 前端能稳定显示 `bolt`、`wrench`、`toolbox`
-- [ ] `P0` 后端能广播多工具对象状态
-- [ ] `P0` reset 后工具可在桌面随机区域内生成
+- [x] `P0` 前后端均不再以 `battery_pack` 作为主任务对象
+- [x] `P0` 前端能稳定显示 `wrench`、`screwdriver`、`pliers`、`toolbox`
+- [x] `P0` 后端能广播多工具对象状态
+- [x] `P0` reset 后工具可在桌面随机区域内生成
+- [x] `P0` 工具箱在桌面上、开口朝上、与工具保持分离且在机械臂工作范围内
 
 ---
 
@@ -566,9 +578,9 @@
 本周建议完成：
 
 - [ ] `P0` 明确最终任务表述为“随机工具抓取并放入工具箱，完成工具入库”
-- [ ] `P0` 冻结 `bolt + wrench + toolbox` 第一版对象范围
+- [x] `P0` 冻结 `wrench + screwdriver + pliers + toolbox` 第一版对象范围
 - [ ] `P0` 明确每种工具的显示名、实例 ID、资产路径
-- [ ] `P0` 设计 `shared/tool_catalog.json`
+- [x] `P0` 设计 `shared/tool_catalog.json`
 - [ ] `P0` 设计工具箱槽位和桌面随机区域
 - [ ] `P1` 先冻结一版仿真 / 实机统一动作与观测接口草案
 - [ ] `P0` 确定是否保留 `camera` / `camera_base` 作为调试对象
@@ -646,13 +658,13 @@
 
 目标：
 
-- 从 battery 场景切换到工具场景
+- 在已切换完成的工具场景基础上推进脚本化任务闭环
 - 先用脚本化任务验证工具入库闭环
 
 本周建议完成：
 
-- [ ] `P0` 前后端完成 `tools + toolbox` 替换
-- [ ] `P0` 后端支持多工具对象状态广播
+- [x] `P0` 前后端完成 `tools + toolbox` 替换
+- [x] `P0` 后端支持多工具对象状态广播
 - [ ] `P0` 完成抓取成功判定与附着机制
 - [ ] `P0` 完成脚本化任务 `quest3_tool_sorting_v1`
 - [ ] `P0` 前端任务入口真实驱动脚本任务
@@ -753,15 +765,15 @@
 
 为了避免任务过散，建议下一轮实际开发优先盯住下面这一组主链路任务：
 
-- [ ] `P0` 冻结 `bolt + wrench + toolbox` 第一版对象范围
-- [ ] `P0` 设计 `shared/tool_catalog.json`
+- [x] `P0` 冻结 `wrench + screwdriver + pliers + toolbox` 第一版对象范围
+- [x] `P0` 设计 `shared/tool_catalog.json`
 - [ ] `P0` 设计 `VR模式` 按钮与 Quest3 菜单布局
 - [ ] `P0` 设计 Quest3 局域网接入后的控制启动顺序
 - [ ] `P0` 明确手柄模式的完整按键映射
 - [ ] `P0` 明确手势模式的最小可行交互方案
 - [ ] `P0` 设计数据集目录和 episode 文件格式
-- [ ] `P0` 前后端把 `battery_pack` 逻辑替换为 `tools + toolbox`
-- [ ] `P0` 实现多工具对象状态同步
+- [x] `P0` 前后端把 `battery_pack` 逻辑替换为 `tools + toolbox`
+- [x] `P0` 实现多工具对象状态同步
 - [ ] `P0` 实现抓取成功判定与附着机制
 - [ ] `P0` 实现脚本化 `quest3_tool_sorting_v1`
 - [ ] `P0` 打通 Quest3 数据采集闭环
@@ -779,3 +791,4 @@
 - 当前最不建议的路线，是在工具场景、Quest3 数据格式、脚本化任务都没稳定前，直接开始 RL。
 - 当前最需要文档里反复强调的顺序，是“人工采集 -> 初训模型入库 -> 可选 MuJoCo 验证 -> RL 微调 -> RL 模型入库 -> 可选 MuJoCo 再验证 -> 预留实机部署入口”。
 - 当前最值得保留的资产，是主分支已经存在的前后端同步链路和 MuJoCo viewer 桥接逻辑，后续 Quest3 输入桥接可以尽量复用这套思路。
+

@@ -1,8 +1,8 @@
-# Quest3 工具抓取实验任务书（2026-04-10 修订）
+﻿# Quest3 工具抓取实验任务书（2026-04-12 修订）
 
 ## 1. 文档定位
 
-- 本文档基于 `2026-04-10` 从 `origin/main` 同步后的实际代码状态编写。
+- 本文档基于 `2026-04-12` 的仓库实际代码状态编写。
 - 本轮目标不是改业务代码，而是把现有“电池模块搬运演示”重新整理为“Quest3 示教采集 + pi0.5 初训 + MuJoCo 强化学习微调 + 工具抓取入箱”的详细实施方案。
 - 本文档同时服务三类用途：
   1. 开发路线图
@@ -19,7 +19,7 @@
 2. 由你本人通过 Quest3 在 MuJoCo 数字孪生场景中手动示教采集抓取工具的数据集，系统负责录制、存档与回放。
 3. 由你先用采集的数据对 `pi0.5` 做初步模仿学习或行为克隆训练，并将初训模型存入模型目录。
 4. 初训模型可以在需要时加载回 MuJoCo 做仿真验证；强化学习微调后的模型也同样可以回到 MuJoCo 再验证。
-5. 将当前电池模块场景替换为“桌面随机工具 + 工具箱”场景，且前后端资产、状态和交互都要同步替换。
+5. 已完成：将电池模块场景替换为“桌面随机工具 + 工具箱”场景，且前后端资产、状态和交互保持同步。
 6. 最终目标任务是：UR5 从桌面随机位置抓取工具，并将工具放入工具箱，即完成“工具入库”。
 7. VR 交互采用“非沉浸式优先”的设计，不重做整套沉浸式场景，而是在现有界面基础上扩展 Quest3 输入模式。
 8. 强化学习环境、模型加载接口、MuJoCo 验证入口和微调流程由系统侧负责搭建；数据采集与初训由你执行。
@@ -144,7 +144,10 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
   - UR5 基座变换
   - 机器人 home 姿态
   - `rack`
-  - `battery_pack`
+  - `toolbox`
+  - `wrench_01`
+  - `screwdriver_01`
+  - `pliers_01`
   - `camera_base`
   - `camera`
 - 已明确夹爪的高层语义输入 `gripper_opening` 与关键关节集合。
@@ -174,7 +177,10 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 - `backend/mujoco_models/environment.xml`
 - `backend/mujoco_models/ur5.xml`
 - `backend/mujoco_models/rack.xml`
-- `backend/mujoco_models/battery_pack.xml`
+- `backend/mujoco_models/toolbox.xml`
+- `backend/mujoco_models/wrench.xml`
+- `backend/mujoco_models/screwdriver.xml`
+- `backend/mujoco_models/pliers.xml`
 - `backend/mujoco_models/camera_base.xml`
 - `backend/mujoco_models/camera.xml`
 - `backend/mujoco_models/meshes/`
@@ -182,8 +188,8 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 说明：
 
 - UR5 + Robotiq 结构已经进入 MuJoCo 模型。
-- `battery_pack` 已做过一次后端网格降采样处理，以满足 MuJoCo 面片限制。
-- 当前场景仍然是电池版本，不是工具版本。
+- `environment.xml` 已切换为包含 `toolbox + wrench + screwdriver + pliers` 的工具入库场景。
+- `battery_pack.xml` 仍保留在仓库中作为历史资产，但当前任务默认不再加载。
 
 #### 3.1.4 前后端状态同步基线
 
@@ -200,7 +206,7 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
   - 发送夹爪开合命令
   - 接收后端 `state_update` / `state_broadcast`
   - 将后端 `qpos` 映射到 UR5 与夹爪显示
-  - 将 `battery_pack` 位姿从后端同步回 Three.js 场景
+  - 将 `toolbox + wrench_01 + screwdriver_01 + pliers_01` 位姿从后端同步回 Three.js 场景
 - 前端已经加入：
   - 状态缓冲
   - 连接质量统计
@@ -242,15 +248,15 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 
 这意味着当前系统最多只是“能控制机械臂和夹爪”，但还不是“已经具备任务闭环”。
 
-#### 3.2.3 当前“工具识别”仍是占位逻辑
+#### 3.2.3 当前“工具识别”已完成基础替换，但任务闭环仍是占位逻辑
 
-`frontend/src/components/control.vue` 当前仍然存在较强的演示性：
+`frontend/src/components/control.vue` 当前状态是：
 
-- 识别对象仍然只从 `battery_pack` 构造一个“电池包”条目
-- 抓取、移动、放置使用的是预设姿态
-- 没有逆运动学求解
-- 没有真正工具类别管理
-- 没有工具箱槽位逻辑
+- 已从 `state.objects` 动态提取工具对象，并过滤 `rack`、`camera`、`camera_base`、`toolbox`
+- 已按 `wrench / screwdriver / pliers` 分类展示名称和图标
+- 抓取、移动、放置仍以预设流程命令为主
+- 仍未接入逆运动学求解
+- 仍未接入真实抓取判定与工具箱槽位约束
 
 因此当前 UI 里虽然已经有“识别桌面工具 / 抓取工具 / 放置工具”的入口，但仍不能视为真实任务功能已经完成。
 
@@ -285,20 +291,25 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 
 `backend/rl/` 当前仅是空目录初始化，不具备训练功能。
 
-#### 3.2.6 场景资产仍是 battery 版本
+#### 3.2.6 场景资产已切换为工具版本（已完成）
 
-当前前后端仍使用：
+当前前后端默认主场景已使用：
 
-- `frontend/public/battery/`
-- `backend/mujoco_models/battery_pack.xml`
+- `frontend/public/tools/urdf/toolbox.urdf`
+- `frontend/public/tools/urdf/wrench.urdf`
+- `frontend/public/tools/urdf/screwdriver.urdf`
+- `frontend/public/tools/urdf/pliers.urdf`
+- `backend/mujoco_models/toolbox.xml`
+- `backend/mujoco_models/wrench.xml`
+- `backend/mujoco_models/screwdriver.xml`
+- `backend/mujoco_models/pliers.xml`
+- `shared/scene_manifest.json` 与 `shared/tool_catalog.json`
 
-还没有：
+已完成能力：
 
-- `bolt`
-- `wrench`
-- `toolbox`
 - 工具状态注册表
 - 多工具随机生成逻辑
+- 前后端按 manifest 一一对应同步对象位姿
 
 ### 3.3 对旧 ToDo 的客观结论
 
@@ -333,23 +344,48 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 - 参考相机或调试相机
 - 可选的桌面随机投放区域标记
 
+#### 4.1.1 2026-04-12 场景冻结参数（前后端一一对应）
+
+以下参数以 `shared/scene_manifest.json` 与 `shared/tool_catalog.json` 为唯一真值，前端与 MuJoCo 必须严格对齐：
+
+| 对象 | position (m) | rotation_rpy (rad) | scale 基线 |
+| --- | --- | --- | --- |
+| `toolbox` | `[0.48, 0.5, -0.2]` | `[-1.5707963267948966, 0.0, -1.5707963267948966]` | `0.32` |
+| `wrench_01` | `[0.08, 0.5240336800934792, 0.3]` | `[0.0, 0.0, 0.0]` | `0.13` |
+| `screwdriver_01` | `[0.2, 0.5, 0.26]` | `[-1.5707963267948966, 0.0, 0.0]` | `0.13` |
+| `pliers_01` | `[0.28, 0.5100852437109232, 0.12]` | `[0.0, 0.0, 0.0]` | `0.13` |
+
+说明：
+
+- 工具箱当前姿态为“开口朝上、放置在桌面上、长边不带盖侧朝向机械臂”。
+- 位置与姿态取自 `scene_manifest`，缩放基线取自 `tool_catalog.physics_baseline.scale`。
+
+#### 4.1.2 工具箱槽位冻结参数
+
+| 槽位 | 工具类别 | position (m) | size (m) |
+| --- | --- | --- | --- |
+| `slot_wrench` | `wrench` | `[0.46, 0.54, -0.175]` | `[0.11, 0.04, 0.04]` |
+| `slot_screwdriver` | `screwdriver` | `[0.48, 0.54, -0.2]` | `[0.04, 0.12, 0.04]` |
+| `slot_pliers` | `pliers` | `[0.46, 0.54, -0.225]` | `[0.11, 0.04, 0.04]` |
+
 ### 4.2 工具对象范围
 
-你明确提出“螺栓、扳手等工具，不需要太多”，因此第一版不建议做复杂零件库，建议控制在一个收敛范围内。
+当前代码已落地的第一版范围如下：
 
 建议拆成两层：
 
 #### V1 必做对象
 
-- 螺栓 `bolt`
 - 扳手 `wrench`
+- 螺丝刀 `screwdriver`
+- 钳子 `pliers`
 - 工具箱 `toolbox`
 
 #### V2 可选扩展对象
 
-- 螺丝刀 `screwdriver`
+- 螺栓 `bolt`
 - 六角扳手 `hex_key`
-- 钳子 `pliers`
+- 锤子 `hammer`
 
 ### 4.3 任务目标定义
 
@@ -376,7 +412,7 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 
 1. 你的论文核心并不是“物体种类越多越好”，而是“Quest3 数据采集 + 模仿学习 + RL 微调”这条实验链是否成立。
 2. 工具过多会显著增加：资产处理、碰撞调参、抓取策略难度、数据标注成本。
-3. 现有代码还是从电池场景切换阶段，先把 2 类工具做稳，比一次上 5 类工具更利于项目收敛。
+3. 当前工具场景已经切换完成，先把 `wrench + screwdriver + pliers` 这 3 类工具做稳，比一次上 6 类工具更利于项目收敛。
 
 ---
 
@@ -802,7 +838,7 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 | `qvel` | `number[]` | `[0.0, 0.1, ...]` | 当前关节速度 |
 | `ee_pose` | `object` | `{"position":[...],"quaternion":[...]}` | 末端位姿 |
 | `gripper_opening` | `number` | `0.35` | 当前夹爪开合量 |
-| `objects` | `object` | `{"wrench_01": {...}, "bolt_01": {...}}` | 所有工具和工具箱对象状态 |
+| `objects` | `object` | `{"wrench_01": {...}, "screwdriver_01": {...}, "pliers_01": {...}, "toolbox": {...}}` | 所有工具和工具箱对象状态 |
 | `target_tool_id` | `string` | `wrench_01` | 当前目标工具 |
 | `attached_to_gripper` | `boolean` | `false` | 当前是否附着在夹爪上 |
 | `contact_state` | `object` | `{"left_pad": true, "right_pad": false}` | 当前接触信息 |
@@ -1124,7 +1160,7 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
 
 ### 9.1 前端需要改的核心点
 
-- 将 `battery_pack` 相关显示和逻辑替换为 `tools + toolbox`
+- `tools + toolbox` 场景替换已完成，后续重点是任务执行与采集训练闭环
 - 底部按钮将 `状态同步` 改为 `VR模式`
 - 新增 Quest3 模式菜单，不覆盖现有界面
 - 新增采集状态显示：
@@ -1132,12 +1168,12 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
   - 当前 episode
   - 当前输入模式
   - 是否正在录制
-- 支持多工具对象状态同步，而不是只同步一个 `battery_pack`
+- 继续增强多工具对象状态同步稳定性与插值质量
 - 根据 Quest3 能力决定展示桌面端 UI 还是 Quest3 精简 UI
 
 ### 9.2 后端需要改的核心点
 
-- 将对象状态从单一 `battery_pack` 扩展为 `tools[] + toolbox`
+- 多对象状态模型（`tools[] + toolbox`）已落地，后续重点是任务与策略运行时
 - 新增 Quest3 输入桥接层或 VR 输入状态模型
 - 新增数据集记录器
 - 新增模型加载器与模型注册器
@@ -1240,21 +1276,21 @@ experiments/
 
 ## 11. 分阶段实施建议
 
-### 阶段 S0：基线固化与旧任务归档
+### 阶段 S0：基线固化与旧任务归档（已完成）
 
 目标：
 
-- 先明确当前 battery 版本已经完成到哪里
-- 把现有代码状态作为“旧任务基线”归档
-- 在此基础上切换到工具抓取任务
+- 已明确旧 battery 版本的完成边界
+- 已把现有代码状态作为“旧任务基线”归档
+- 已在此基础上切换到工具抓取任务
 
-### 阶段 S1：工具场景替换
+### 阶段 S1：工具场景替换（已完成）
 
 目标：
 
-- 前后端同时替换电池资产
-- 完成 `tools + toolbox` 的统一场景定义
-- 完成多对象状态同步
+- 已完成前后端场景从电池资产到工具资产的替换
+- 已完成 `tools + toolbox` 的统一场景定义
+- 已完成多对象状态同步与重置随机投放
 
 ### 阶段 S2：Quest3 非沉浸式 VR 控制
 
@@ -1353,7 +1389,7 @@ experiments/
 ## 13. 当前最重要的结论
 
 1. 当前最有价值的既有成果，是前后端场景与状态同步基础，而不是任务本身已经完成。
-2. 下一步最该做的，不是直接训练，而是先把场景从 `battery_pack` 切换到 `tools + toolbox`。
+2. 场景切换（`battery_pack` -> `tools + toolbox`）已经完成，下一步应聚焦任务闭环、数据采集与训练链路。
 3. Quest3 采集链路必须尽早设计好数据格式，否则后面训练和论文都会返工。
 4. `execute_task`、抓取附着、数据记录、模型加载、MuJoCo 验证入口、RL 环境目前都没有真正落地，这是后续主工作量。
 5. 训练链条必须明确是“你采集和初训，系统搭 RL 环境与验证入口”，不能混成一个模糊阶段。
@@ -1366,14 +1402,13 @@ experiments/
 
 建议严格按下面顺序推进：
 
-1. 先完成工具场景与工具箱替换方案冻结
-2. 再完成 Quest3 `VR模式` 交互和输入状态设计
-3. 再建立数据集目录、格式和录制协议
-4. 再做 Quest3 局域网控制链与录制器闭环
-5. 再做脚本化工具抓取任务
-6. 再进入 `pi0.5` 初训，完成模型入库，并预留 MuJoCo 验证入口
-7. 最后进入 RL 微调，完成 RL 模型入库，并同样预留 MuJoCo 验证入口
-8. 在 RL 主链路稳定后，补齐 `runtime_target`、标定、watchdog 和部署接口，为真实 UR5 接入做准备
+1. 在已完成场景冻结的基础上，先完成 Quest3 `VR模式` 交互和输入状态设计
+2. 再建立数据集目录、格式和录制协议
+3. 再做 Quest3 局域网控制链与录制器闭环
+4. 再做脚本化工具抓取任务
+5. 再进入 `pi0.5` 初训，完成模型入库，并预留 MuJoCo 验证入口
+6. 最后进入 RL 微调，完成 RL 模型入库，并同样预留 MuJoCo 验证入口
+7. 在 RL 主链路稳定后，补齐 `runtime_target`、标定、watchdog 和部署接口，为真实 UR5 接入做准备
 
 这条顺序的核心原因是：
 
@@ -1383,3 +1418,4 @@ experiments/
 - 脚本化任务没跑通，RL 很难高效收敛
 - 如果完全不预留 MuJoCo 验证入口，后续就很难定位问题到底出在数据、模型还是环境
 - 没有实验记录规范，后续论文会非常被动
+

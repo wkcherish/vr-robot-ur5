@@ -108,7 +108,7 @@ class WebSocketManager {
     return this.sendMessage(message);
   }
 
-  sendExecuteTask(taskName = 'battery_transfer_v1') {
+  sendExecuteTask(taskName = 'quest3_tool_sorting_v1') {
     return this.sendMessage({
       type: 'execute_task',
       data: { task_name: taskName },

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import random
 import time
 from copy import deepcopy
 from dataclasses import dataclass
@@ -41,6 +42,8 @@ GRIPPER_DRIVER_LIMIT = 0.87
 TOOL_FRAME_CANDIDATES = ["tool0", "wrist_3_link"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
+BACKEND_FRAME_Z_OFFSET = 0.5
+BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
 
 
 @dataclass
@@ -67,6 +70,36 @@ def _rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> list[float]:
     return [w, x, y, z]
 
 
+def _euler_xyz_to_quaternion(x_angle: float, y_angle: float, z_angle: float) -> list[float]:
+    """
+    Match Three.js `Euler(..., "XYZ")` so manifest rotations stay frame-consistent
+    between frontend object init and backend MuJoCo state sync.
+    """
+    hx = x_angle * 0.5
+    hy = y_angle * 0.5
+    hz = z_angle * 0.5
+    sx, cx = math.sin(hx), math.cos(hx)
+    sy, cy = math.sin(hy), math.cos(hy)
+    sz, cz = math.sin(hz), math.cos(hz)
+    return [
+        cx * cy * cz - sx * sy * sz,
+        sx * cy * cz + cx * sy * sz,
+        cx * sy * cz - sx * cy * sz,
+        cx * cy * sz + sx * sy * cz,
+    ]
+
+
+def _quaternion_multiply(lhs_wxyz: list[float], rhs_wxyz: list[float]) -> list[float]:
+    lw, lx, ly, lz = lhs_wxyz
+    rw, rx, ry, rz = rhs_wxyz
+    return [
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    ]
+
+
 class SimulationCore:
     def __init__(self, manifest_path: Path):
         self._manifest_path = manifest_path
@@ -83,6 +116,8 @@ class SimulationCore:
         self._arm_joint_names = list(DEFAULT_ARM_JOINT_NAMES)
         self._home_arm_qpos = list(DEFAULT_HOME_QPOS)
         self._scene_objects_template: dict[str, dict[str, Any]] = {}
+        self._object_reset_policy: dict[str, dict[str, Any]] = {}
+        self._spawn_regions: dict[str, dict[str, Any]] = {}
 
         self._mj_model: Any | None = None
         self._mj_data: Any | None = None
@@ -216,19 +251,87 @@ class SimulationCore:
             self._home_arm_qpos = list(DEFAULT_HOME_QPOS)
 
         self._scene_objects_template = {}
+        self._object_reset_policy = {}
         for obj in self._manifest_data.get("objects", []):
             obj_id = str(obj.get("id", "")).strip()
             if not obj_id:
                 continue
             transform = obj.get("transform", {})
-            position = [float(v) for v in transform.get("position", [0.0, 0.0, 0.0])]
+            frontend_position = [float(v) for v in transform.get("position", [0.0, 0.0, 0.0])]
             rotation_rpy = [float(v) for v in transform.get("rotation_rpy", [0.0, 0.0, 0.0])]
-            quaternion = _rpy_to_quaternion(*rotation_rpy)
+            frontend_quaternion = _euler_xyz_to_quaternion(*rotation_rpy)
+            backend_position = self._frontend_to_backend_position(frontend_position)
+            backend_quaternion = _quaternion_multiply(BACKEND_ALIGNMENT_QUATERNION, frontend_quaternion)
             self._scene_objects_template[obj_id] = {
-                "position": position,
-                "quaternion": quaternion,
+                "position": backend_position,
+                "quaternion": backend_quaternion,
                 "attached_to_gripper": False,
             }
+            reset_policy = obj.get("reset_policy", {})
+            if isinstance(reset_policy, dict):
+                self._object_reset_policy[obj_id] = dict(reset_policy)
+            else:
+                self._object_reset_policy[obj_id] = {"mode": "fixed"}
+
+        self._spawn_regions = {}
+        for region in self._manifest_data.get("spawn_regions", []):
+            self._register_spawn_region(region)
+        self._load_spawn_regions_from_tool_catalog()
+
+    def _register_spawn_region(self, region: Any) -> None:
+        if not isinstance(region, dict):
+            return
+        region_id = str(region.get("id", "")).strip()
+        if not region_id:
+            return
+        min_vec = region.get("min", [0.0, 0.0, 0.0])
+        max_vec = region.get("max", [0.0, 0.0, 0.0])
+        if not isinstance(min_vec, list) or not isinstance(max_vec, list):
+            return
+        if len(min_vec) < 3 or len(max_vec) < 3:
+            return
+        try:
+            min_pos = [float(min_vec[0]), float(min_vec[1]), float(min_vec[2])]
+            max_pos = [float(max_vec[0]), float(max_vec[1]), float(max_vec[2])]
+        except (TypeError, ValueError):
+            return
+
+        frame = str(region.get("frame", "frontend")).strip().lower()
+        if frame not in {"frontend", "backend"}:
+            frame = "frontend"
+
+        self._spawn_regions[region_id] = {
+            "frame": frame,
+            "min": min_pos,
+            "max": max_pos,
+        }
+
+    def _load_spawn_regions_from_tool_catalog(self) -> None:
+        catalog_path_value = self._manifest_data.get("tool_catalog_path")
+        if not isinstance(catalog_path_value, str) or not catalog_path_value.strip():
+            return
+
+        catalog_path = Path(catalog_path_value).expanduser()
+        if not catalog_path.is_absolute():
+            catalog_path = (REPO_ROOT / catalog_path).resolve()
+        if not catalog_path.exists():
+            return
+
+        try:
+            raw = catalog_path.read_text(encoding="utf-8")
+            catalog_data = json.loads(raw)
+        except Exception:
+            return
+
+        for region in catalog_data.get("spawn_regions", []):
+            region_id = str(region.get("id", "")).strip() if isinstance(region, dict) else ""
+            if region_id and region_id in self._spawn_regions:
+                continue
+            self._register_spawn_region(region)
+
+    def _frontend_to_backend_position(self, frontend_position: list[float]) -> list[float]:
+        x_frontend, y_frontend, z_frontend = frontend_position
+        return [x_frontend, -z_frontend, y_frontend + BACKEND_FRAME_Z_OFFSET]
 
     def _resolve_model_path(self, model_path: str | None) -> Path:
         if model_path is None:
@@ -314,6 +417,37 @@ class SimulationCore:
                 self._tool_body_id = int(body_id)
                 break
 
+    def _sync_scene_objects_to_model_locked(self) -> None:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
+            return
+
+        model_changed = False
+        for obj_id, template_state in self._scene_objects_template.items():
+            body_id = self._object_body_ids.get(obj_id, -1)
+            if body_id < 0:
+                continue
+
+            position = template_state.get("position", [0.0, 0.0, 0.0])
+            quaternion = template_state.get("quaternion", [1.0, 0.0, 0.0, 0.0])
+
+            if isinstance(position, list) and len(position) >= 3:
+                self._mj_model.body_pos[body_id] = [float(position[0]), float(position[1]), float(position[2])]
+                model_changed = True
+
+            if isinstance(quaternion, list) and len(quaternion) >= 4:
+                self._mj_model.body_quat[body_id] = [
+                    float(quaternion[0]),
+                    float(quaternion[1]),
+                    float(quaternion[2]),
+                    float(quaternion[3]),
+                ]
+                model_changed = True
+
+            template_state["attached_to_gripper"] = False
+
+        if model_changed and _mujoco is not None:
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
+
     def _reset_state_locked(self) -> None:
         self._arm_qpos = list(self._home_arm_qpos)
         self._arm_qvel = [0.0 for _ in self._arm_qpos]
@@ -337,6 +471,8 @@ class SimulationCore:
                     self._mj_data.qpos[qpos_addr] = float(value)
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
+        self._sync_scene_objects_to_model_locked()
+        self._apply_object_reset_policy_locked()
         self._objects_state = self._collect_objects_state_locked()
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
@@ -345,6 +481,48 @@ class SimulationCore:
         self._stats["commands"] = 0
         self._stats["last_step_ms"] = 0.0
         self._stats["avg_step_ms"] = 0.0
+
+    def _apply_object_reset_policy_locked(self) -> None:
+        using_mujoco = self._using_mujoco_model()
+        model_changed = False
+
+        for obj_id, policy in self._object_reset_policy.items():
+            mode = str(policy.get("mode", "fixed")).strip().lower()
+            if mode != "random_in_region":
+                continue
+
+            region_id = str(policy.get("region_id", "")).strip()
+            if not region_id:
+                continue
+            region = self._spawn_regions.get(region_id)
+            if region is None:
+                continue
+
+            min_pos = region["min"]
+            max_pos = region["max"]
+            sampled = [
+                random.uniform(min_pos[0], max_pos[0]),
+                random.uniform(min_pos[1], max_pos[1]),
+                random.uniform(min_pos[2], max_pos[2]),
+            ]
+            backend_position = (
+                self._frontend_to_backend_position(sampled)
+                if region["frame"] == "frontend"
+                else sampled
+            )
+
+            if obj_id in self._scene_objects_template:
+                self._scene_objects_template[obj_id]["position"] = list(backend_position)
+                self._scene_objects_template[obj_id]["attached_to_gripper"] = False
+
+            if using_mujoco and self._mj_model is not None:
+                body_id = self._object_body_ids.get(obj_id, -1)
+                if body_id >= 0:
+                    self._mj_model.body_pos[body_id] = backend_position
+                    model_changed = True
+
+        if using_mujoco and model_changed and _mujoco is not None and self._mj_model is not None and self._mj_data is not None:
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
 
     def _apply_arm_command(self, target_positions: list[float] | None, n_steps: int) -> None:
         if target_positions is None:

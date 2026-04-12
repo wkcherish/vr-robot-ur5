@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<robot name="wrench">
+  <material name="wrench_metal">
+    <color rgba="0.65 0.69 0.74 1.0" />
+  </material>
+
+  <link name="wrench_link">
+    <visual>
+      <origin xyz="-0.00734085 -0.00342270 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/wrench.stl" scale="0.13 0.13 0.13" />
+      </geometry>
+      <material name="wrench_metal" />
+    </visual>
+    <collision>
+      <origin xyz="-0.00734085 -0.00342270 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/wrench.stl" scale="0.13 0.13 0.13" />
+      </geometry>
+    </collision>
+  </link>
+</robot>

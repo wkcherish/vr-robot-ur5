@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<robot name="toolbox">
+  <material name="toolbox_body">
+    <color rgba="0.76 0.20 0.18 1.0" />
+  </material>
+
+  <link name="toolbox_link">
+    <visual>
+      <origin xyz="-0.00247949 0.05470546 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/box.stl" scale="0.32 0.32 0.32" />
+      </geometry>
+      <material name="toolbox_body" />
+    </visual>
+    <collision>
+      <origin xyz="-0.00247949 0.05470546 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/box.stl" scale="0.32 0.32 0.32" />
+      </geometry>
+    </collision>
+  </link>
+</robot>
