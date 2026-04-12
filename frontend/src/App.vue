@@ -172,7 +172,6 @@
         </div>
 
         <!-- 引入相机状态面板 -->
-        <Camera v-show="showCameraPanel" />
 
         <!-- 添加底部控制面板 -->
         <div class="panel-controls">
@@ -189,13 +188,6 @@
             :class="{ active: showRobotPanel }"
           >
             <span class="panel-icon">🤖</span> 机器人控制
-          </button>
-          <button
-            @click="togglePanel('camera')"
-            class="panel-control-button"
-            :class="{ active: showCameraPanel }"
-          >
-            <span class="panel-icon">📷</span> 相机状态
           </button>
           <button
             @click="togglePanel('control')"
@@ -234,7 +226,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import Menu from "./components/robot.vue";
-import Camera from "./components/camera.vue"; // 引入相机组件
 import Control from "./components/control.vue"; // 引入仿真控制组件
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -250,7 +241,6 @@ const taskProgress = ref(0);
 // 各面板显示状态控制
 const showSlider = ref(false); // 滑块面板默认不显示
 const showRobotPanel = ref(false); // 机器人控制面板默认显示
-const showCameraPanel = ref(false); // 相机状态面板默认显示
 const showControlPanel = ref(false); // 仿真控制面板默认显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
@@ -1038,9 +1028,6 @@ function togglePanel(panel) {
       break;
     case "robot":
       showRobotPanel.value = !showRobotPanel.value;
-      break;
-    case "camera":
-      showCameraPanel.value = !showCameraPanel.value;
       break;
     case "control":
       showControlPanel.value = !showControlPanel.value;

@@ -23,9 +23,6 @@
   - `backend/mujoco_models/environment.xml`
   - `backend/mujoco_models/ur5.xml`
   - `backend/mujoco_models/rack.xml`
-  - `backend/mujoco_models/battery_pack.xml`
-  - `backend/mujoco_models/camera_base.xml`
-  - `backend/mujoco_models/camera.xml`
 - 场景 mesh 目录：
   - `backend/mujoco_models/meshes/`
 - `SimulationCore` 默认加载 `environment.xml`，并从 MuJoCo 实时回传：
@@ -37,7 +34,6 @@
 说明：
 
 - 后端仍以 `shared/scene_manifest.json` 作为场景位姿与 home 基线来源。
-- `battery_pack` 网格已在后端模型目录做降采样，以满足 MuJoCo 面片数量限制。
 
 ## 安装依赖
 

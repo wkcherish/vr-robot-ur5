@@ -9,11 +9,7 @@
       "screwdriver",
       "pliers",
       "toolbox"
-    ],
-    "keep_debug_objects": {
-      "camera_base": true,
-      "camera": true
-    }
+    ]
   },
   "tool_classes": [
     {
