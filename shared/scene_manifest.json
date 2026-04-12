@@ -1,7 +1,9 @@
 {
   "schema_version": "1.0.0",
-  "manifest_version": "v1.0.0-milestone-a",
-  "updated_at": "2026-04-07T00:00:00+08:00",
+  "manifest_version": "v2.0.0-milestone-s1",
+  "updated_at": "2026-04-10T22:10:00+08:00",
+  "task_name": "quest3_tool_sorting_v1",
+  "tool_catalog_path": "shared/tool_catalog.json",
   "units": {
     "position": "meter",
     "rotation": "radian"
@@ -50,27 +52,79 @@
     {
       "id": "rack",
       "resource_path": "frontend/public/rack/urdf/rack.urdf",
+      "object_type": "workspace",
       "transform": {
         "position": [0.5, 0.0, 0.0],
         "rotation_rpy": [0.0, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },
+      "reset_policy": {
+        "mode": "fixed"
+      },
       "notes": "Workbench/rack baseline."
     },
     {
-      "id": "battery_pack",
-      "resource_path": "frontend/public/battery/urdf/battery.urdf",
+      "id": "toolbox",
+      "resource_path": "frontend/public/tools/urdf/toolbox.urdf",
+      "object_type": "container",
+      "tool_class": "toolbox",
       "transform": {
-        "position": [0.1, 1.085, 0.5],
-        "rotation_rpy": [0.0, 1.5707963267948966, 0.0],
-        "scale": [0.8, 0.8, 0.8]
+        "position": [0.48, 0.5, -0.2],
+        "rotation_rpy": [-1.5707963267948966, 0.0, -1.5707963267948966],
+        "scale": [1.0, 1.0, 1.0]
       },
-      "physics_model": "single_rigid_body_v1",
-      "notes": "Milestone v1 treats battery + case as one rigid body."
+      "reset_policy": {
+        "mode": "fixed"
+      },
+      "notes": "Target container for tool sorting."
+    },
+    {
+      "id": "wrench_01",
+      "resource_path": "frontend/public/tools/urdf/wrench.urdf",
+      "object_type": "tool",
+      "tool_class": "wrench",
+      "transform": {
+        "position": [0.08, 0.5240336800934792, 0.3],
+        "rotation_rpy": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "reset_policy": {
+        "mode": "fixed"
+      }
+    },
+    {
+      "id": "screwdriver_01",
+      "resource_path": "frontend/public/tools/urdf/screwdriver.urdf",
+      "object_type": "tool",
+      "tool_class": "screwdriver",
+      "transform": {
+        "position": [0.2, 0.5, 0.26],
+        "rotation_rpy": [-1.5707963267948966, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "reset_policy": {
+        "mode": "fixed"
+      }
+    },
+    {
+      "id": "pliers_01",
+      "resource_path": "frontend/public/tools/urdf/pliers.urdf",
+      "object_type": "tool",
+      "tool_class": "pliers",
+      "transform": {
+        "position": [0.28, 0.5100852437109232, 0.12],
+        "rotation_rpy": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "reset_policy": {
+        "mode": "fixed"
+      }
     },
     {
       "id": "camera_base",
       "resource_path": "frontend/public/camera_base/urdf/camera_base.urdf",
+      "object_type": "debug",
+      "debug_only": true,
       "transform": {
         "position": [-0.1, 0.68, 0.4],
         "rotation_rpy": [3.141592653589793, 0.0, 0.0],
@@ -81,12 +135,23 @@
     {
       "id": "camera",
       "resource_path": "frontend/public/camera/urdf/camera.urdf",
+      "object_type": "debug",
+      "debug_only": true,
       "transform": {
         "position": [-0.205, 0.832, 0.4],
         "rotation_rpy": [0.0, 2.0420352248333655, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },
       "notes": "Current scene camera model used for alignment only."
+    }
+  ],
+  "spawn_regions": [
+    {
+      "id": "desk_drop_zone",
+      "frame": "frontend",
+      "min": [0.12, 0.52, 0.16],
+      "max": [0.24, 0.56, 0.25],
+      "notes": "Random tool spawn area on tabletop for each reset."
     }
   ],
   "gripper": {

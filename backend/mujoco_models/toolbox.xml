@@ -1,0 +1,85 @@
+<mujoco model="toolbox">
+  <asset>
+    <mesh name="toolbox_mesh_p01" content_type="model/stl" file="meshes/tools/toolbox_part_01.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p02" content_type="model/stl" file="meshes/tools/toolbox_part_02.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p03" content_type="model/stl" file="meshes/tools/toolbox_part_03.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p04" content_type="model/stl" file="meshes/tools/toolbox_part_04.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p05" content_type="model/stl" file="meshes/tools/toolbox_part_05.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p06" content_type="model/stl" file="meshes/tools/toolbox_part_06.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p07" content_type="model/stl" file="meshes/tools/toolbox_part_07.stl" scale="0.32 0.32 0.32" />
+    <mesh name="toolbox_mesh_p08" content_type="model/stl" file="meshes/tools/toolbox_part_08.stl" scale="0.32 0.32 0.32" />
+  </asset>
+
+  <worldbody>
+    <body
+      name="toolbox"
+      pos="0.48 0.2 1.0"
+      euler="3.141592653589793 1.5707963267948966 3.141592653589793"
+    >
+      <geom
+        name="toolbox_geom"
+        type="mesh"
+        mesh="toolbox_mesh_p01"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p02"
+        type="mesh"
+        mesh="toolbox_mesh_p02"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p03"
+        type="mesh"
+        mesh="toolbox_mesh_p03"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p04"
+        type="mesh"
+        mesh="toolbox_mesh_p04"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p05"
+        type="mesh"
+        mesh="toolbox_mesh_p05"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p06"
+        type="mesh"
+        mesh="toolbox_mesh_p06"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p07"
+        type="mesh"
+        mesh="toolbox_mesh_p07"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+      <geom
+        name="toolbox_geom_p08"
+        type="mesh"
+        mesh="toolbox_mesh_p08"
+        pos="-0.00247949 0.05470546 0"
+        rgba="0.76 0.20 0.18 1"
+        friction="1.0 0.1 0.01"
+      />
+    </body>
+  </worldbody>
+</mujoco>

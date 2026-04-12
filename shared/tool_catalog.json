@@ -1,0 +1,125 @@
+{
+  "schema_version": "1.0.0",
+  "catalog_version": "v1.1.0-s1-user-stl",
+  "updated_at": "2026-04-10T22:10:00+08:00",
+  "task_name": "quest3_tool_sorting_v1",
+  "assets_policy": {
+    "tool_set_v1": [
+      "wrench",
+      "screwdriver",
+      "pliers",
+      "toolbox"
+    ],
+    "keep_debug_objects": {
+      "camera_base": true,
+      "camera": true
+    }
+  },
+  "tool_classes": [
+    {
+      "class_id": "wrench",
+      "display_name": "Wrench",
+      "icon": "🔧",
+      "frontend_asset_path": "frontend/public/tools/urdf/wrench.urdf",
+      "mujoco_model_path": "backend/mujoco_models/wrench.xml",
+      "physics_baseline": {
+        "mass_kg": 0.16,
+        "friction": [0.9, 0.1, 0.01],
+        "scale": [0.13, 0.13, 0.13]
+      }
+    },
+    {
+      "class_id": "screwdriver",
+      "display_name": "Screwdriver",
+      "icon": "🪛",
+      "frontend_asset_path": "frontend/public/tools/urdf/screwdriver.urdf",
+      "mujoco_model_path": "backend/mujoco_models/screwdriver.xml",
+      "physics_baseline": {
+        "mass_kg": 0.10,
+        "friction": [0.9, 0.1, 0.01],
+        "scale": [0.13, 0.13, 0.13]
+      }
+    },
+    {
+      "class_id": "pliers",
+      "display_name": "Pliers",
+      "icon": "🗜️",
+      "frontend_asset_path": "frontend/public/tools/urdf/pliers.urdf",
+      "mujoco_model_path": "backend/mujoco_models/pliers.xml",
+      "physics_baseline": {
+        "mass_kg": 0.18,
+        "friction": [0.9, 0.1, 0.01],
+        "scale": [0.13, 0.13, 0.13]
+      }
+    },
+    {
+      "class_id": "toolbox",
+      "display_name": "Toolbox (Open Lid)",
+      "icon": "🧰",
+      "frontend_asset_path": "frontend/public/tools/urdf/toolbox.urdf",
+      "mujoco_model_path": "backend/mujoco_models/toolbox.xml",
+      "physics_baseline": {
+        "mass_kg": 1.2,
+        "friction": [1.0, 0.1, 0.01],
+        "scale": [0.32, 0.32, 0.32]
+      }
+    }
+  ],
+  "instances": [
+    {
+      "id": "wrench_01",
+      "class_id": "wrench",
+      "display_name": "Wrench #1"
+    },
+    {
+      "id": "screwdriver_01",
+      "class_id": "screwdriver",
+      "display_name": "Screwdriver #1"
+    },
+    {
+      "id": "pliers_01",
+      "class_id": "pliers",
+      "display_name": "Pliers #1"
+    },
+    {
+      "id": "toolbox",
+      "class_id": "toolbox",
+      "display_name": "Toolbox"
+    }
+  ],
+  "spawn_regions": [
+    {
+      "id": "desk_drop_zone",
+      "frame": "frontend",
+      "min": [0.12, 0.52, 0.16],
+      "max": [0.24, 0.56, 0.25],
+      "yaw_range": [-3.141592653589793, 3.141592653589793],
+      "notes": "Tool random spawn area on desk within UR5 workspace."
+    }
+  ],
+  "toolbox_slots": [
+    {
+      "slot_id": "slot_wrench",
+      "tool_class": "wrench",
+      "position": [0.46, 0.54, -0.175],
+      "size": [0.11, 0.04, 0.04]
+    },
+    {
+      "slot_id": "slot_screwdriver",
+      "tool_class": "screwdriver",
+      "position": [0.48, 0.54, -0.2],
+      "size": [0.04, 0.12, 0.04]
+    },
+    {
+      "slot_id": "slot_pliers",
+      "tool_class": "pliers",
+      "position": [0.46, 0.54, -0.225],
+      "size": [0.11, 0.04, 0.04]
+    }
+  ],
+  "class_to_target_slot": {
+    "wrench": "slot_wrench",
+    "screwdriver": "slot_screwdriver",
+    "pliers": "slot_pliers"
+  }
+}

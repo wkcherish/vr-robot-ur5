@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<robot name="screwdriver">
+  <material name="screwdriver_metal">
+    <color rgba="0.72 0.74 0.76 1.0" />
+  </material>
+
+  <link name="screwdriver_link">
+    <visual>
+      <origin xyz="-0.00002270 0.02024215 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/screwdriver.stl" scale="0.13 0.13 0.13" />
+      </geometry>
+      <material name="screwdriver_metal" />
+    </visual>
+    <collision>
+      <origin xyz="-0.00002270 0.02024215 0.00000000" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../tool/screwdriver.stl" scale="0.13 0.13 0.13" />
+      </geometry>
+    </collision>
+  </link>
+</robot>
