@@ -98,8 +98,8 @@
     <joint joint1="right_driver_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
     <joint joint1="left_spring_link_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
     <joint joint1="right_spring_link_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
-    <joint joint1="left_follower_joint" joint2="left_driver_joint" polycoef="0 -1 0 0 0"/>
-    <joint joint1="right_follower_joint" joint2="left_driver_joint" polycoef="0 -1 0 0 0"/>
+    <joint joint1="left_follower_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
+    <joint joint1="right_follower_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
   </equality>
   <actuator>
     <position name="act_shoulder_pan" joint="shoulder_pan_joint" kp="200"/>

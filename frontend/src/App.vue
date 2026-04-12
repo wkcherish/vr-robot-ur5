@@ -1065,8 +1065,8 @@ function setGripperJointValue(value) {
     right_driver_joint: clampedValue,
     left_spring_link_joint: clampedValue,
     right_spring_link_joint: clampedValue,
-    left_follower_joint: -clampedValue,
-    right_follower_joint: -clampedValue,
+    left_follower_joint: clampedValue,
+    right_follower_joint: clampedValue,
   };
 
   let hasApplied = false;

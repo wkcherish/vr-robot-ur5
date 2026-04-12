@@ -578,8 +578,8 @@ class SimulationCore:
             "right_driver_joint": driver,
             "left_spring_link_joint": driver,
             "right_spring_link_joint": driver,
-            "left_follower_joint": -driver,
-            "right_follower_joint": -driver,
+            "left_follower_joint": driver,
+            "right_follower_joint": driver,
         }
 
     def _collect_objects_state_locked(self) -> dict[str, dict[str, Any]]:
