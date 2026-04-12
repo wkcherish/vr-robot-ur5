@@ -595,22 +595,23 @@ function backendQuaternionToFrontend(quaternionWXYZ) {
   return BACKEND_TO_FRONTEND_ROT.clone().multiply(qBackend).normalize();
 }
 
-function applyBatteryPoseFromBackend(batteryState) {
-  if (!batteryModel) return;
-  if (!batteryState || typeof batteryState !== "object") return;
+function applySceneObjectPoseFromBackend(objectId, objectState) {
+  const model = sceneObjectModels.get(objectId);
+  if (!model) return;
+  if (!objectState || typeof objectState !== "object") return;
 
-  const positionFrontend = backendPositionToFrontend(batteryState.position);
+  const positionFrontend = backendPositionToFrontend(objectState.position);
   if (positionFrontend) {
-    batteryModel.position.set(
+    model.position.set(
       positionFrontend[0],
       positionFrontend[1],
       positionFrontend[2]
     );
   }
 
-  const quaternionFrontend = backendQuaternionToFrontend(batteryState.quaternion);
+  const quaternionFrontend = backendQuaternionToFrontend(objectState.quaternion);
   if (quaternionFrontend) {
-    batteryModel.quaternion.copy(quaternionFrontend);
+    model.quaternion.copy(quaternionFrontend);
   }
 }
 
@@ -636,7 +637,11 @@ function applyBackendStateToScene(state) {
       calculateEndEffectorPosition();
     }
 
-    applyBatteryPoseFromBackend(state?.objects?.battery_pack);
+    if (state?.objects && typeof state.objects === "object") {
+      Object.entries(state.objects).forEach(([objectId, objectState]) => {
+        applySceneObjectPoseFromBackend(objectId, objectState);
+      });
+    }
   } finally {
     isApplyingBackendState.value = false;
   }
@@ -977,14 +982,71 @@ async function inputRobotAngles() {
 
 // 使用的机械臂urdf模型
 const urdf = "./ur5/ur5.urdf";
-// 电池模型
-const battery = "./battery/urdf/battery.urdf";
-// 实验台模型
-const rack = "./rack/urdf/rack.urdf";
-// 相机三脚架模型
-const camera_base = "./camera_base/urdf/camera_base.urdf";
-// 实际相机模型
-const real_camera = "./camera/urdf/camera.urdf";
+const SCENE_OBJECT_CONFIGS = [
+  {
+    id: "rack",
+    assetPath: "./rack/urdf/rack.urdf",
+    transform: {
+      position: [0.5, 0.0, 0.0],
+      rotation: [0.0, 0.0, 0.0],
+      scale: [1.0, 1.0, 1.0],
+    },
+  },
+  {
+    id: "toolbox",
+    assetPath: "./tools/urdf/toolbox.urdf",
+    transform: {
+      position: [0.48, 0.5, -0.2],
+      rotation: [-Math.PI / 2, 0.0, -Math.PI / 2],
+      scale: [1.0, 1.0, 1.0],
+    },
+  },
+  {
+    id: "wrench_01",
+    assetPath: "./tools/urdf/wrench.urdf",
+    transform: {
+      position: [0.08, 0.5240336800934792, 0.3],
+      rotation: [0.0, 0.0, 0.0],
+      scale: [1.0, 1.0, 1.0],
+    },
+  },
+  {
+    id: "screwdriver_01",
+    assetPath: "./tools/urdf/screwdriver.urdf",
+    transform: {
+      position: [0.2, 0.5, 0.26],
+      rotation: [-Math.PI / 2, 0.0, 0.0],
+      scale: [1.0, 1.0, 1.0],
+    },
+  },
+  {
+    id: "pliers_01",
+    assetPath: "./tools/urdf/pliers.urdf",
+    transform: {
+      position: [0.28, 0.5100852437109232, 0.12],
+      rotation: [0.0, 0.0, 0.0],
+      scale: [1.0, 1.0, 1.0],
+    },
+  },
+  {
+    id: "camera_base",
+    assetPath: "./camera_base/urdf/camera_base.urdf",
+    transform: {
+      position: [-0.1, 0.68, 0.4],
+      rotation: [Math.PI, 0.0, 0.0],
+      scale: [0.01, 0.01, 0.01],
+    },
+  },
+  {
+    id: "camera",
+    assetPath: "./camera/urdf/camera.urdf",
+    transform: {
+      position: [-0.205, 0.832, 0.4],
+      rotation: [0.0, Math.PI * 0.65, 0.0],
+      scale: [1.0, 1.0, 1.0],
+    },
+  },
+];
 
 // 添加切换面板显示状态的函数
 function togglePanel(panel) {
@@ -1219,12 +1281,12 @@ const changeView = () => {
 
 // 创建场景->相机->渲染器->相机添加到场景中->渲染器渲染场景和相机->渲染器添加到dom中
 var robot = null;
-let batteryModel = null;
 let scene = "";
 let camera = "";
 let renderer = "";
 // 轨道控制器
 let controls = "";
+const sceneObjectModels = new Map();
 
 // 初始化
 function initBase() {
@@ -1344,51 +1406,16 @@ initOrbitControls();
 // 添加辅助线和网格地板
 addHelpLine();
 
-function initCamera() {
-  loadUrdfModel(real_camera, (result) => {
-    // 调整相机位置和大小
-    result.scale.set(1, 1, 1);
-    result.position.set(-0.205, 0.832, 0.4);
-    result.rotation.y = Math.PI*0.65; // 旋转相机以正确朝向场景
-
-    scene.add(result);
-  });
-}
-
-function initCameraBase() {
-  loadUrdfModel(camera_base, (result) => {
-    // 调整相机三脚架位置和大小
-    result.scale.set(0.01, 0.01, 0.01);
-    result.position.set(-0.1, 0.68, 0.4);
-    result.rotation.x = Math.PI; // 旋转90度
-    scene.add(result);
-  });
-}
-
-// 添加实验台模型加载函数
-function initRack() {
-  loadUrdfModel(rack, (result) => {
-    // 调整实验台位置和大小
-    result.scale.set(1, 1, 1);
-    result.position.set(0.5, 0, 0);
-    scene.add(result);
-  });
-}
-
-// 添加电池模型加载函数
-function initBattery() {
-  loadUrdfModel(battery, (result) => {
-    batteryModel = result;
-    // 调整电池位置和大小
-    result.scale.set(0.8, 0.8, 0.8);
-    result.position.set(0.1, 1.085, 0.5);
-    // 添加90度旋转（绕Y轴）
-    result.rotation.y = Math.PI / 2; // 旋转90度
-    // 添加调试代码，查看电池的包围盒
-    const box = new THREE.Box3().setFromObject(result);
-    console.log("Battery bounds:", box.min, box.max);
-
-    scene.add(result);
+function initSceneObjects() {
+  SCENE_OBJECT_CONFIGS.forEach((config) => {
+    loadUrdfModel(config.assetPath, (result) => {
+      const { position, rotation, scale } = config.transform;
+      result.scale.set(scale[0], scale[1], scale[2]);
+      result.position.set(position[0], position[1], position[2]);
+      result.rotation.set(rotation[0], rotation[1], rotation[2]);
+      scene.add(result);
+      sceneObjectModels.set(config.id, result);
+    });
   });
 }
 
@@ -1417,11 +1444,8 @@ function initRobot() {
 }
 
 // 按顺序加载模型
-initRack();
-initBattery();
+initSceneObjects();
 initRobot();
-initCamera();
-initCameraBase();
 
 // 设置位置信息更新定时器
 const positionUpdateInterval = ref(null);

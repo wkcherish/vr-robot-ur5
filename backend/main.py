@@ -202,6 +202,38 @@ def _apply_backend_state_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, s
             if actuator_id >= 0:
                 data.ctrl[int(actuator_id)] = float(applied_driver)
 
+    # Keep tabletop objects in viewer aligned with backend state (toolbox/tools/camera assets).
+    objects_raw = state.get("objects")
+    if isinstance(objects_raw, dict):
+        for object_name, object_state in objects_raw.items():
+            if not isinstance(object_name, str) or not object_name:
+                continue
+            if not isinstance(object_state, dict):
+                continue
+
+            body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, object_name)
+            if body_id < 0:
+                continue
+
+            position = object_state.get("position")
+            if isinstance(position, list) and len(position) >= 3:
+                try:
+                    model.body_pos[int(body_id)] = [float(position[0]), float(position[1]), float(position[2])]
+                except (TypeError, ValueError):
+                    pass
+
+            quaternion = object_state.get("quaternion")
+            if isinstance(quaternion, list) and len(quaternion) >= 4:
+                try:
+                    model.body_quat[int(body_id)] = [
+                        float(quaternion[0]),
+                        float(quaternion[1]),
+                        float(quaternion[2]),
+                        float(quaternion[3]),
+                    ]
+                except (TypeError, ValueError):
+                    pass
+
     mujoco.mj_forward(model, data)
     return True
 
