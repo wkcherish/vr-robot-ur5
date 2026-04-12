@@ -20,7 +20,7 @@
     <mesh name="pad" content_type="model/stl" file="meshes/ur5/robotiq_2f85_v4/pad.stl"/>
   </asset>
   <worldbody>
-    <body name="ur5_root" pos="-0.2 0.1 1.0" euler="0 0 0">
+    <body name="ur5_root" pos="-0.2 0 1.0" euler="0 0 0">
       <geom quat="-1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="ur5_base"/>
       <body name="shoulder_link" pos="0 0 0.089159" quat="0 0 0 1">
         <inertial pos="0 0 0" mass="3.7" diaginertia="0.0149724 0.0149724 0.0104063"/>

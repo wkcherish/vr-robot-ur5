@@ -1028,24 +1028,6 @@ const SCENE_OBJECT_CONFIGS = [
       scale: [1.0, 1.0, 1.0],
     },
   },
-  {
-    id: "camera_base",
-    assetPath: "./camera_base/urdf/camera_base.urdf",
-    transform: {
-      position: [-0.1, 0.68, 0.4],
-      rotation: [Math.PI, 0.0, 0.0],
-      scale: [0.01, 0.01, 0.01],
-    },
-  },
-  {
-    id: "camera",
-    assetPath: "./camera/urdf/camera.urdf",
-    transform: {
-      position: [-0.205, 0.832, 0.4],
-      rotation: [0.0, Math.PI * 0.65, 0.0],
-      scale: [1.0, 1.0, 1.0],
-    },
-  },
 ];
 
 // 添加切换面板显示状态的函数
@@ -1427,7 +1409,7 @@ function initRobot() {
     //设置ROBOT坐标z朝上
     robot.rotation.x = -Math.PI / 2;
     robot.rotation.z = 0;
-    robot.position.set(-0.2, 0.5, -0.1); // 将机械臂放置在实验台上
+    robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
     scene.add(robot);
     focusCameraOnObject(robot);
     sliderInput(-Math.PI / 2, "link2_joint");
