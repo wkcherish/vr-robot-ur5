@@ -792,12 +792,24 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
       source: "manual",
     });
 
+    const status = String(resp?.data?.status || "").toLowerCase();
+    if (status !== "success") {
+      clearPendingManualTarget();
+      try {
+        const latest = await axios.get("http://localhost:8000/sim/state/", { timeout: 1500 });
+        if (latest?.data) {
+          applyBackendStateToScene(latest.data);
+        }
+      } catch (_) {}
+      return { ok: false, message: resp?.data?.message || "Command rejected due to collision/interference." };
+    }
+
     if (resp?.data?.state?.qpos && Array.isArray(resp.data.state.qpos)) {
       applyBackendStateToScene(resp.data.state);
       clearPendingManualTarget();
     }
 
-    return { ok: true, message: resp.data?.message || "命令已发送（HTTP）" };
+    return { ok: true, message: resp.data?.message || "Command sent (HTTP)." };
   } catch (err) {
     clearPendingManualTarget();
     return { ok: false, message: "命令发送失败: " + (err.message || err) };
@@ -1450,14 +1462,33 @@ const setupWebSocketStateSync = () => {
 
   // 控制结果监听：用于清理命令等待标志
   websocketManager.on('controlResult', (data) => {
-    console.log('收到 controlResult:', data);
+    console.log('Received controlResult:', data);
     sendCommandPending.value = false;
+    if (data?.status && String(data.status).toLowerCase() !== "success") {
+      clearPendingManualTarget();
+      if (websocketManager.isConnected) {
+        websocketManager.requestState();
+      }
+      receivedText.value = data?.message || "Command rejected due to collision/interference.";
+    }
   });
 
   // 错误处理
   websocketManager.on('error', (error) => {
+    sendCommandPending.value = false;
+    clearPendingManualTarget();
+    if (websocketManager.isConnected) {
+      websocketManager.requestState();
+    }
     stateSyncErrors.value++;
-    console.error('状态同步错误:', error);
+    console.error('State sync/control error:', error);
+    const errorMessage =
+      typeof error === "string"
+        ? error
+        : error?.message || error?.detail || "State sync/control error.";
+    if (errorMessage) {
+      receivedText.value = String(errorMessage);
+    }
     updateConnectionQuality();
   });
 

@@ -94,8 +94,8 @@ def _apply_home_pose(
         "right_driver_joint": driver,
         "left_spring_link_joint": driver,
         "right_spring_link_joint": driver,
-        "left_follower_joint": -driver,
-        "right_follower_joint": -driver,
+        "left_follower_joint": driver,
+        "right_follower_joint": driver,
     }
     for name in GRIPPER_JOINT_NAMES:
         joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -144,8 +144,8 @@ def _extract_gripper_joint_targets(state: dict[str, object]) -> dict[str, float]
         "right_driver_joint": driver,
         "left_spring_link_joint": driver,
         "right_spring_link_joint": driver,
-        "left_follower_joint": -driver,
-        "right_follower_joint": -driver,
+        "left_follower_joint": driver,
+        "right_follower_joint": driver,
     }
 
 
@@ -270,8 +270,8 @@ def _apply_pose_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, pose: dict
             "right_driver_joint": driver_value,
             "left_spring_link_joint": driver_value,
             "right_spring_link_joint": driver_value,
-            "left_follower_joint": -driver_value,
-            "right_follower_joint": -driver_value,
+            "left_follower_joint": driver_value,
+            "right_follower_joint": driver_value,
         }
         for joint_name, joint_target in gripper_targets.items():
             joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)

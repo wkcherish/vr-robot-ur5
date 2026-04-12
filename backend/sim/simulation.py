@@ -44,6 +44,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
 BACKEND_FRAME_Z_OFFSET = 0.5
 BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
+MAX_ALLOWED_PENETRATION_M = 5e-4
+MAX_COLLISION_REPORTS = 3
 
 
 @dataclass
@@ -187,10 +189,55 @@ class SimulationCore:
                     f"Expected {len(self._arm_joint_names)} arm joints, got {len(target_positions)}."
                 )
 
+            snapshot: dict[str, Any] = {
+                "arm_qpos": list(self._arm_qpos),
+                "arm_qvel": list(self._arm_qvel),
+                "gripper_opening": float(self._gripper_opening),
+                "gripper_velocity": float(self._gripper_velocity),
+                "gripper_joints": dict(self._gripper_joints),
+            }
+            if self._using_mujoco_model() and self._mj_data is not None:
+                snapshot["mj_qpos"] = self._mj_data.qpos.copy()
+                snapshot["mj_qvel"] = self._mj_data.qvel.copy()
+
             self._source = request.source
             n_steps = max(1, int(request.n_steps))
             self._apply_arm_command(target_positions, n_steps)
             self._apply_gripper_command(request.gripper_command, n_steps)
+
+            forbidden_contacts: list[dict[str, Any]] = []
+            if self._using_mujoco_model() and self._mj_model is not None and self._mj_data is not None and _mujoco is not None:
+                start_qpos = snapshot.get("mj_qpos")
+                if start_qpos is not None:
+                    final_qpos = self._mj_data.qpos.copy()
+                    last_safe_qpos = start_qpos.copy()
+                    samples = max(2, min(40, n_steps))
+                    delta = final_qpos - start_qpos
+                    for idx in range(1, samples + 1):
+                        alpha = idx / samples
+                        candidate_qpos = start_qpos + alpha * delta
+                        self._mj_data.qpos[:] = candidate_qpos
+                        _mujoco.mj_forward(self._mj_model, self._mj_data)
+                        forbidden_contacts = self._collect_forbidden_contacts_locked()
+                        if forbidden_contacts:
+                            break
+                        last_safe_qpos = candidate_qpos.copy()
+                    if not forbidden_contacts:
+                        self._mj_data.qpos[:] = final_qpos
+                        _mujoco.mj_forward(self._mj_model, self._mj_data)
+                    else:
+                        # Clip to the last collision-free point instead of hard rollback.
+                        self._mj_data.qpos[:] = last_safe_qpos
+                        _mujoco.mj_forward(self._mj_model, self._mj_data)
+                        self._sync_internal_state_from_mujoco_locked()
+                else:
+                    forbidden_contacts = self._collect_forbidden_contacts_locked()
+            else:
+                forbidden_contacts = self._collect_forbidden_contacts_locked()
+
+            if forbidden_contacts:
+                raise RuntimeError(self._format_collision_message(forbidden_contacts))
+
             self._sim_time += n_steps * self._dt
             self._stats["steps"] += n_steps
             self._stats["commands"] += 1
@@ -416,6 +463,119 @@ class SimulationCore:
             if body_id >= 0:
                 self._tool_body_id = int(body_id)
                 break
+
+    def _is_ancestor_body_id(self, ancestor_id: int, body_id: int) -> bool:
+        if self._mj_model is None or ancestor_id < 0 or body_id < 0:
+            return False
+        current = int(body_id)
+        while current > 0:
+            if current == int(ancestor_id):
+                return True
+            current = int(self._mj_model.body_parentid[current])
+        return int(ancestor_id) == 0
+
+    def _should_ignore_contact(self, body_a: int, body_b: int) -> bool:
+        # Ignore world contacts and kinematic parent-child/ancestor pairs.
+        if body_a <= 0 or body_b <= 0:
+            return True
+        if body_a == body_b:
+            return True
+        if self._is_ancestor_body_id(body_a, body_b):
+            return True
+        if self._is_ancestor_body_id(body_b, body_a):
+            return True
+        return False
+
+    def _collect_forbidden_contacts_locked(self) -> list[dict[str, Any]]:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
+            return []
+
+        assert _mujoco is not None
+        contacts: list[dict[str, Any]] = []
+        ncon = int(self._mj_data.ncon)
+        for idx in range(ncon):
+            contact = self._mj_data.contact[idx]
+            dist = float(contact.dist)
+            if dist >= -MAX_ALLOWED_PENETRATION_M:
+                continue
+
+            geom_a = int(contact.geom1)
+            geom_b = int(contact.geom2)
+            body_a = int(self._mj_model.geom_bodyid[geom_a])
+            body_b = int(self._mj_model.geom_bodyid[geom_b])
+            if self._should_ignore_contact(body_a, body_b):
+                continue
+
+            body_name_a = _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_a) or f"body_{body_a}"
+            body_name_b = _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_b) or f"body_{body_b}"
+            contacts.append(
+                {
+                    "dist": dist,
+                    "body_a": body_name_a,
+                    "body_b": body_name_b,
+                }
+            )
+
+        contacts.sort(key=lambda item: float(item["dist"]))
+        return contacts
+
+    def _restore_previous_pose_locked(self, snapshot: dict[str, Any]) -> None:
+        self._arm_qpos = list(snapshot.get("arm_qpos", self._arm_qpos))
+        self._arm_qvel = list(snapshot.get("arm_qvel", self._arm_qvel))
+        self._gripper_opening = float(snapshot.get("gripper_opening", self._gripper_opening))
+        self._gripper_velocity = float(snapshot.get("gripper_velocity", self._gripper_velocity))
+        self._gripper_joints = dict(snapshot.get("gripper_joints", self._gripper_joints))
+
+        if not self._using_mujoco_model() or self._mj_data is None or _mujoco is None or self._mj_model is None:
+            return
+
+        qpos_snapshot = snapshot.get("mj_qpos")
+        qvel_snapshot = snapshot.get("mj_qvel")
+        if qpos_snapshot is not None:
+            self._mj_data.qpos[:] = qpos_snapshot
+        if qvel_snapshot is not None:
+            self._mj_data.qvel[:] = qvel_snapshot
+        _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+    def _sync_internal_state_from_mujoco_locked(self) -> None:
+        if not self._using_mujoco_model() or self._mj_data is None:
+            return
+
+        arm_qpos: list[float] = []
+        for name in self._arm_joint_names:
+            qpos_addr = self._arm_joint_qpos_addr.get(name)
+            if qpos_addr is None:
+                arm_qpos.append(0.0)
+            else:
+                arm_qpos.append(float(self._mj_data.qpos[qpos_addr]))
+        self._arm_qpos = arm_qpos
+        self._arm_qvel = [0.0 for _ in self._arm_qpos]
+
+        gripper_joints: dict[str, float] = {}
+        for name in DEFAULT_GRIPPER_JOINT_NAMES:
+            qpos_addr = self._gripper_joint_qpos_addr.get(name)
+            if qpos_addr is None:
+                continue
+            gripper_joints[name] = float(self._mj_data.qpos[qpos_addr])
+
+        left_driver = gripper_joints.get("left_driver_joint", 0.0)
+        self._gripper_opening = _clamp(left_driver / GRIPPER_DRIVER_LIMIT, 0.0, 1.0)
+        self._gripper_velocity = 0.0
+        default_mapping = self._map_gripper_joints(self._gripper_opening)
+        for name, value in default_mapping.items():
+            gripper_joints.setdefault(name, float(value))
+        self._gripper_joints = gripper_joints
+
+    def _format_collision_message(self, contacts: list[dict[str, Any]]) -> str:
+        if not contacts:
+            return "step blocked to avoid collision."
+
+        top_contacts = contacts[:MAX_COLLISION_REPORTS]
+        parts = []
+        for item in top_contacts:
+            depth_mm = abs(float(item["dist"])) * 1000.0
+            parts.append(f'{item["body_a"]}<->{item["body_b"]} ({depth_mm:.1f}mm)')
+        return "step blocked: collision/interference detected at " + ", ".join(parts)
 
     def _sync_scene_objects_to_model_locked(self) -> None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
