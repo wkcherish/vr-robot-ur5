@@ -61,6 +61,37 @@ class TaskState(BaseModel):
     phase: str | None = None
 
 
+class CameraStreamState(BaseModel):
+    interface_name: str
+    camera_name: str
+    width: int
+    height: int
+    fps: float
+    pixel_format: str
+    dataset_storage_format: str
+    timestamp: float | None = None
+    missing: bool = False
+
+
+class CameraState(BaseModel):
+    device: str
+    mount_name: str
+    mount_parent_frame: str
+    camera_intrinsics_version: str
+    camera_extrinsics_version: str
+    frame_id: str
+    frame_aligned: bool
+    alignment_mode: str
+    max_alignment_error_ms: float
+    recordable_training_observation: bool
+    camera_capture_ok: bool
+    debug_only_objects: list[str]
+    camera_pose_in_ee: EEPose
+    camera_pose_in_base: EEPose
+    rgb: CameraStreamState
+    depth: CameraStreamState
+
+
 class SimState(BaseModel):
     timestamp: float
     sim_time: float
@@ -71,6 +102,8 @@ class SimState(BaseModel):
     gripper_opening: float
     gripper_joints: dict[str, float]
     objects: dict[str, ObjectPose]
+    camera: CameraState | None = None
+    camera_capture_ok: bool = False
     task_state: TaskState
     source: ControlSource
     stats: dict[str, float | int]

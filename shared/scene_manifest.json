@@ -1,12 +1,22 @@
 {
   "schema_version": "1.0.0",
-  "manifest_version": "v2.0.0-milestone-s1",
-  "updated_at": "2026-04-10T22:10:00+08:00",
+  "manifest_version": "v2.1.0-milestone-s1.5",
+  "updated_at": "2026-04-12T20:30:00+08:00",
   "task_name": "quest3_tool_sorting_v1",
   "tool_catalog_path": "shared/tool_catalog.json",
+  "camera_sensor_config_path": "shared/camera_sensor_config.json",
+  "dataset_schema_path": "shared/dataset_schema.json",
   "units": {
     "position": "meter",
     "rotation": "radian"
+  },
+  "sensor_policy": {
+    "primary_visual_sensor": "intel_realsense_d405",
+    "camera_base_and_camera_role": "debug_only",
+    "notes": [
+      "camera/camera_base are not training capture sensors.",
+      "Quest3/VR recording must use wrist-mounted D405 RGB-D output."
+    ]
   },
   "integration_policy": {
     "frontend_must_read_manifest": true,

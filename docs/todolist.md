@@ -191,55 +191,57 @@
 在开始 Quest3 / VR 示教前，先把真实实验要用的主视觉传感器冻结下来。  
 这里的主传感器不是当前场景里的 `camera / camera_base` 调试对象，而是安装在机械臂末端的 `Intel RealSense D405 RGB-D` 相机。
 
+本轮落地参考：`docs/s1_5_d405_freeze.md`、`shared/camera_sensor_config.json`、`shared/dataset_schema.json`。
+
 ### S1.5.1 相机资产与安装方式冻结
 
-- [ ] `P0` 明确主相机设备为 `Intel RealSense D405`
-- [ ] `P0` 明确当前场景中的 `camera / camera_base` 仅保留为 `debug_only` 参考对象，不再作为主采集相机
-- [ ] `P0` 盘点并冻结以下资产的用途：
-- [ ] `P0` `frontend/public/camera/mesh/d405.stl` 作为相机主体模型
-- [ ] `P0` `frontend/public/camera/mesh/前半.STL` 作为末端安装结构的一部分
-- [ ] `P0` `frontend/public/camera/mesh/后半.STL` 作为末端安装结构的另一部分
-- [ ] `P0` `pic/camera.jpg` 作为真实安装参考图
-- [ ] `P0` 根据 `pic/camera.jpg` 冻结 D405 在末端的安装方向、朝向工作区的视角和线缆出线方向
-- [ ] `P0` 冻结 D405 是“夹爪上方附近的固定安装相机”，而不是场景外部俯视相机
+- [x] `P0` 明确主相机设备为 `Intel RealSense D405`
+- [x] `P0` 明确当前场景中的 `camera / camera_base` 仅保留为 `debug_only` 参考对象，不再作为主采集相机
+- [x] `P0` 盘点并冻结以下资产的用途：
+- [x] `P0` `frontend/public/camera/mesh/d405.stl` 作为相机主体模型
+- [x] `P0` `frontend/public/camera/mesh/前半.STL` 作为末端安装结构的一部分
+- [x] `P0` `frontend/public/camera/mesh/后半.STL` 作为末端安装结构的另一部分
+- [x] `P0` `pic/camera.jpg` 作为真实安装参考图
+- [x] `P0` 根据 `pic/camera.jpg` 冻结 D405 在末端的安装方向、朝向工作区的视角和线缆出线方向
+- [x] `P0` 冻结 D405 是“夹爪上方附近的固定安装相机”，而不是场景外部俯视相机
 
 ### S1.5.2 仿真侧传感器接入定义
 
-- [ ] `P0` 在 MuJoCo 中新增末端 D405 挂载定义，而不是只保留场景调试相机
-- [ ] `P0` 明确 D405 相对 `tool0` 或 `wrist_3_link` 的固定挂载坐标系
-- [ ] `P0` 明确仿真中 D405 的 `RGB` 输出接口
-- [ ] `P0` 明确仿真中 D405 的 `Depth` 输出接口
-- [ ] `P0` 明确 `RGB` 与 `Depth` 的分辨率、帧率和时间戳对齐方式
-- [ ] `P0` 明确仿真中相机输出是“可录制训练观测”，不是仅供页面展示
+- [x] `P0` 在 MuJoCo 中新增末端 D405 挂载定义，而不是只保留场景调试相机
+- [x] `P0` 明确 D405 相对 `tool0` 或 `wrist_3_link` 的固定挂载坐标系
+- [x] `P0` 明确仿真中 D405 的 `RGB` 输出接口
+- [x] `P0` 明确仿真中 D405 的 `Depth` 输出接口
+- [x] `P0` 明确 `RGB` 与 `Depth` 的分辨率、帧率和时间戳对齐方式
+- [x] `P0` 明确仿真中相机输出是“可录制训练观测”，不是仅供页面展示
 - [ ] `P1` 为后续 sim2real 预留深度缺测、噪声和轻微外参偏差随机化入口
 
 ### S1.5.3 标定与版本规范
 
-- [ ] `P0` 冻结相机内参版本命名规范
-- [ ] `P0` 冻结相机外参版本命名规范
-- [ ] `P0` 冻结相机相对末端的安装方案命名，例如 `wrist_d405_v1`
-- [ ] `P0` 明确 `data/calibration/` 下相机标定文件的组织方式
-- [ ] `P0` 明确 episode 元数据中必须记录 `camera_device`、`camera_intrinsics_version`、`camera_extrinsics_version`
+- [x] `P0` 冻结相机内参版本命名规范
+- [x] `P0` 冻结相机外参版本命名规范
+- [x] `P0` 冻结相机相对末端的安装方案命名，例如 `wrist_d405_v1`
+- [x] `P0` 明确 `data/calibration/` 下相机标定文件的组织方式
+- [x] `P0` 明确 episode 元数据中必须记录 `camera_device`、`camera_intrinsics_version`、`camera_extrinsics_version`
 - [ ] `P1` 预留后续真实 D405 与仿真相机的误差分析字段
 
 ### S1.5.4 数据录制前置条件
 
-- [ ] `P0` 在进入 Quest3 录制前先冻结 `RGB-D + 状态 + 动作 + 文本` 样本结构
-- [ ] `P0` 明确 `RGB` 图像文件存储格式
-- [ ] `P0` 明确 `Depth` 图像文件存储格式，禁止使用会破坏深度值的有损格式
-- [ ] `P0` 明确每一步动作都要关联对应的视觉帧 ID
-- [ ] `P0` 明确任务文本要进入 episode 元数据和单步训练样本
-- [ ] `P0` 明确录制器需要检查 `RGB`、`Depth`、状态、动作是否时间对齐
+- [x] `P0` 在进入 Quest3 录制前先冻结 `RGB-D + 状态 + 动作 + 文本` 样本结构
+- [x] `P0` 明确 `RGB` 图像文件存储格式
+- [x] `P0` 明确 `Depth` 图像文件存储格式，禁止使用会破坏深度值的有损格式
+- [x] `P0` 明确每一步动作都要关联对应的视觉帧 ID
+- [x] `P0` 明确任务文本要进入 episode 元数据和单步训练样本
+- [x] `P0` 明确录制器需要检查 `RGB`、`Depth`、状态、动作是否时间对齐
 - [ ] `P1` 预留视觉缺帧、深度异常和未对齐样本的剔除标签
 
 ### S1.5.5 验收
 
-- [ ] `P0` 文档层已明确 D405 才是主视觉传感器
-- [ ] `P0` 文档层已明确 `camera / camera_base` 只是调试对象
-- [ ] `P0` 文档层已明确安装参考来自 `pic/camera.jpg`
-- [ ] `P0` 文档层已明确 `d405.stl + 前半.STL + 后半.STL` 的资产角色
-- [ ] `P0` 文档层已明确 Quest3 / VR 开发必须在 D405 任务之后推进
-- [ ] `P0` 文档层已明确数据集必须支持 `RGB-D + 状态 + 动作 + 文本`
+- [x] `P0` 文档层已明确 D405 才是主视觉传感器
+- [x] `P0` 文档层已明确 `camera / camera_base` 只是调试对象
+- [x] `P0` 文档层已明确安装参考来自 `pic/camera.jpg`
+- [x] `P0` 文档层已明确 `d405.stl + 前半.STL + 后半.STL` 的资产角色
+- [x] `P0` 文档层已明确 Quest3 / VR 开发必须在 D405 任务之后推进
+- [x] `P0` 文档层已明确数据集必须支持 `RGB-D + 状态 + 动作 + 文本`
 
 ---
 
