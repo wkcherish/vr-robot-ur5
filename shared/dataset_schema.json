@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_schema_version": "quest3_tool_sorting_v1_s1_5",
+  "updated_at": "2026-04-12T20:30:00+08:00",
+  "task_id": "quest3_tool_sorting_v1",
+  "required_modalities": [
+    "rgb",
+    "depth",
+    "state",
+    "action",
+    "text"
+  ],
+  "episode_layout": {
+    "metadata_file": "metadata.json",
+    "language_file": "language.json",
+    "rgb_dir": "rgb",
+    "depth_dir": "depth",
+    "states_file": "states.jsonl",
+    "actions_file": "actions.jsonl",
+    "result_file": "result.json"
+  },
+  "image_storage": {
+    "rgb": {
+      "allowed_formats": [
+        "jpg",
+        "png"
+      ],
+      "default_format": "jpg"
+    },
+    "depth": {
+      "allowed_formats": [
+        "png16",
+        "npy"
+      ],
+      "default_format": "png16",
+      "lossy_forbidden": true,
+      "depth_unit": "millimeter",
+      "depth_scale": 1.0
+    }
+  },
+  "metadata_required_fields": [
+    "task_id",
+    "session_id",
+    "episode_id",
+    "captured_at",
+    "input_mode",
+    "input_source",
+    "runtime_target",
+    "instruction_text",
+    "camera_device",
+    "camera_mount_name",
+    "camera_intrinsics_version",
+    "camera_extrinsics_version"
+  ],
+  "visual_sample_required_fields": [
+    "timestamp",
+    "frame_id",
+    "rgb_path",
+    "depth_path",
+    "rgb_timestamp",
+    "depth_timestamp",
+    "frame_aligned",
+    "camera_pose_in_ee",
+    "camera_pose_in_base",
+    "rgb_missing",
+    "depth_missing",
+    "visual_valid"
+  ],
+  "state_sample_required_fields": [
+    "timestamp",
+    "sim_time",
+    "qpos",
+    "qvel",
+    "ee_pose",
+    "gripper_opening",
+    "objects",
+    "camera_capture_ok",
+    "instruction_text"
+  ],
+  "action_sample_required_fields": [
+    "command_timestamp",
+    "ack_timestamp",
+    "target_positions",
+    "gripper_command",
+    "input_mode",
+    "runtime_target",
+    "paired_frame_id",
+    "instruction_text"
+  ],
+  "alignment_rules": {
+    "paired_frame_required_for_each_action": true,
+    "instruction_text_required_in_metadata_and_step": true,
+    "max_rgb_depth_delta_ms": 5.0,
+    "state_action_visual_alignment_required": true
+  },
+  "sample_rejection_labels_reserve": [
+    "rgb_missing",
+    "depth_missing",
+    "frame_misaligned",
+    "depth_anomaly"
+  ]
+}

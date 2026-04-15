@@ -30,6 +30,4 @@
   <include file="wrench.xml" />
   <include file="screwdriver.xml" />
   <include file="pliers.xml" />
-  <include file="camera_base.xml" />
-  <include file="camera.xml" />
 </mujoco>

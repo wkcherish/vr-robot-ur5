@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import math
 import random
@@ -17,6 +18,11 @@ try:
     import mujoco as _mujoco  # type: ignore
 except Exception:
     _mujoco = None
+
+try:
+    import numpy as np  # type: ignore
+except Exception:
+    np = None
 
 
 DEFAULT_ARM_JOINT_NAMES = [
@@ -42,8 +48,37 @@ GRIPPER_DRIVER_LIMIT = 0.87
 TOOL_FRAME_CANDIDATES = ["tool0", "wrist_3_link"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
+DEFAULT_CAMERA_SENSOR_CONFIG_PATH = REPO_ROOT / "shared" / "camera_sensor_config.json"
+DEFAULT_DATASET_SCHEMA_PATH = REPO_ROOT / "shared" / "dataset_schema.json"
 BACKEND_FRAME_Z_OFFSET = 0.5
 BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
+MAX_ALLOWED_PENETRATION_M = 5e-4
+MAX_COLLISION_REPORTS = 3
+DEFAULT_CAMERA_MOUNT_POSITION = [0.0, -0.003, -0.017]
+DEFAULT_CAMERA_MOUNT_QUATERNION = [0.707107, 0.0, 0.0, -0.707107]
+DEFAULT_RGB_STREAM = {
+    "interface_name": "sim_camera_rgb",
+    "camera_name": "d405_rgb",
+    "width": 640,
+    "height": 480,
+    "fps": 30.0,
+    "pixel_format": "rgb8",
+    "dataset_storage_format": "jpg",
+}
+DEFAULT_DEPTH_STREAM = {
+    "interface_name": "sim_camera_depth",
+    "camera_name": "d405_depth",
+    "width": 640,
+    "height": 480,
+    "fps": 30.0,
+    "pixel_format": "depth16",
+    "dataset_storage_format": "png16",
+    "depth_unit": "millimeter",
+    "depth_scale": 1.0,
+}
+DEFAULT_CAMERA_ALIGNMENT_MODE = "same_tick"
+DEFAULT_CAMERA_ALIGNMENT_MAX_DELTA_MS = 5.0
+DEFAULT_CAMERA_DEBUG_OBJECTS = ["camera_base", "camera"]
 
 
 @dataclass
@@ -100,6 +135,50 @@ def _quaternion_multiply(lhs_wxyz: list[float], rhs_wxyz: list[float]) -> list[f
     ]
 
 
+def _quaternion_conjugate(quaternion_wxyz: list[float]) -> list[float]:
+    w, x, y, z = quaternion_wxyz
+    return [w, -x, -y, -z]
+
+
+def _normalize_quaternion(quaternion_wxyz: list[float]) -> list[float]:
+    if len(quaternion_wxyz) < 4:
+        return [1.0, 0.0, 0.0, 0.0]
+    w, x, y, z = [float(v) for v in quaternion_wxyz[:4]]
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if norm <= 1e-8:
+        return [1.0, 0.0, 0.0, 0.0]
+    inv = 1.0 / norm
+    return [w * inv, x * inv, y * inv, z * inv]
+
+
+def _rotate_vector_by_quaternion(vector_xyz: list[float], quaternion_wxyz: list[float]) -> list[float]:
+    q = _normalize_quaternion(quaternion_wxyz)
+    pure = [0.0, float(vector_xyz[0]), float(vector_xyz[1]), float(vector_xyz[2])]
+    rotated = _quaternion_multiply(_quaternion_multiply(q, pure), _quaternion_conjugate(q))
+    return [float(rotated[1]), float(rotated[2]), float(rotated[3])]
+
+
+def _compose_pose(
+    parent_position_xyz: list[float],
+    parent_quaternion_wxyz: list[float],
+    child_position_xyz: list[float],
+    child_quaternion_wxyz: list[float],
+) -> dict[str, list[float]]:
+    parent_q = _normalize_quaternion(parent_quaternion_wxyz)
+    child_q = _normalize_quaternion(child_quaternion_wxyz)
+    rotated_child_pos = _rotate_vector_by_quaternion(child_position_xyz, parent_q)
+    composed_position = [
+        float(parent_position_xyz[0]) + rotated_child_pos[0],
+        float(parent_position_xyz[1]) + rotated_child_pos[1],
+        float(parent_position_xyz[2]) + rotated_child_pos[2],
+    ]
+    composed_quaternion = _normalize_quaternion(_quaternion_multiply(parent_q, child_q))
+    return {
+        "position": composed_position,
+        "quaternion": composed_quaternion,
+    }
+
+
 class SimulationCore:
     def __init__(self, manifest_path: Path):
         self._manifest_path = manifest_path
@@ -118,6 +197,30 @@ class SimulationCore:
         self._scene_objects_template: dict[str, dict[str, Any]] = {}
         self._object_reset_policy: dict[str, dict[str, Any]] = {}
         self._spawn_regions: dict[str, dict[str, Any]] = {}
+        self._camera_sensor_config_path: str | None = None
+        self._dataset_schema_path: str | None = None
+        self._dataset_schema: dict[str, Any] = {}
+        self._camera_device = "intel_realsense_d405"
+        self._camera_mount_name = "wrist_d405_v1"
+        self._camera_mount_parent_frame = "wrist_3_link"
+        self._camera_pose_in_ee = {
+            "position": list(DEFAULT_CAMERA_MOUNT_POSITION),
+            "quaternion": list(DEFAULT_CAMERA_MOUNT_QUATERNION),
+        }
+        self._camera_intrinsics_version = "d405_intr_20260412_a"
+        self._camera_extrinsics_version = "d405_ext_20260412_a"
+        self._camera_alignment_mode = DEFAULT_CAMERA_ALIGNMENT_MODE
+        self._camera_alignment_max_delta_ms = float(DEFAULT_CAMERA_ALIGNMENT_MAX_DELTA_MS)
+        self._camera_recordable_training_observation = True
+        self._camera_debug_only_objects = list(DEFAULT_CAMERA_DEBUG_OBJECTS)
+        self._rgb_stream = dict(DEFAULT_RGB_STREAM)
+        self._depth_stream = dict(DEFAULT_DEPTH_STREAM)
+        self._camera_capture_interval_s = 1.0 / max(1.0, float(self._rgb_stream["fps"]))
+        self._camera_frame_counter = 0
+        self._camera_last_capture_ts = 0.0
+        self._camera_last_state: dict[str, Any] | None = None
+        self._camera_last_rgb_frame: Any | None = None
+        self._camera_last_depth_frame: Any | None = None
 
         self._mj_model: Any | None = None
         self._mj_data: Any | None = None
@@ -125,6 +228,11 @@ class SimulationCore:
         self._gripper_joint_qpos_addr: dict[str, int] = {}
         self._object_body_ids: dict[str, int] = {}
         self._tool_body_id: int | None = None
+        self._mj_rgb_camera_id: int = -1
+        self._mj_depth_camera_id: int = -1
+        self._mj_renderer: Any | None = None
+        self._mj_renderer_width = 0
+        self._mj_renderer_height = 0
 
         self._arm_qpos = list(DEFAULT_HOME_QPOS)
         self._arm_qvel = [0.0 for _ in self._arm_qpos]
@@ -141,6 +249,8 @@ class SimulationCore:
             "commands": 0,
             "last_step_ms": 0.0,
             "avg_step_ms": 0.0,
+            "camera_frames": 0,
+            "camera_drops": 0,
         }
 
         self._load_scene_manifest()
@@ -170,6 +280,8 @@ class SimulationCore:
             except asyncio.CancelledError:
                 pass
             self._queue_worker = None
+        async with self._lock:
+            self._close_mujoco_renderer()
 
     async def enqueue_step(self, request: StepRequest) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
@@ -187,10 +299,55 @@ class SimulationCore:
                     f"Expected {len(self._arm_joint_names)} arm joints, got {len(target_positions)}."
                 )
 
+            snapshot: dict[str, Any] = {
+                "arm_qpos": list(self._arm_qpos),
+                "arm_qvel": list(self._arm_qvel),
+                "gripper_opening": float(self._gripper_opening),
+                "gripper_velocity": float(self._gripper_velocity),
+                "gripper_joints": dict(self._gripper_joints),
+            }
+            if self._using_mujoco_model() and self._mj_data is not None:
+                snapshot["mj_qpos"] = self._mj_data.qpos.copy()
+                snapshot["mj_qvel"] = self._mj_data.qvel.copy()
+
             self._source = request.source
             n_steps = max(1, int(request.n_steps))
             self._apply_arm_command(target_positions, n_steps)
             self._apply_gripper_command(request.gripper_command, n_steps)
+
+            forbidden_contacts: list[dict[str, Any]] = []
+            if self._using_mujoco_model() and self._mj_model is not None and self._mj_data is not None and _mujoco is not None:
+                start_qpos = snapshot.get("mj_qpos")
+                if start_qpos is not None:
+                    final_qpos = self._mj_data.qpos.copy()
+                    last_safe_qpos = start_qpos.copy()
+                    samples = max(2, min(40, n_steps))
+                    delta = final_qpos - start_qpos
+                    for idx in range(1, samples + 1):
+                        alpha = idx / samples
+                        candidate_qpos = start_qpos + alpha * delta
+                        self._mj_data.qpos[:] = candidate_qpos
+                        _mujoco.mj_forward(self._mj_model, self._mj_data)
+                        forbidden_contacts = self._collect_forbidden_contacts_locked()
+                        if forbidden_contacts:
+                            break
+                        last_safe_qpos = candidate_qpos.copy()
+                    if not forbidden_contacts:
+                        self._mj_data.qpos[:] = final_qpos
+                        _mujoco.mj_forward(self._mj_model, self._mj_data)
+                    else:
+                        # Clip to the last collision-free point instead of hard rollback.
+                        self._mj_data.qpos[:] = last_safe_qpos
+                        _mujoco.mj_forward(self._mj_model, self._mj_data)
+                        self._sync_internal_state_from_mujoco_locked()
+                else:
+                    forbidden_contacts = self._collect_forbidden_contacts_locked()
+            else:
+                forbidden_contacts = self._collect_forbidden_contacts_locked()
+
+            if forbidden_contacts:
+                raise RuntimeError(self._format_collision_message(forbidden_contacts))
+
             self._sim_time += n_steps * self._dt
             self._stats["steps"] += n_steps
             self._stats["commands"] += 1
@@ -212,6 +369,30 @@ class SimulationCore:
     async def get_state(self) -> dict[str, Any]:
         async with self._lock:
             return self._build_state_locked()
+
+    async def get_camera_observation(self, include_data: bool = False) -> dict[str, Any]:
+        async with self._lock:
+            return self._build_camera_observation_locked(include_data=include_data)
+
+    async def get_camera_stream(self, stream_name: str, include_data: bool = False) -> dict[str, Any]:
+        if stream_name not in {"rgb", "depth"}:
+            raise ValueError("stream_name must be one of: rgb, depth")
+        async with self._lock:
+            observation = self._build_camera_observation_locked(include_data=include_data)
+            stream_state = dict(observation.get(stream_name, {}))
+            payload: dict[str, Any] = {
+                "timestamp": time.time(),
+                "frame_id": observation.get("frame_id"),
+                "camera_device": observation.get("camera_device"),
+                "camera_mount_name": observation.get("camera_mount_name"),
+                "camera_capture_ok": observation.get("camera_capture_ok", False),
+                "stream_name": stream_name,
+                "stream": stream_state,
+            }
+            if include_data:
+                stream_data_key = f"{stream_name}_data"
+                payload[stream_data_key] = observation.get(stream_data_key)
+            return payload
 
     async def start_task(self, task_name: str) -> dict[str, Any]:
         async with self._lock:
@@ -277,6 +458,8 @@ class SimulationCore:
         for region in self._manifest_data.get("spawn_regions", []):
             self._register_spawn_region(region)
         self._load_spawn_regions_from_tool_catalog()
+        self._load_camera_sensor_config()
+        self._load_dataset_schema()
 
     def _register_spawn_region(self, region: Any) -> None:
         if not isinstance(region, dict):
@@ -307,13 +490,9 @@ class SimulationCore:
         }
 
     def _load_spawn_regions_from_tool_catalog(self) -> None:
-        catalog_path_value = self._manifest_data.get("tool_catalog_path")
-        if not isinstance(catalog_path_value, str) or not catalog_path_value.strip():
+        catalog_path = self._resolve_repo_path(self._manifest_data.get("tool_catalog_path"))
+        if catalog_path is None:
             return
-
-        catalog_path = Path(catalog_path_value).expanduser()
-        if not catalog_path.is_absolute():
-            catalog_path = (REPO_ROOT / catalog_path).resolve()
         if not catalog_path.exists():
             return
 
@@ -329,6 +508,160 @@ class SimulationCore:
                 continue
             self._register_spawn_region(region)
 
+    def _resolve_repo_path(self, path_value: Any) -> Path | None:
+        if not isinstance(path_value, str) or not path_value.strip():
+            return None
+        candidate = Path(path_value).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return (REPO_ROOT / candidate).resolve()
+
+    def _load_camera_sensor_config(self) -> None:
+        config_path = self._resolve_repo_path(self._manifest_data.get("camera_sensor_config_path"))
+        if config_path is None:
+            config_path = DEFAULT_CAMERA_SENSOR_CONFIG_PATH
+        self._camera_sensor_config_path = str(config_path)
+        if not config_path.exists():
+            return
+
+        try:
+            raw = config_path.read_text(encoding="utf-8")
+            config_data = json.loads(raw)
+        except Exception:
+            return
+
+        primary_sensor = config_data.get("primary_sensor", {})
+        if isinstance(primary_sensor, dict):
+            device = str(primary_sensor.get("device", self._camera_device)).strip()
+            if device:
+                self._camera_device = device
+
+            mount = primary_sensor.get("mount", {})
+            if isinstance(mount, dict):
+                mount_name = str(mount.get("name", self._camera_mount_name)).strip()
+                if mount_name:
+                    self._camera_mount_name = mount_name
+
+                parent_frame = str(mount.get("parent_frame", self._camera_mount_parent_frame)).strip()
+                if parent_frame:
+                    self._camera_mount_parent_frame = parent_frame
+
+                mount_pos_raw = mount.get("position", DEFAULT_CAMERA_MOUNT_POSITION)
+                if isinstance(mount_pos_raw, list) and len(mount_pos_raw) >= 3:
+                    try:
+                        mount_pos = [float(mount_pos_raw[0]), float(mount_pos_raw[1]), float(mount_pos_raw[2])]
+                        self._camera_pose_in_ee["position"] = mount_pos
+                    except (TypeError, ValueError):
+                        pass
+
+                mount_quat_raw = mount.get("quaternion_wxyz", mount.get("quaternion", DEFAULT_CAMERA_MOUNT_QUATERNION))
+                if isinstance(mount_quat_raw, list) and len(mount_quat_raw) >= 4:
+                    try:
+                        mount_quat = [float(mount_quat_raw[0]), float(mount_quat_raw[1]), float(mount_quat_raw[2]), float(mount_quat_raw[3])]
+                        self._camera_pose_in_ee["quaternion"] = _normalize_quaternion(mount_quat)
+                    except (TypeError, ValueError):
+                        pass
+
+            outputs = primary_sensor.get("outputs", {})
+            if isinstance(outputs, dict):
+                rgb_raw = outputs.get("rgb", {})
+                if isinstance(rgb_raw, dict):
+                    merged_rgb = dict(DEFAULT_RGB_STREAM)
+                    for key, default_value in DEFAULT_RGB_STREAM.items():
+                        merged_rgb[key] = rgb_raw.get(key, default_value)
+                    try:
+                        merged_rgb["width"] = max(1, int(merged_rgb["width"]))
+                        merged_rgb["height"] = max(1, int(merged_rgb["height"]))
+                        merged_rgb["fps"] = max(1.0, float(merged_rgb["fps"]))
+                    except (TypeError, ValueError):
+                        merged_rgb = dict(DEFAULT_RGB_STREAM)
+                    self._rgb_stream = merged_rgb
+
+                depth_raw = outputs.get("depth", {})
+                if isinstance(depth_raw, dict):
+                    merged_depth = dict(DEFAULT_DEPTH_STREAM)
+                    for key, default_value in DEFAULT_DEPTH_STREAM.items():
+                        merged_depth[key] = depth_raw.get(key, default_value)
+                    try:
+                        merged_depth["width"] = max(1, int(merged_depth["width"]))
+                        merged_depth["height"] = max(1, int(merged_depth["height"]))
+                        merged_depth["fps"] = max(1.0, float(merged_depth["fps"]))
+                        merged_depth["depth_scale"] = float(merged_depth["depth_scale"])
+                    except (TypeError, ValueError):
+                        merged_depth = dict(DEFAULT_DEPTH_STREAM)
+                    self._depth_stream = merged_depth
+
+                alignment_raw = outputs.get("timestamp_alignment", {})
+                if isinstance(alignment_raw, dict):
+                    alignment_mode = str(alignment_raw.get("mode", self._camera_alignment_mode)).strip()
+                    if alignment_mode:
+                        self._camera_alignment_mode = alignment_mode
+                    try:
+                        self._camera_alignment_max_delta_ms = max(
+                            0.0,
+                            float(alignment_raw.get("max_delta_ms", self._camera_alignment_max_delta_ms)),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+
+            recording_contract = primary_sensor.get("recording_contract", {})
+            if isinstance(recording_contract, dict):
+                self._camera_recordable_training_observation = bool(
+                    recording_contract.get(
+                        "recordable_training_observation",
+                        self._camera_recordable_training_observation,
+                    )
+                )
+
+            calibration_raw = primary_sensor.get("calibration", {})
+            if isinstance(calibration_raw, dict):
+                intrinsics_version = str(
+                    calibration_raw.get("intrinsics_version", self._camera_intrinsics_version)
+                ).strip()
+                extrinsics_version = str(
+                    calibration_raw.get("extrinsics_version", self._camera_extrinsics_version)
+                ).strip()
+                if intrinsics_version:
+                    self._camera_intrinsics_version = intrinsics_version
+                if extrinsics_version:
+                    self._camera_extrinsics_version = extrinsics_version
+
+        debug_objects_raw = config_data.get("debug_only_scene_objects", [])
+        parsed_debug_objects: list[str] = []
+        if isinstance(debug_objects_raw, list):
+            for item in debug_objects_raw:
+                if isinstance(item, str):
+                    candidate = item.strip()
+                elif isinstance(item, dict):
+                    candidate = str(item.get("id", "")).strip()
+                else:
+                    candidate = ""
+                if candidate:
+                    parsed_debug_objects.append(candidate)
+        if parsed_debug_objects:
+            self._camera_debug_only_objects = parsed_debug_objects
+
+        capture_fps = max(1.0, min(float(self._rgb_stream["fps"]), float(self._depth_stream["fps"])))
+        self._camera_capture_interval_s = 1.0 / capture_fps
+
+    def _load_dataset_schema(self) -> None:
+        schema_path = self._resolve_repo_path(self._manifest_data.get("dataset_schema_path"))
+        if schema_path is None:
+            schema_path = DEFAULT_DATASET_SCHEMA_PATH
+        self._dataset_schema_path = str(schema_path)
+        self._dataset_schema = {}
+        if not schema_path.exists():
+            return
+
+        try:
+            raw = schema_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+        except Exception:
+            return
+
+        if isinstance(parsed, dict):
+            self._dataset_schema = parsed
+
     def _frontend_to_backend_position(self, frontend_position: list[float]) -> list[float]:
         x_frontend, y_frontend, z_frontend = frontend_position
         return [x_frontend, -z_frontend, y_frontend + BACKEND_FRAME_Z_OFFSET]
@@ -342,6 +675,7 @@ class SimulationCore:
         return (REPO_ROOT / requested).resolve()
 
     def _set_stub_mode(self) -> None:
+        self._close_mujoco_renderer()
         self._model_backend = "stub"
         self._mj_model = None
         self._mj_data = None
@@ -349,7 +683,23 @@ class SimulationCore:
         self._gripper_joint_qpos_addr = {}
         self._object_body_ids = {}
         self._tool_body_id = None
+        self._mj_rgb_camera_id = -1
+        self._mj_depth_camera_id = -1
         self._dt = DEFAULT_DT
+
+    def _close_mujoco_renderer(self) -> None:
+        if self._mj_renderer is None:
+            return
+        try:
+            close_fn = getattr(self._mj_renderer, "close", None)
+            if callable(close_fn):
+                close_fn()
+        except Exception:
+            pass
+        finally:
+            self._mj_renderer = None
+            self._mj_renderer_width = 0
+            self._mj_renderer_height = 0
 
     def _using_mujoco_model(self) -> bool:
         return self._model_backend == "mujoco" and self._mj_model is not None and self._mj_data is not None
@@ -359,6 +709,7 @@ class SimulationCore:
         resolved_path = self._resolve_model_path(model_path)
         self._loaded_model_path = str(resolved_path)
         self._model_load_error = None
+        self._close_mujoco_renderer()
 
         if _mujoco is None:
             self._set_stub_mode()
@@ -416,6 +767,133 @@ class SimulationCore:
             if body_id >= 0:
                 self._tool_body_id = int(body_id)
                 break
+
+        self._mj_rgb_camera_id = -1
+        rgb_camera_name = str(self._rgb_stream.get("camera_name", DEFAULT_RGB_STREAM["camera_name"])).strip()
+        if rgb_camera_name:
+            rgb_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_CAMERA, rgb_camera_name)
+            if rgb_id >= 0:
+                self._mj_rgb_camera_id = int(rgb_id)
+
+        self._mj_depth_camera_id = -1
+        depth_camera_name = str(self._depth_stream.get("camera_name", DEFAULT_DEPTH_STREAM["camera_name"])).strip()
+        if depth_camera_name:
+            depth_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_CAMERA, depth_camera_name)
+            if depth_id >= 0:
+                self._mj_depth_camera_id = int(depth_id)
+
+    def _is_ancestor_body_id(self, ancestor_id: int, body_id: int) -> bool:
+        if self._mj_model is None or ancestor_id < 0 or body_id < 0:
+            return False
+        current = int(body_id)
+        while current > 0:
+            if current == int(ancestor_id):
+                return True
+            current = int(self._mj_model.body_parentid[current])
+        return int(ancestor_id) == 0
+
+    def _should_ignore_contact(self, body_a: int, body_b: int) -> bool:
+        # Ignore world contacts and kinematic parent-child/ancestor pairs.
+        if body_a <= 0 or body_b <= 0:
+            return True
+        if body_a == body_b:
+            return True
+        if self._is_ancestor_body_id(body_a, body_b):
+            return True
+        if self._is_ancestor_body_id(body_b, body_a):
+            return True
+        return False
+
+    def _collect_forbidden_contacts_locked(self) -> list[dict[str, Any]]:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
+            return []
+
+        assert _mujoco is not None
+        contacts: list[dict[str, Any]] = []
+        ncon = int(self._mj_data.ncon)
+        for idx in range(ncon):
+            contact = self._mj_data.contact[idx]
+            dist = float(contact.dist)
+            if dist >= -MAX_ALLOWED_PENETRATION_M:
+                continue
+
+            geom_a = int(contact.geom1)
+            geom_b = int(contact.geom2)
+            body_a = int(self._mj_model.geom_bodyid[geom_a])
+            body_b = int(self._mj_model.geom_bodyid[geom_b])
+            if self._should_ignore_contact(body_a, body_b):
+                continue
+
+            body_name_a = _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_a) or f"body_{body_a}"
+            body_name_b = _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_b) or f"body_{body_b}"
+            contacts.append(
+                {
+                    "dist": dist,
+                    "body_a": body_name_a,
+                    "body_b": body_name_b,
+                }
+            )
+
+        contacts.sort(key=lambda item: float(item["dist"]))
+        return contacts
+
+    def _restore_previous_pose_locked(self, snapshot: dict[str, Any]) -> None:
+        self._arm_qpos = list(snapshot.get("arm_qpos", self._arm_qpos))
+        self._arm_qvel = list(snapshot.get("arm_qvel", self._arm_qvel))
+        self._gripper_opening = float(snapshot.get("gripper_opening", self._gripper_opening))
+        self._gripper_velocity = float(snapshot.get("gripper_velocity", self._gripper_velocity))
+        self._gripper_joints = dict(snapshot.get("gripper_joints", self._gripper_joints))
+
+        if not self._using_mujoco_model() or self._mj_data is None or _mujoco is None or self._mj_model is None:
+            return
+
+        qpos_snapshot = snapshot.get("mj_qpos")
+        qvel_snapshot = snapshot.get("mj_qvel")
+        if qpos_snapshot is not None:
+            self._mj_data.qpos[:] = qpos_snapshot
+        if qvel_snapshot is not None:
+            self._mj_data.qvel[:] = qvel_snapshot
+        _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+    def _sync_internal_state_from_mujoco_locked(self) -> None:
+        if not self._using_mujoco_model() or self._mj_data is None:
+            return
+
+        arm_qpos: list[float] = []
+        for name in self._arm_joint_names:
+            qpos_addr = self._arm_joint_qpos_addr.get(name)
+            if qpos_addr is None:
+                arm_qpos.append(0.0)
+            else:
+                arm_qpos.append(float(self._mj_data.qpos[qpos_addr]))
+        self._arm_qpos = arm_qpos
+        self._arm_qvel = [0.0 for _ in self._arm_qpos]
+
+        gripper_joints: dict[str, float] = {}
+        for name in DEFAULT_GRIPPER_JOINT_NAMES:
+            qpos_addr = self._gripper_joint_qpos_addr.get(name)
+            if qpos_addr is None:
+                continue
+            gripper_joints[name] = float(self._mj_data.qpos[qpos_addr])
+
+        left_driver = gripper_joints.get("left_driver_joint", 0.0)
+        self._gripper_opening = _clamp(left_driver / GRIPPER_DRIVER_LIMIT, 0.0, 1.0)
+        self._gripper_velocity = 0.0
+        default_mapping = self._map_gripper_joints(self._gripper_opening)
+        for name, value in default_mapping.items():
+            gripper_joints.setdefault(name, float(value))
+        self._gripper_joints = gripper_joints
+
+    def _format_collision_message(self, contacts: list[dict[str, Any]]) -> str:
+        if not contacts:
+            return "step blocked to avoid collision."
+
+        top_contacts = contacts[:MAX_COLLISION_REPORTS]
+        parts = []
+        for item in top_contacts:
+            depth_mm = abs(float(item["dist"])) * 1000.0
+            parts.append(f'{item["body_a"]}<->{item["body_b"]} ({depth_mm:.1f}mm)')
+        return "step blocked: collision/interference detected at " + ", ".join(parts)
 
     def _sync_scene_objects_to_model_locked(self) -> None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
@@ -481,6 +959,13 @@ class SimulationCore:
         self._stats["commands"] = 0
         self._stats["last_step_ms"] = 0.0
         self._stats["avg_step_ms"] = 0.0
+        self._stats["camera_frames"] = 0
+        self._stats["camera_drops"] = 0
+        self._camera_frame_counter = 0
+        self._camera_last_capture_ts = 0.0
+        self._camera_last_state = None
+        self._camera_last_rgb_frame = None
+        self._camera_last_depth_frame = None
 
     def _apply_object_reset_policy_locked(self) -> None:
         using_mujoco = self._using_mujoco_model()
@@ -578,8 +1063,8 @@ class SimulationCore:
             "right_driver_joint": driver,
             "left_spring_link_joint": driver,
             "right_spring_link_joint": driver,
-            "left_follower_joint": -driver,
-            "right_follower_joint": -driver,
+            "left_follower_joint": driver,
+            "right_follower_joint": driver,
         }
 
     def _collect_objects_state_locked(self) -> dict[str, dict[str, Any]]:
@@ -613,6 +1098,272 @@ class SimulationCore:
         quat = _rpy_to_quaternion(q4, q5, q6)
         return {"position": [x, y, z], "quaternion": quat}
 
+    def _ensure_mujoco_renderer_locked(self) -> Any | None:
+        if (
+            not self._using_mujoco_model()
+            or self._mj_model is None
+            or self._mj_data is None
+            or _mujoco is None
+            or np is None
+        ):
+            return None
+
+        render_width = max(int(self._rgb_stream["width"]), int(self._depth_stream["width"]))
+        render_height = max(int(self._rgb_stream["height"]), int(self._depth_stream["height"]))
+        if render_width <= 0 or render_height <= 0:
+            return None
+
+        if (
+            self._mj_renderer is not None
+            and self._mj_renderer_width == render_width
+            and self._mj_renderer_height == render_height
+        ):
+            return self._mj_renderer
+
+        self._close_mujoco_renderer()
+        try:
+            self._mj_renderer = _mujoco.Renderer(self._mj_model, width=render_width, height=render_height)
+            self._mj_renderer_width = render_width
+            self._mj_renderer_height = render_height
+            return self._mj_renderer
+        except Exception:
+            self._close_mujoco_renderer()
+            return None
+
+    def _build_stub_camera_frames_locked(self) -> tuple[Any | None, Any | None]:
+        if np is None:
+            return None, None
+
+        rgb_h = max(1, int(self._rgb_stream["height"]))
+        rgb_w = max(1, int(self._rgb_stream["width"]))
+        depth_h = max(1, int(self._depth_stream["height"]))
+        depth_w = max(1, int(self._depth_stream["width"]))
+
+        # Stub frame carries simple gradients so callers can detect frame refresh.
+        tick = int((self._sim_time * 100.0) % 255.0)
+        rgb = np.zeros((rgb_h, rgb_w, 3), dtype=np.uint8)
+        rgb[:, :, 0] = tick
+        rgb[:, :, 1] = 120
+        rgb[:, :, 2] = 64
+
+        depth_mm = np.full((depth_h, depth_w), 900, dtype=np.uint16)
+        return rgb, depth_mm
+
+    def _render_camera_frames_locked(self) -> tuple[Any | None, Any | None]:
+        if (
+            not self._using_mujoco_model()
+            or self._mj_data is None
+            or _mujoco is None
+            or np is None
+            or self._mj_rgb_camera_id < 0
+            or self._mj_depth_camera_id < 0
+        ):
+            return None, None
+
+        renderer = self._ensure_mujoco_renderer_locked()
+        if renderer is None:
+            return None, None
+
+        rgb_camera_name = str(self._rgb_stream.get("camera_name", DEFAULT_RGB_STREAM["camera_name"]))
+        depth_camera_name = str(self._depth_stream.get("camera_name", DEFAULT_DEPTH_STREAM["camera_name"]))
+        try:
+            renderer.disable_depth_rendering()
+            renderer.update_scene(self._mj_data, camera=rgb_camera_name)
+            rgb_frame = renderer.render()
+            rgb_frame = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
+
+            renderer.enable_depth_rendering()
+            renderer.update_scene(self._mj_data, camera=depth_camera_name)
+            depth_raw = renderer.render()
+            renderer.disable_depth_rendering()
+
+            if depth_raw is None:
+                return None, None
+
+            depth_arr = np.asarray(depth_raw)
+            if depth_arr.ndim == 3:
+                depth_arr = depth_arr[:, :, 0]
+            depth_arr = np.clip(depth_arr.astype(np.float32) * 1000.0, 0.0, 65535.0)
+            depth_mm = np.ascontiguousarray(depth_arr.astype(np.uint16))
+            return rgb_frame, depth_mm
+        except Exception:
+            try:
+                renderer.disable_depth_rendering()
+            except Exception:
+                pass
+            return None, None
+
+    def _compose_camera_pose_in_base_locked(self, ee_pose: dict[str, list[float]]) -> dict[str, list[float]]:
+        return _compose_pose(
+            parent_position_xyz=[float(v) for v in ee_pose["position"][:3]],
+            parent_quaternion_wxyz=[float(v) for v in ee_pose["quaternion"][:4]],
+            child_position_xyz=[float(v) for v in self._camera_pose_in_ee["position"][:3]],
+            child_quaternion_wxyz=[float(v) for v in self._camera_pose_in_ee["quaternion"][:4]],
+        )
+
+    def _capture_camera_state_locked(
+        self,
+        force_capture: bool = False,
+        ee_pose: dict[str, list[float]] | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        if (
+            not force_capture
+            and self._camera_last_state is not None
+            and (now - self._camera_last_capture_ts) < self._camera_capture_interval_s
+        ):
+            return deepcopy(self._camera_last_state)
+
+        rgb_rendered, depth_rendered = self._render_camera_frames_locked()
+        rgb_missing = rgb_rendered is None
+        depth_missing = depth_rendered is None
+        if rgb_missing or depth_missing:
+            stub_rgb, stub_depth = self._build_stub_camera_frames_locked()
+            if rgb_rendered is None:
+                rgb_rendered = stub_rgb
+            if depth_rendered is None:
+                depth_rendered = stub_depth
+
+        if ee_pose is None:
+            ee_pose = self._compute_ee_pose_locked()
+        camera_pose_in_base = self._compose_camera_pose_in_base_locked(ee_pose)
+
+        rgb_timestamp = float(now)
+        if self._camera_alignment_mode == "same_tick":
+            depth_timestamp = float(now)
+        else:
+            depth_timestamp = float(now + min(0.001, self._camera_alignment_max_delta_ms / 1000.0))
+
+        alignment_error_ms = abs(rgb_timestamp - depth_timestamp) * 1000.0
+        frame_aligned = alignment_error_ms <= self._camera_alignment_max_delta_ms
+
+        self._camera_frame_counter += 1
+        frame_id = f"frame_{self._camera_frame_counter:06d}"
+        self._stats["camera_frames"] = int(self._stats.get("camera_frames", 0)) + 1
+
+        if np is not None and rgb_rendered is not None:
+            self._camera_last_rgb_frame = np.ascontiguousarray(rgb_rendered, dtype=np.uint8)
+        else:
+            self._camera_last_rgb_frame = None
+
+        if np is not None and depth_rendered is not None:
+            self._camera_last_depth_frame = np.ascontiguousarray(depth_rendered, dtype=np.uint16)
+        else:
+            self._camera_last_depth_frame = None
+
+        camera_capture_ok = bool(
+            (not rgb_missing)
+            and (not depth_missing)
+            and frame_aligned
+            and self._camera_recordable_training_observation
+        )
+        if not camera_capture_ok:
+            self._stats["camera_drops"] = int(self._stats.get("camera_drops", 0)) + 1
+
+        camera_state: dict[str, Any] = {
+            "device": self._camera_device,
+            "mount_name": self._camera_mount_name,
+            "mount_parent_frame": self._camera_mount_parent_frame,
+            "camera_intrinsics_version": self._camera_intrinsics_version,
+            "camera_extrinsics_version": self._camera_extrinsics_version,
+            "frame_id": frame_id,
+            "frame_aligned": frame_aligned,
+            "alignment_mode": self._camera_alignment_mode,
+            "max_alignment_error_ms": float(self._camera_alignment_max_delta_ms),
+            "recordable_training_observation": bool(self._camera_recordable_training_observation),
+            "camera_capture_ok": camera_capture_ok,
+            "debug_only_objects": list(self._camera_debug_only_objects),
+            "camera_pose_in_ee": {
+                "position": [float(v) for v in self._camera_pose_in_ee["position"]],
+                "quaternion": [float(v) for v in self._camera_pose_in_ee["quaternion"]],
+            },
+            "camera_pose_in_base": {
+                "position": [float(v) for v in camera_pose_in_base["position"]],
+                "quaternion": [float(v) for v in camera_pose_in_base["quaternion"]],
+            },
+            "rgb": {
+                "interface_name": str(self._rgb_stream["interface_name"]),
+                "camera_name": str(self._rgb_stream["camera_name"]),
+                "width": int(self._rgb_stream["width"]),
+                "height": int(self._rgb_stream["height"]),
+                "fps": float(self._rgb_stream["fps"]),
+                "pixel_format": str(self._rgb_stream["pixel_format"]),
+                "dataset_storage_format": str(self._rgb_stream["dataset_storage_format"]),
+                "timestamp": rgb_timestamp,
+                "missing": bool(rgb_missing),
+            },
+            "depth": {
+                "interface_name": str(self._depth_stream["interface_name"]),
+                "camera_name": str(self._depth_stream["camera_name"]),
+                "width": int(self._depth_stream["width"]),
+                "height": int(self._depth_stream["height"]),
+                "fps": float(self._depth_stream["fps"]),
+                "pixel_format": str(self._depth_stream["pixel_format"]),
+                "dataset_storage_format": str(self._depth_stream["dataset_storage_format"]),
+                "timestamp": depth_timestamp,
+                "missing": bool(depth_missing),
+                "depth_unit": str(self._depth_stream.get("depth_unit", "millimeter")),
+                "depth_scale": float(self._depth_stream.get("depth_scale", 1.0)),
+            },
+        }
+
+        self._camera_last_state = deepcopy(camera_state)
+        self._camera_last_capture_ts = now
+        return deepcopy(camera_state)
+
+    def _build_camera_frame_data_locked(self) -> dict[str, Any]:
+        if np is None or self._camera_last_rgb_frame is None or self._camera_last_depth_frame is None:
+            return {
+                "rgb_data": None,
+                "depth_data": None,
+            }
+
+        rgb_bytes = np.ascontiguousarray(self._camera_last_rgb_frame, dtype=np.uint8).tobytes()
+        depth_bytes = np.ascontiguousarray(self._camera_last_depth_frame, dtype=np.uint16).tobytes()
+        return {
+            "rgb_data": {
+                "encoding": "base64_raw_rgb8",
+                "byte_count": len(rgb_bytes),
+                "data_base64": base64.b64encode(rgb_bytes).decode("ascii"),
+            },
+            "depth_data": {
+                "encoding": "base64_raw_depth16_mm",
+                "byte_count": len(depth_bytes),
+                "data_base64": base64.b64encode(depth_bytes).decode("ascii"),
+            },
+        }
+
+    def _build_camera_observation_locked(self, include_data: bool = False) -> dict[str, Any]:
+        camera_state = self._capture_camera_state_locked(force_capture=include_data)
+        alignment_rules_raw = self._dataset_schema.get("alignment_rules", {})
+        alignment_rules = alignment_rules_raw if isinstance(alignment_rules_raw, dict) else {}
+        observation: dict[str, Any] = {
+            "timestamp": time.time(),
+            "frame_id": camera_state.get("frame_id"),
+            "camera_device": camera_state.get("device"),
+            "camera_mount_name": camera_state.get("mount_name"),
+            "camera_intrinsics_version": camera_state.get("camera_intrinsics_version"),
+            "camera_extrinsics_version": camera_state.get("camera_extrinsics_version"),
+            "camera_capture_ok": camera_state.get("camera_capture_ok", False),
+            "frame_aligned": camera_state.get("frame_aligned", False),
+            "recordable_training_observation": camera_state.get("recordable_training_observation", False),
+            "rgb": dict(camera_state.get("rgb", {})),
+            "depth": dict(camera_state.get("depth", {})),
+            "camera_pose_in_ee": deepcopy(camera_state.get("camera_pose_in_ee", {})),
+            "camera_pose_in_base": deepcopy(camera_state.get("camera_pose_in_base", {})),
+            "dataset_schema_version": self._dataset_schema.get("dataset_schema_version"),
+            "paired_frame_required_for_each_action": bool(
+                alignment_rules.get("paired_frame_required_for_each_action", True)
+            ),
+            "instruction_text_required_in_metadata_and_step": bool(
+                alignment_rules.get("instruction_text_required_in_metadata_and_step", True)
+            ),
+            "camera": camera_state,
+        }
+        if include_data:
+            observation.update(self._build_camera_frame_data_locked())
+        return observation
+
     def _build_state_locked(self) -> dict[str, Any]:
         if self._using_mujoco_model() and self._mj_data is not None:
             arm_qpos = []
@@ -628,16 +1379,20 @@ class SimulationCore:
         gripper_driver = float(self._gripper_joints["left_driver_joint"])
         qpos = list(self._arm_qpos) + [gripper_driver]
         qvel = list(self._arm_qvel) + [self._gripper_velocity]
+        ee_pose = self._compute_ee_pose_locked()
+        camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
         return {
             "timestamp": time.time(),
             "sim_time": self._sim_time,
             "joint_names": list(self._arm_joint_names),
             "qpos": qpos,
             "qvel": qvel,
-            "ee_pose": self._compute_ee_pose_locked(),
+            "ee_pose": ee_pose,
             "gripper_opening": self._gripper_opening,
             "gripper_joints": dict(self._gripper_joints),
             "objects": deepcopy(self._objects_state),
+            "camera": camera_state,
+            "camera_capture_ok": bool(camera_state.get("camera_capture_ok", False)),
             "task_state": dict(self._task_state),
             "source": self._source,
             "stats": {
@@ -645,6 +1400,8 @@ class SimulationCore:
                 "commands": int(self._stats["commands"]),
                 "last_step_ms": float(self._stats["last_step_ms"]),
                 "avg_step_ms": float(self._stats["avg_step_ms"]),
+                "camera_frames": int(self._stats.get("camera_frames", 0)),
+                "camera_drops": int(self._stats.get("camera_drops", 0)),
             },
         }
 
