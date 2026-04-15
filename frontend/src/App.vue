@@ -264,6 +264,8 @@ const ARM_JOINT_NAMES = [
 const GRIPPER_JOINT_NAMES = [
   "left_driver_joint",
   "right_driver_joint",
+  "left_driver-left_coupler",
+  "right_driver-right_coupler",
   "left_spring_link_joint",
   "right_spring_link_joint",
   "left_follower_joint",
@@ -984,6 +986,18 @@ async function inputRobotAngles() {
 
 // 使用的机械臂urdf模型
 const urdf = "./ur5/ur5.urdf";
+const WRIST_CAMERA_MOUNT_CONFIG = {
+  assetPath: "./camera/urdf/d405_mount_assembly.urdf",
+  parentLinkName: "robotiq_base_link",
+  transform: {
+    // Keep clamp-ring centerline coaxial with wrist/gripper axis.
+    // Lift mount so the ring sits near the wrist/gripper boundary like real installation photos.
+    position: [0.035392, 0.064016, 0.0581534],
+    // Keep the camera/mount facing the toolbox side after the 180deg self-axis rotation.
+    rotation: [0.0, -Math.PI, Math.PI / 2],
+    scale: [1.0, 1.0, 1.0],
+  },
+};
 const SCENE_OBJECT_CONFIGS = [
   {
     id: "rack",
@@ -1075,6 +1089,8 @@ function setGripperJointValue(value) {
   const targetValues = {
     left_driver_joint: clampedValue,
     right_driver_joint: clampedValue,
+    "left_driver-left_coupler": -clampedValue,
+    "right_driver-right_coupler": -clampedValue,
     left_spring_link_joint: clampedValue,
     right_spring_link_joint: clampedValue,
     left_follower_joint: clampedValue,
@@ -1268,6 +1284,7 @@ let renderer = "";
 // 轨道控制器
 let controls = "";
 const sceneObjectModels = new Map();
+let wristCameraMountModel = null;
 
 // 初始化
 function initBase() {
@@ -1400,6 +1417,32 @@ function initSceneObjects() {
   });
 }
 
+function attachWristCameraMount() {
+  if (!robot || !robot.links) return;
+
+  const parentLink = robot.links[WRIST_CAMERA_MOUNT_CONFIG.parentLinkName];
+  if (!parentLink) {
+    console.warn(
+      "未找到相机支架挂载父链接:",
+      WRIST_CAMERA_MOUNT_CONFIG.parentLinkName
+    );
+    return;
+  }
+
+  if (wristCameraMountModel && wristCameraMountModel.parent) {
+    wristCameraMountModel.parent.remove(wristCameraMountModel);
+  }
+
+  loadUrdfModel(WRIST_CAMERA_MOUNT_CONFIG.assetPath, (mountAssembly) => {
+    const { position, rotation, scale } = WRIST_CAMERA_MOUNT_CONFIG.transform;
+    mountAssembly.scale.set(scale[0], scale[1], scale[2]);
+    mountAssembly.position.set(position[0], position[1], position[2]);
+    mountAssembly.rotation.set(rotation[0], rotation[1], rotation[2]);
+    parentLink.add(mountAssembly);
+    wristCameraMountModel = mountAssembly;
+  });
+}
+
 function initRobot() {
   loadUrdfModel(urdf, (result) => {
     robot = result;
@@ -1410,6 +1453,7 @@ function initRobot() {
     robot.rotation.z = 0;
     robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
     scene.add(robot);
+    attachWristCameraMount();
     focusCameraOnObject(robot);
     sliderInput(-Math.PI / 2, "link2_joint");
     sliderInput(Math.PI / 2, "link3_joint");

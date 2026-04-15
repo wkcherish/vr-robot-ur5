@@ -437,6 +437,21 @@
         <mesh filename="robotiq_2f85_v4/driver.stl"/>
       </geometry>
     </collision>
+    <visual>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
+      <geometry>
+        <cylinder length="0.028" radius="0.0038"/>
+      </geometry>
+      <material name="GripperMetal">
+        <color rgba="0.58 0.58 0.58 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
+      <geometry>
+        <cylinder length="0.028" radius="0.0038"/>
+      </geometry>
+    </collision>
   </link>
   <joint name="left_driver_joint" type="revolute">
     <origin rpy="-1.5707963267948966 0 0" xyz="-0.0306011 0.00475 0.0657045"/>
@@ -454,7 +469,7 @@
       <inertia ixx="0.00000416206" ixy="0.0" ixz="0.0" iyy="0.00000352216" iyz="0.0" izz="0.000000888131"/>
     </inertial>
     <visual>
-      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
@@ -463,16 +478,20 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
     </collision>
   </link>
-  <joint name="left_driver-left_coupler" type="fixed">
-    <origin rpy="0 0 0" xyz="-0.0314249 0.00453223 -0.0102"/>
+  <joint name="left_driver-left_coupler" type="revolute">
+    <origin rpy="0 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
     <parent link="left_driver_link"/>
     <child link="left_coupler_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-1.5707963267948966" upper="0.0" velocity="2.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <mimic joint="left_driver_joint" multiplier="-1.0" offset="0.0"/>
   </joint>
 
   <link name="left_spring_link">
@@ -504,6 +523,7 @@
     <axis xyz="0 0 1"/>
     <limit effort="10.0" lower="-0.29670597283" upper="0.9" velocity="2.0"/>
     <dynamics damping="0.01" friction="0.0"/>
+    <mimic joint="left_driver_joint" multiplier="1.0" offset="0.0"/>
   </joint>
 
   <link name="left_follower_link">
@@ -550,6 +570,7 @@
     <axis xyz="0 0 1"/>
     <limit effort="10.0" lower="-0.872664" upper="0.9" velocity="2.0"/>
     <dynamics damping="0.01" friction="0.0"/>
+    <mimic joint="left_driver_joint" multiplier="1.0" offset="0.0"/>
   </joint>
 
   <link name="left_pad_link">
@@ -602,6 +623,21 @@
         <mesh filename="robotiq_2f85_v4/driver.stl"/>
       </geometry>
     </collision>
+    <visual>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
+      <geometry>
+        <cylinder length="0.028" radius="0.0038"/>
+      </geometry>
+      <material name="GripperMetal">
+        <color rgba="0.58 0.58 0.58 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
+      <geometry>
+        <cylinder length="0.028" radius="0.0038"/>
+      </geometry>
+    </collision>
   </link>
   <joint name="right_driver_joint" type="revolute">
     <origin rpy="-1.5707963267948966 0 3.141592653589793" xyz="0.0306011 -0.00475 0.0657045"/>
@@ -610,6 +646,7 @@
     <axis xyz="0 0 1"/>
     <limit effort="10.0" lower="0.0" upper="0.9" velocity="2.0"/>
     <dynamics damping="0.1" friction="0.0"/>
+    <mimic joint="left_driver_joint" multiplier="1.0" offset="0.0"/>
   </joint>
 
   <link name="right_coupler_link">
@@ -619,7 +656,7 @@
       <inertia ixx="0.00000416206" ixy="0.0" ixz="0.0" iyy="0.00000352216" iyz="0.0" izz="0.000000888131"/>
     </inertial>
     <visual>
-      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
@@ -628,16 +665,20 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
+      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
     </collision>
   </link>
-  <joint name="right_driver-right_coupler" type="fixed">
-    <origin rpy="0 0 0" xyz="-0.0314249 0.00453223 -0.0102"/>
+  <joint name="right_driver-right_coupler" type="revolute">
+    <origin rpy="0 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
     <parent link="right_driver_link"/>
     <child link="right_coupler_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-1.5707963267948966" upper="0.0" velocity="2.0"/>
+    <dynamics damping="0.01" friction="0.0"/>
+    <mimic joint="right_driver_joint" multiplier="-1.0" offset="0.0"/>
   </joint>
 
   <link name="right_spring_link">
@@ -669,6 +710,7 @@
     <axis xyz="0 0 1"/>
     <limit effort="10.0" lower="-0.29670597283" upper="0.9" velocity="2.0"/>
     <dynamics damping="0.01" friction="0.0"/>
+    <mimic joint="left_driver_joint" multiplier="1.0" offset="0.0"/>
   </joint>
 
   <link name="right_follower_link">
@@ -715,6 +757,7 @@
     <axis xyz="0 0 1"/>
     <limit effort="10.0" lower="-0.872664" upper="0.9" velocity="2.0"/>
     <dynamics damping="0.01" friction="0.0"/>
+    <mimic joint="left_driver_joint" multiplier="1.0" offset="0.0"/>
   </joint>
 
   <link name="right_pad_link">
