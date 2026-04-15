@@ -230,7 +230,7 @@ const TOOL_ICON_MAP = {
   toolbox: "🧰",
 };
 
-const NON_DETECTABLE_OBJECT_IDS = new Set(["rack", "camera", "camera_base", "toolbox"]);
+const NON_DETECTABLE_OBJECT_IDS = new Set(["rack", "toolbox"]);
 
 function formatToolDisplayName(objectId) {
   const className = String(objectId || "").split("_")[0];

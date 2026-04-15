@@ -172,7 +172,6 @@
         </div>
 
         <!-- 引入相机状态面板 -->
-        <Camera v-show="showCameraPanel" />
 
         <!-- 添加底部控制面板 -->
         <div class="panel-controls">
@@ -189,13 +188,6 @@
             :class="{ active: showRobotPanel }"
           >
             <span class="panel-icon">🤖</span> 机器人控制
-          </button>
-          <button
-            @click="togglePanel('camera')"
-            class="panel-control-button"
-            :class="{ active: showCameraPanel }"
-          >
-            <span class="panel-icon">📷</span> 相机状态
           </button>
           <button
             @click="togglePanel('control')"
@@ -234,7 +226,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import Menu from "./components/robot.vue";
-import Camera from "./components/camera.vue"; // 引入相机组件
 import Control from "./components/control.vue"; // 引入仿真控制组件
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -250,7 +241,6 @@ const taskProgress = ref(0);
 // 各面板显示状态控制
 const showSlider = ref(false); // 滑块面板默认不显示
 const showRobotPanel = ref(false); // 机器人控制面板默认显示
-const showCameraPanel = ref(false); // 相机状态面板默认显示
 const showControlPanel = ref(false); // 仿真控制面板默认显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
@@ -274,6 +264,8 @@ const ARM_JOINT_NAMES = [
 const GRIPPER_JOINT_NAMES = [
   "left_driver_joint",
   "right_driver_joint",
+  "left_driver-left_coupler",
+  "right_driver-right_coupler",
   "left_spring_link_joint",
   "right_spring_link_joint",
   "left_follower_joint",
@@ -802,12 +794,24 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
       source: "manual",
     });
 
+    const status = String(resp?.data?.status || "").toLowerCase();
+    if (status !== "success") {
+      clearPendingManualTarget();
+      try {
+        const latest = await axios.get("http://localhost:8000/sim/state/", { timeout: 1500 });
+        if (latest?.data) {
+          applyBackendStateToScene(latest.data);
+        }
+      } catch (_) {}
+      return { ok: false, message: resp?.data?.message || "Command rejected due to collision/interference." };
+    }
+
     if (resp?.data?.state?.qpos && Array.isArray(resp.data.state.qpos)) {
       applyBackendStateToScene(resp.data.state);
       clearPendingManualTarget();
     }
 
-    return { ok: true, message: resp.data?.message || "命令已发送（HTTP）" };
+    return { ok: true, message: resp.data?.message || "Command sent (HTTP)." };
   } catch (err) {
     clearPendingManualTarget();
     return { ok: false, message: "命令发送失败: " + (err.message || err) };
@@ -982,6 +986,18 @@ async function inputRobotAngles() {
 
 // 使用的机械臂urdf模型
 const urdf = "./ur5/ur5.urdf";
+const WRIST_CAMERA_MOUNT_CONFIG = {
+  assetPath: "./camera/urdf/d405_mount_assembly.urdf",
+  parentLinkName: "robotiq_base_link",
+  transform: {
+    // Keep clamp-ring centerline coaxial with wrist/gripper axis.
+    // Lift mount so the ring sits near the wrist/gripper boundary like real installation photos.
+    position: [0.035392, 0.064016, 0.0581534],
+    // Keep the camera/mount facing the toolbox side after the 180deg self-axis rotation.
+    rotation: [0.0, -Math.PI, Math.PI / 2],
+    scale: [1.0, 1.0, 1.0],
+  },
+};
 const SCENE_OBJECT_CONFIGS = [
   {
     id: "rack",
@@ -1028,24 +1044,6 @@ const SCENE_OBJECT_CONFIGS = [
       scale: [1.0, 1.0, 1.0],
     },
   },
-  {
-    id: "camera_base",
-    assetPath: "./camera_base/urdf/camera_base.urdf",
-    transform: {
-      position: [-0.1, 0.68, 0.4],
-      rotation: [Math.PI, 0.0, 0.0],
-      scale: [0.01, 0.01, 0.01],
-    },
-  },
-  {
-    id: "camera",
-    assetPath: "./camera/urdf/camera.urdf",
-    transform: {
-      position: [-0.205, 0.832, 0.4],
-      rotation: [0.0, Math.PI * 0.65, 0.0],
-      scale: [1.0, 1.0, 1.0],
-    },
-  },
 ];
 
 // 添加切换面板显示状态的函数
@@ -1056,9 +1054,6 @@ function togglePanel(panel) {
       break;
     case "robot":
       showRobotPanel.value = !showRobotPanel.value;
-      break;
-    case "camera":
-      showCameraPanel.value = !showCameraPanel.value;
       break;
     case "control":
       showControlPanel.value = !showControlPanel.value;
@@ -1094,10 +1089,12 @@ function setGripperJointValue(value) {
   const targetValues = {
     left_driver_joint: clampedValue,
     right_driver_joint: clampedValue,
+    "left_driver-left_coupler": -clampedValue,
+    "right_driver-right_coupler": -clampedValue,
     left_spring_link_joint: clampedValue,
     right_spring_link_joint: clampedValue,
-    left_follower_joint: -clampedValue,
-    right_follower_joint: -clampedValue,
+    left_follower_joint: clampedValue,
+    right_follower_joint: clampedValue,
   };
 
   let hasApplied = false;
@@ -1287,6 +1284,7 @@ let renderer = "";
 // 轨道控制器
 let controls = "";
 const sceneObjectModels = new Map();
+let wristCameraMountModel = null;
 
 // 初始化
 function initBase() {
@@ -1419,6 +1417,32 @@ function initSceneObjects() {
   });
 }
 
+function attachWristCameraMount() {
+  if (!robot || !robot.links) return;
+
+  const parentLink = robot.links[WRIST_CAMERA_MOUNT_CONFIG.parentLinkName];
+  if (!parentLink) {
+    console.warn(
+      "未找到相机支架挂载父链接:",
+      WRIST_CAMERA_MOUNT_CONFIG.parentLinkName
+    );
+    return;
+  }
+
+  if (wristCameraMountModel && wristCameraMountModel.parent) {
+    wristCameraMountModel.parent.remove(wristCameraMountModel);
+  }
+
+  loadUrdfModel(WRIST_CAMERA_MOUNT_CONFIG.assetPath, (mountAssembly) => {
+    const { position, rotation, scale } = WRIST_CAMERA_MOUNT_CONFIG.transform;
+    mountAssembly.scale.set(scale[0], scale[1], scale[2]);
+    mountAssembly.position.set(position[0], position[1], position[2]);
+    mountAssembly.rotation.set(rotation[0], rotation[1], rotation[2]);
+    parentLink.add(mountAssembly);
+    wristCameraMountModel = mountAssembly;
+  });
+}
+
 function initRobot() {
   loadUrdfModel(urdf, (result) => {
     robot = result;
@@ -1427,8 +1451,9 @@ function initRobot() {
     //设置ROBOT坐标z朝上
     robot.rotation.x = -Math.PI / 2;
     robot.rotation.z = 0;
-    robot.position.set(-0.2, 0.5, -0.1); // 将机械臂放置在实验台上
+    robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
     scene.add(robot);
+    attachWristCameraMount();
     focusCameraOnObject(robot);
     sliderInput(-Math.PI / 2, "link2_joint");
     sliderInput(Math.PI / 2, "link3_joint");
@@ -1481,14 +1506,33 @@ const setupWebSocketStateSync = () => {
 
   // 控制结果监听：用于清理命令等待标志
   websocketManager.on('controlResult', (data) => {
-    console.log('收到 controlResult:', data);
+    console.log('Received controlResult:', data);
     sendCommandPending.value = false;
+    if (data?.status && String(data.status).toLowerCase() !== "success") {
+      clearPendingManualTarget();
+      if (websocketManager.isConnected) {
+        websocketManager.requestState();
+      }
+      receivedText.value = data?.message || "Command rejected due to collision/interference.";
+    }
   });
 
   // 错误处理
   websocketManager.on('error', (error) => {
+    sendCommandPending.value = false;
+    clearPendingManualTarget();
+    if (websocketManager.isConnected) {
+      websocketManager.requestState();
+    }
     stateSyncErrors.value++;
-    console.error('状态同步错误:', error);
+    console.error('State sync/control error:', error);
+    const errorMessage =
+      typeof error === "string"
+        ? error
+        : error?.message || error?.detail || "State sync/control error.";
+    if (errorMessage) {
+      receivedText.value = String(errorMessage);
+    }
     updateConnectionQuality();
   });
 

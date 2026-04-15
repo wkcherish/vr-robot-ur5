@@ -1,0 +1,112 @@
+{
+  "schema_version": "1.0.0",
+  "config_version": "d405_freeze_20260412_a",
+  "updated_at": "2026-04-12T20:30:00+08:00",
+  "primary_sensor": {
+    "device": "intel_realsense_d405",
+    "role": "primary_capture_sensor",
+    "modalities": [
+      "rgb",
+      "depth"
+    ],
+    "mount": {
+      "name": "wrist_d405_v1",
+      "parent_frame": "tool0",
+      "position": [
+        0.0,
+        -0.003,
+        0.012
+      ],
+      "quaternion_wxyz": [
+        0.707107,
+        0.0,
+        0.0,
+        -0.707107
+      ],
+      "install_reference_image": "pic/camera.jpg",
+      "orientation_notes": [
+        "Front and rear clamp halves wrap around wrist_3 cylindrical housing.",
+        "Plate section extends from the clamp and D405 is mounted under the red-marked plate area.",
+        "Optical axis points to the tabletop workspace and cable exits from side/back."
+      ],
+      "mount_asset_roles": {
+        "camera_body_mesh": "frontend/public/camera/mesh/d405.stl",
+        "mount_front_half_mesh": "frontend/public/camera/mesh/\u524d\u534a.STL",
+        "mount_rear_half_mesh": "frontend/public/camera/mesh/\u540e\u534a.STL"
+      }
+    },
+    "outputs": {
+      "rgb": {
+        "interface_name": "sim_camera_rgb",
+        "api_endpoint": "/sim/camera/rgb/",
+        "camera_name": "d405_rgb",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "pixel_format": "rgb8",
+        "dataset_storage_format": "jpg"
+      },
+      "depth": {
+        "interface_name": "sim_camera_depth",
+        "api_endpoint": "/sim/camera/depth/",
+        "camera_name": "d405_depth",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "pixel_format": "depth16",
+        "depth_unit": "millimeter",
+        "depth_scale": 1.0,
+        "dataset_storage_format": "png16"
+      },
+      "timestamp_alignment": {
+        "mode": "same_tick",
+        "max_delta_ms": 5.0
+      }
+    },
+    "recording_contract": {
+      "recordable_training_observation": true,
+      "display_only_forbidden": true,
+      "required_with_state_action_text": true
+    },
+    "calibration": {
+      "intrinsics_version": "d405_intr_20260412_a",
+      "extrinsics_version": "d405_ext_20260412_a",
+      "mount_name": "wrist_d405_v1",
+      "intrinsics_version_rule": "d405_intr_YYYYMMDD_suffix",
+      "extrinsics_version_rule": "d405_ext_YYYYMMDD_suffix",
+      "calibration_layout": {
+        "root_dir": "data/calibration",
+        "files": [
+          "camera_intrinsics/<intrinsics_version>.json",
+          "camera_extrinsics/<extrinsics_version>.json",
+          "mounts/<mount_name>.json"
+        ]
+      }
+    }
+  },
+  "debug_only_scene_objects": [
+    {
+      "id": "camera_base",
+      "role": "debug_only_reference"
+    },
+    {
+      "id": "camera",
+      "role": "debug_only_reference"
+    }
+  ],
+  "sim2real_randomization_reserve": {
+    "enabled": false,
+    "depth_missing_probability": 0.0,
+    "depth_noise_std_m": 0.0,
+    "extrinsic_jitter_xyz_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "extrinsic_jitter_rpy_rad": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

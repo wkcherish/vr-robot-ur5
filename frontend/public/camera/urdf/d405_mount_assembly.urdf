@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<robot name="d405_mount_assembly">
+  <material name="mount_yellow">
+    <color rgba="0.92 0.80 0.20 1.0" />
+  </material>
+  <material name="camera_silver">
+    <color rgba="0.72 0.72 0.74 1.0" />
+  </material>
+
+  <!--
+    Standalone frontend assembly (not attached to UR5 yet).
+    Tuned assembly targets:
+    1) Front/rear clamp halves close into one circular ring.
+    2) D405 is enlarged slightly and mounted at the front-slot area.
+    3) Camera mounting side faces downward as requested.
+    4) Assembly link origin is shifted to the selected front plate corner.
+  -->
+  <link name="d405_mount_assembly_link">
+    <visual>
+      <origin xyz="0 -0.015208 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../mesh/d405_mount_front_half.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="mount_yellow" />
+    </visual>
+    <visual>
+      <origin xyz="0.128 -0.015208 0.0300" rpy="0 3.14 0" />
+      <geometry>
+        <mesh filename="../mesh/d405_mount_rear_half.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="mount_yellow" />
+    </visual>
+    <visual>
+      <origin xyz="0.011402316 0.035391998 -0.023000" rpy="3.141593 0 1.570796" />
+      <geometry>
+        <mesh filename="../mesh/d405.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="camera_silver" />
+    </visual>
+
+    <collision>
+      <origin xyz="-0.0710 -0.015208 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../mesh/d405_mount_front_half.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.0609 -0.015208 0.0100" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../mesh/d405_mount_rear_half.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.011402316 0.035391998 -0.023000" rpy="3.141593 0 1.570796" />
+      <geometry>
+        <mesh filename="../mesh/d405.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+</robot>

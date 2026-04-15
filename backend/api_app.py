@@ -119,6 +119,21 @@ async def get_sim_state() -> dict[str, Any]:
     return await simulation.get_state()
 
 
+@app.get("/sim/observation/")
+async def get_sim_observation(include_data: bool = False) -> dict[str, Any]:
+    return await simulation.get_camera_observation(include_data=include_data)
+
+
+@app.get("/sim/camera/rgb/")
+async def get_sim_camera_rgb(include_data: bool = False) -> dict[str, Any]:
+    return await simulation.get_camera_stream(stream_name="rgb", include_data=include_data)
+
+
+@app.get("/sim/camera/depth/")
+async def get_sim_camera_depth(include_data: bool = False) -> dict[str, Any]:
+    return await simulation.get_camera_stream(stream_name="depth", include_data=include_data)
+
+
 @app.post("/sim/step/", response_model=CommandResult)
 async def post_sim_step(request: StepRequest) -> CommandResult:
     try:
@@ -203,6 +218,21 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
     if message_type == "get_state":
         state = await simulation.get_state()
         return {"type": "state_update", "data": state}
+
+    if message_type == "get_observation":
+        include_data = bool(message_data.get("include_data", False))
+        observation = await simulation.get_camera_observation(include_data=include_data)
+        return {"type": "observation_update", "data": observation}
+
+    if message_type == "get_camera_rgb":
+        include_data = bool(message_data.get("include_data", False))
+        payload = await simulation.get_camera_stream(stream_name="rgb", include_data=include_data)
+        return {"type": "camera_rgb_update", "data": payload}
+
+    if message_type == "get_camera_depth":
+        include_data = bool(message_data.get("include_data", False))
+        payload = await simulation.get_camera_stream(stream_name="depth", include_data=include_data)
+        return {"type": "camera_depth_update", "data": payload}
 
     if message_type == "control":
         try:
