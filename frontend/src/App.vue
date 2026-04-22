@@ -990,9 +990,9 @@ const WRIST_CAMERA_MOUNT_CONFIG = {
   assetPath: "./camera/urdf/d405_mount_assembly.urdf",
   parentLinkName: "robotiq_base_link",
   transform: {
-    // Keep clamp-ring centerline coaxial with wrist/gripper axis.
-    // Lift mount so the ring sits near the wrist/gripper boundary like real installation photos.
-    position: [0.035392, 0.064016, 0.0581534],
+    // Align clamp-ring center to gripper base axis so the mount is actually installed on the gripper.
+    // Keep the ring around the wrist/gripper boundary (near robotiq base root).
+    position: [-0.035392, -0.089332, 0.032],
     // Keep the camera/mount facing the toolbox side after the 180deg self-axis rotation.
     rotation: [0.0, -Math.PI, Math.PI / 2],
     scale: [1.0, 1.0, 1.0],
