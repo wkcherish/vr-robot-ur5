@@ -14,14 +14,14 @@
       "parent_frame": "tool0",
       "position": [
         0.0,
-        -0.003,
-        0.012
+        -0.077929684,
+        0.055
       ],
       "quaternion_wxyz": [
-        0.707107,
+        1.0,
         0.0,
         0.0,
-        -0.707107
+        0.0
       ],
       "install_reference_image": "pic/camera.jpg",
       "orientation_notes": [
