@@ -18,6 +18,24 @@
     <mesh name="follower" content_type="model/stl" file="meshes/ur5/robotiq_2f85_v4/follower.stl"/>
     <mesh name="tongue" content_type="model/stl" file="meshes/ur5/robotiq_2f85_v4/tongue.stl"/>
     <mesh name="pad" content_type="model/stl" file="meshes/ur5/robotiq_2f85_v4/pad.stl"/>
+    <mesh
+      name="d405_mount_front_half"
+      content_type="model/stl"
+      file="meshes/camera/d405_mount_front_half.stl"
+      scale="0.001 0.001 0.001"
+    />
+    <mesh
+      name="d405_mount_rear_half"
+      content_type="model/stl"
+      file="meshes/camera/d405_mount_rear_half.stl"
+      scale="0.001 0.001 0.001"
+    />
+    <mesh
+      name="d405_camera_body"
+      content_type="model/stl"
+      file="meshes/camera/d405.stl"
+      scale="0.001 0.001 0.001"
+    />
   </asset>
   <worldbody>
     <body name="ur5_root" pos="-0.2 0 1.0" euler="0 0 0">
@@ -83,6 +101,36 @@
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="follower"/>
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="tongue"/>
                       <geom pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.88 0.88 0.88 1" mesh="pad"/>
+                    </body>
+                  </body>
+                  <body name="wrist_d405_mount" pos="-0.035392 -0.089332 0.032" quat="0 -0.707107 -0.707107 0">
+                    <geom
+                      pos="0 -0.015208 0"
+                      type="mesh"
+                      rgba="0.92 0.80 0.20 1"
+                      mesh="d405_mount_front_half"
+                      contype="0"
+                      conaffinity="0"
+                    />
+                    <geom
+                      pos="0.128 -0.015208 0.03"
+                      quat="0 0 1 0"
+                      type="mesh"
+                      rgba="0.92 0.80 0.20 1"
+                      mesh="d405_mount_rear_half"
+                      contype="0"
+                      conaffinity="0"
+                    />
+                    <body name="wrist_d405_camera_link" pos="0.011402316 0.035391998 -0.023" quat="0 0.707107 0.707107 0">
+                      <geom
+                        type="mesh"
+                        rgba="0.72 0.72 0.74 1"
+                        mesh="d405_camera_body"
+                        contype="0"
+                        conaffinity="0"
+                      />
+                      <camera name="d405_rgb" pos="0 0 0" quat="1 0 0 0" fovy="58"/>
+                      <camera name="d405_depth" pos="0 0 0" quat="1 0 0 0" fovy="58"/>
                     </body>
                   </body>
                   <site name="tool0" pos="0 0 0" size="0.003" rgba="1 0.1 0.1 1"/>
