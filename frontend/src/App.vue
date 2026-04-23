@@ -128,7 +128,7 @@
           <div class="progress-text">任务进度: {{ taskProgress }}%</div>
         </div>
 
-        <div class="vr-control-panel" v-if="showVrControlPanel">
+        <div class="vr-control-panel" :class="{ 'quest-device': isQuest3Device }" v-if="showVrControlPanel">
           <div class="vr-control-header">
             <h4>VR控制中心</h4>
             <button class="vr-control-close" @click="showVrControlPanel = false">关闭</button>
@@ -196,13 +196,39 @@
               <span class="vr-mode-chip" :class="`status-${vrModeState}`">{{ vrModeText }}</span>
               <span class="vr-owner-chip">控制源: {{ vrControlOwnerText }}</span>
             </div>
-            <div class="quest-controller-status" v-if="vrModeState === 'vr_controller_mode'">
-              <div class="network-status-row">
-                <span class="network-label">手柄链路:</span>
-                <span class="network-value" :class="{ 'status-ok': questControllerAvailable, 'status-error': !questControllerAvailable }">
-                  {{ questControllerStatusText }}
-                </span>
-              </div>
+            <div class="vr-menu-buttons vr-entry-buttons">
+              <button
+                class="vr-menu-btn enter"
+                :class="{ active: isVrModeEntered }"
+                @click="enterVrMode"
+              >
+                进入VR模式
+              </button>
+              <button
+                class="vr-menu-btn exit"
+                :class="{ active: !isVrModeEntered }"
+                @click="exitVrMode"
+              >
+                退出VR模式
+              </button>
+            </div>
+            <div class="vr-menu-buttons" v-if="isVrModeEntered">
+              <button
+                class="vr-menu-btn"
+                :class="{ active: vrModeState === 'vr_controller_mode' }"
+                @click="chooseVrInputMode('controller')"
+              >
+                手柄模式
+              </button>
+              <button
+                class="vr-menu-btn"
+                :class="{ active: vrModeState === 'vr_hand_mode' }"
+                @click="chooseVrInputMode('hand')"
+              >
+                手势模式
+              </button>
+            </div>
+            <div class="quest-controller-status" v-if="isVrModeEntered && vrModeState === 'vr_controller_mode'">
               <div class="network-status-row">
                 <span class="network-label">当前关节组:</span>
                 <span class="network-value">{{ vrSelectedJointGroupText }}</span>
@@ -245,13 +271,7 @@
               </div>
               <div v-if="questControllerGroupToast" class="vr-joint-toast">{{ questControllerGroupToast }}</div>
             </div>
-            <div class="quest-hand-status" v-if="vrModeState === 'vr_hand_mode'">
-              <div class="network-status-row">
-                <span class="network-label">手势链路:</span>
-                <span class="network-value" :class="{ 'status-ok': questHandAvailable, 'status-error': !questHandAvailable }">
-                  {{ questHandStatusText }}
-                </span>
-              </div>
+            <div class="quest-hand-status" v-if="isVrModeEntered && vrModeState === 'vr_hand_mode'">
               <div class="network-status-row">
                 <span class="network-label">追踪稳定性:</span>
                 <span class="network-value" :class="{ 'status-ok': questHandTrackingStable, 'status-error': !questHandTrackingStable }">
@@ -287,29 +307,6 @@
                 <span class="network-value">{{ questHandRawInput.input_source_count }}</span>
               </div>
               <div v-if="questHandGroupToast" class="vr-joint-toast">{{ questHandGroupToast }}</div>
-            </div>
-            <div class="vr-menu-buttons">
-              <button
-                class="vr-menu-btn"
-                :class="{ active: vrModeState === 'vr_controller_mode' }"
-                @click="chooseVrInputMode('controller')"
-              >
-                手柄模式
-              </button>
-              <button
-                class="vr-menu-btn"
-                :class="{ active: vrModeState === 'vr_hand_mode' }"
-                @click="chooseVrInputMode('hand')"
-              >
-                手势模式
-              </button>
-              <button
-                class="vr-menu-btn exit"
-                :class="{ active: vrModeState === 'vr_ready' || vrModeState === 'vr_disabled' }"
-                @click="exitVrMode"
-              >
-                退出VR模式
-              </button>
             </div>
             <div v-if="vrErrorMessage" class="vr-menu-error">{{ vrErrorMessage }}</div>
           </div>
@@ -525,6 +522,9 @@ const QUEST_CONTROLLER_SEND_INTERVAL_MS = Math.round(1000 / QUEST_CONTROLLER_SEN
 const QUEST_HAND_SEND_HZ = 25;
 const QUEST_HAND_SEND_INTERVAL_MS = Math.round(1000 / QUEST_HAND_SEND_HZ);
 const MAX_RENDER_PIXEL_RATIO = 1.5;
+const QUEST_MAX_RENDER_PIXEL_RATIO = 1.0;
+const UI_SYNC_INTERVAL_MS = 66;
+const UI_POSE_SYNC_INTERVAL_MS = 100;
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -561,6 +561,7 @@ const selectedVrInputMode = ref("");
 const vrErrorMessage = ref("");
 const vrSelectedJointGroup = ref("arm_full");
 const vrControlOwner = ref("desktop_manual");
+const lastLocalVrModeSetAt = ref(0);
 const questControllerAvailable = ref(false);
 const questControllerStatusText = ref("未激活");
 const questControllerSensitivity = ref(1.0);
@@ -584,6 +585,12 @@ const questHandLoopTimer = ref(null);
 const questHandFallbackInFlight = ref(false);
 const lastQuestHandTickAt = ref(0);
 
+const VR_MODE_LOCAL_LOCK_MS = 1200;
+const VR_ENTERED_MODES = new Set(["vr_ready", "vr_controller_mode", "vr_hand_mode"]);
+
+const uiLastJointSyncAt = ref(0);
+const uiLastPoseSyncAt = ref(0);
+
 let questControllerTeleop = createQuestControllerTeleop({
   deadzone: questControllerDeadzone.value,
   sensitivity: questControllerSensitivity.value,
@@ -602,8 +609,6 @@ const networkAccessHints = computed(() => {
   }
   if (isQuest3Device.value) {
     hints.push("当前为 Quest3 访问，请确认与主机处于同一局域网。");
-  } else {
-    hints.push("桌面端可用于排查后端与 WebSocket 可达性。");
   }
   return hints;
 });
@@ -626,6 +631,8 @@ const vrModeText = computed(() => {
   if (vrModeState.value === "vr_error") return "异常";
   return "未知";
 });
+
+const isVrModeEntered = computed(() => VR_ENTERED_MODES.has(vrModeState.value));
 
 const vrControlOwnerText = computed(() => {
   const mapping = {
@@ -690,7 +697,8 @@ function getRenderPixelRatio() {
   const dpr =
     typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1;
   if (!Number.isFinite(dpr)) return 1;
-  return clamp(dpr, 1, MAX_RENDER_PIXEL_RATIO);
+  const maxRatio = isQuest3Device.value ? QUEST_MAX_RENDER_PIXEL_RATIO : MAX_RENDER_PIXEL_RATIO;
+  return clamp(dpr, 1, maxRatio);
 }
 
 const BACKEND_FRAME_Z_OFFSET = 0.5;
@@ -871,7 +879,9 @@ function applyVrStateFromBackend(state) {
   const vr = state?.vr;
   if (!vr || typeof vr !== "object") return;
   if (typeof vr.mode === "string") {
-    vrModeState.value = vr.mode;
+    if (!shouldIgnoreBackendVrMode(vr.mode)) {
+      vrModeState.value = vr.mode;
+    }
   }
   if (typeof vr.selected_joint_group === "string" && vr.selected_joint_group.length > 0) {
     vrSelectedJointGroup.value = vr.selected_joint_group;
@@ -908,6 +918,21 @@ function syncVrStateToBackend(payload) {
   });
 }
 
+function setVrModeLocally(mode) {
+  vrModeState.value = mode;
+  lastLocalVrModeSetAt.value = Date.now();
+}
+
+function shouldIgnoreBackendVrMode(mode) {
+  if (!mode) return false;
+  const now = Date.now();
+  const elapsed = now - Number(lastLocalVrModeSetAt.value || 0);
+  if (elapsed <= VR_MODE_LOCAL_LOCK_MS && mode !== vrModeState.value) {
+    return true;
+  }
+  return false;
+}
+
 async function runQuest3AccessChecks() {
   await checkBackendHealth();
 
@@ -929,37 +954,21 @@ async function runQuest3AccessChecks() {
   wsCheckStatus.value = latestWsOk ? "ok" : "error";
   wsCheckMessage.value = latestWsOk ? "WebSocket 已连接" : "WebSocket 未连接";
   updateNetworkPrereq();
-
-  if (isQuest3Device.value) {
-    if (networkPrereqOk.value) {
-      if (vrModeState.value === "vr_disabled") {
-        vrModeState.value = "vr_ready";
-        syncVrStateToBackend({
-          mode: "vr_ready",
-          source: "desktop_manual",
-          recording_ready: true,
-          selected_joint_group: vrSelectedJointGroup.value,
-          error_message: "",
-        });
-      }
-    } else {
-      vrModeState.value = "vr_error";
-      if (!vrErrorMessage.value) {
-        vrErrorMessage.value = "局域网接入前置检查未通过";
-      }
-      syncVrStateToBackend({
-        mode: "vr_error",
-        source: "desktop_manual",
-        recording_ready: false,
-        selected_joint_group: vrSelectedJointGroup.value,
-        error_message: vrErrorMessage.value,
-      });
-    }
+  if (!isQuest3Device.value && !vrErrorMessage.value) {
+    vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
+  } else if (isQuest3Device.value && !networkPrereqOk.value && !vrErrorMessage.value) {
+    vrErrorMessage.value = "局域网接入前置检查未通过";
+  } else if (networkPrereqOk.value && vrModeState.value !== "vr_error") {
+    vrErrorMessage.value = "";
   }
 }
 
 function chooseVrInputMode(mode) {
   if (mode !== "controller" && mode !== "hand") return;
+  if (!isVrModeEntered.value) {
+    vrErrorMessage.value = "请先点击“进入VR模式”，再选择手柄或手势模式。";
+    return;
+  }
   selectedVrInputMode.value = mode;
   if (!isQuest3Device.value) {
     vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
@@ -971,7 +980,7 @@ function chooseVrInputMode(mode) {
 
   if (mode === "controller") {
     stopQuestHandLoop();
-    vrModeState.value = "vr_controller_mode";
+    setVrModeLocally("vr_controller_mode");
     vrControlOwner.value = "quest3_controller";
     vrSelectedJointGroup.value = questControllerTeleop.getState().selected_joint_group;
     syncVrStateToBackend({
@@ -989,7 +998,7 @@ function chooseVrInputMode(mode) {
 
   stopQuestControllerLoop();
   void startQuestHandLoop();
-  vrModeState.value = "vr_hand_mode";
+  setVrModeLocally("vr_hand_mode");
   vrControlOwner.value = "quest3_hand";
   syncVrStateToBackend({
     mode: "vr_hand_mode",
@@ -1002,14 +1011,51 @@ function chooseVrInputMode(mode) {
   });
 }
 
+async function enterVrMode() {
+  await runQuest3AccessChecks();
+  if (!isQuest3Device.value) {
+    vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
+    return;
+  }
+  if (!networkPrereqOk.value) {
+    vrErrorMessage.value = "前置检查未通过，请先确认网络、WebSocket、D405和录制配置状态。";
+    return;
+  }
+
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
+  setVrModeLocally("vr_ready");
+  vrControlOwner.value = "desktop_manual";
+  vrErrorMessage.value = "";
+  syncVrStateToBackend({
+    mode: "vr_ready",
+    source: "desktop_manual",
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    error_message: "",
+  });
+
+  const autoMode = selectedVrInputMode.value === "hand" ? "hand" : "controller";
+  chooseVrInputMode(autoMode);
+}
+
+function ensureVrModeActive() {
+  if (isQuestControllerModeActive() || isQuestHandModeActive()) {
+    return;
+  }
+  const autoMode = selectedVrInputMode.value === "hand" ? "hand" : "controller";
+  chooseVrInputMode(autoMode);
+}
+
 function exitVrMode() {
   stopQuestControllerLoop();
   stopQuestHandLoop();
   selectedVrInputMode.value = "";
-  vrModeState.value = networkPrereqOk.value ? "vr_ready" : "vr_disabled";
+  setVrModeLocally("vr_disabled");
   vrControlOwner.value = "desktop_manual";
+  vrErrorMessage.value = "";
   syncVrStateToBackend({
-    mode: vrModeState.value,
+    mode: "vr_disabled",
     source: "desktop_manual",
     selected_joint_group: vrSelectedJointGroup.value,
     recording_ready: recordingCheckStatus.value === "ok",
@@ -1024,7 +1070,7 @@ function handleQuestDisconnected() {
     return;
   }
   selectedVrInputMode.value = "";
-  vrModeState.value = "vr_error";
+  setVrModeLocally("vr_error");
   vrErrorMessage.value = "Quest3连接中断，已停止发送新的控制命令。";
   vrControlOwner.value = "desktop_manual";
   syncVrStateToBackend({
@@ -1162,9 +1208,8 @@ function applyQuestCommandLocally(mapped) {
       joint.setJointValue(value);
     });
     setGripperJointValue(gripperRad, { skipPoseUpdate: true });
-    jointAngles.value = [...armRadians.map((rad) => toDegrees(rad)), toDegrees(gripperRad)];
-    gripperAngleDeg.value = toDegrees(gripperRad);
-    calculateEndEffectorPosition();
+    syncJointDisplayFromSceneIfNeeded(true);
+    syncEndEffectorPoseIfNeeded(true);
   } finally {
     isApplyingBackendState.value = false;
   }
@@ -1710,6 +1755,35 @@ function getCurrentSceneArmRadians() {
   });
 }
 
+function shouldSyncUiSnapshot(lastAtRef, intervalMs, force = false) {
+  if (force) {
+    lastAtRef.value = Date.now();
+    return true;
+  }
+  const now = Date.now();
+  const lastAt = Number(lastAtRef.value || 0);
+  if (now - lastAt < intervalMs) {
+    return false;
+  }
+  lastAtRef.value = now;
+  return true;
+}
+
+function syncJointDisplayFromSceneIfNeeded(force = false) {
+  if (!shouldSyncUiSnapshot(uiLastJointSyncAt, UI_SYNC_INTERVAL_MS, force)) return;
+  const armRadians = getCurrentSceneArmRadians();
+  const gripperRadians = clamp(getCurrentGripperRadians(), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+  const armAnglesDeg = armRadians.map((rad) => toDegrees(rad));
+  const gripperDeg = clamp(toDegrees(gripperRadians), GRIPPER_MIN_DEG, GRIPPER_MAX_DEG);
+  jointAngles.value = [...armAnglesDeg, gripperDeg];
+  gripperAngleDeg.value = gripperDeg;
+}
+
+function syncEndEffectorPoseIfNeeded(force = false) {
+  if (!shouldSyncUiSnapshot(uiLastPoseSyncAt, UI_POSE_SYNC_INTERVAL_MS, force)) return;
+  calculateEndEffectorPosition();
+}
+
 function getSceneJointInterpolationAlpha() {
   if (!backendPoseSmoothingEnabled.value) return 1.0;
   const alpha = Number(backendPoseSmoothingAlpha.value);
@@ -1761,12 +1835,11 @@ function applySmoothedBackendPose() {
       const value = Number(nextArm[index]);
       if (!joint || !Number.isFinite(value)) return;
       joint.setJointValue(value);
-      ensureJointAnglesBuffer();
-      jointAngles.value[index] = toDegrees(value);
     });
 
     setGripperJointValue(nextGrip, { skipPoseUpdate: true });
-    calculateEndEffectorPosition();
+    syncJointDisplayFromSceneIfNeeded();
+    syncEndEffectorPoseIfNeeded();
   } finally {
     isApplyingBackendState.value = false;
   }
@@ -1803,21 +1876,14 @@ function applyBackendStateToScene(state) {
 
   isApplyingBackendState.value = true;
   try {
-    if (renderTarget) {
-      const armAnglesDeg = renderTarget.arm.map((rad) => toDegrees(rad));
-      const gripperDeg = clamp(
-        toDegrees(renderTarget.gripper),
-        GRIPPER_MIN_DEG,
-        GRIPPER_MAX_DEG
-      );
-      jointAngles.value = [...armAnglesDeg, gripperDeg];
-      gripperAngleDeg.value = gripperDeg;
-    }
-
     if (state?.objects && typeof state.objects === "object") {
       Object.entries(state.objects).forEach(([objectId, objectState]) => {
         applySceneObjectPoseFromBackend(objectId, objectState);
       });
+    }
+    if (renderTarget) {
+      syncJointDisplayFromSceneIfNeeded(true);
+      syncEndEffectorPoseIfNeeded(true);
     }
   } finally {
     isApplyingBackendState.value = false;
@@ -1838,7 +1904,7 @@ function applyAnglesToRobot(anglesDeg, options = {}) {
   sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint", { skipBackendSync, skipPoseUpdate });
 
   if (skipPoseUpdate) {
-    calculateEndEffectorPosition();
+    syncEndEffectorPoseIfNeeded(true);
   }
 
   return {
@@ -1896,12 +1962,10 @@ const fetchData = async () => {
       }
       const normalizedAngles = normalizeInputAngles(vals.map((v) => Number(v)));
       if (normalizedAngles) {
-        jointAngles.value = normalizedAngles;
-        gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
         setRobotAngles(normalizedAngles);
       }
       updateTaskProgress();
-      calculateEndEffectorPosition();
+      syncEndEffectorPoseIfNeeded(true);
       fetchFailures.value = 0;
       return;
     }
@@ -2018,8 +2082,8 @@ const testSendData = async () => {
 
     const { normalizedAngles, radians } = applyResult;
     const armRadians = radians.slice(0, ARM_JOINT_COUNT);
-    gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
-    jointAngles.value = normalizedAngles;
+    syncJointDisplayFromSceneIfNeeded(true);
+    syncEndEffectorPoseIfNeeded(true);
 
     if (!websocketManager.isConnected) {
       receivedText.value = "已在本地设置角度（未接入仿真）";
@@ -2129,8 +2193,8 @@ async function inputRobotAngles() {
 
   const { radians } = applyResult;
   const armRadians = radians.slice(0, ARM_JOINT_COUNT);
-  gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
-  jointAngles.value = normalizedAngles;
+  syncJointDisplayFromSceneIfNeeded(true);
+  syncEndEffectorPoseIfNeeded(true);
 
   if (!websocketManager.isConnected) {
     receivedText.value = "已在本地设置角度（未接入仿真）";
@@ -2266,9 +2330,6 @@ function resolveJointName(name) {
 function setGripperJointValue(value, options = {}) {
   const skipPoseUpdate = options.skipPoseUpdate === true;
   const clampedValue = clamp(value, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
-  gripperAngleDeg.value = toDegrees(clampedValue);
-  ensureJointAnglesBuffer();
-  jointAngles.value[ARM_JOINT_COUNT] = gripperAngleDeg.value;
 
   if (!robot || !robot.joints) return;
 
@@ -2292,7 +2353,8 @@ function setGripperJointValue(value, options = {}) {
   });
 
   if (!skipPoseUpdate) {
-    calculateEndEffectorPosition();
+    syncJointDisplayFromSceneIfNeeded();
+    syncEndEffectorPoseIfNeeded();
   }
 
   if (!hasApplied && !warnedMissingJoints.has("gripper_joint")) {
@@ -2410,16 +2472,10 @@ function sliderInput(value, name, options = {}) {
   }
 
   ensureJointAnglesBuffer();
-  const armJointIndex = ARM_JOINT_NAMES.findIndex(
-    (legacyName) => legacyName === name || legacyName === resolvedName || jointNameMap[legacyName] === resolvedName
-  );
-  if (armJointIndex >= 0) {
-    jointAngles.value[armJointIndex] = toDegrees(numericValue);
-  }
-
   robot.joints[resolvedName].setJointValue(numericValue);
   if (!skipPoseUpdate) {
-    calculateEndEffectorPosition();
+    syncJointDisplayFromSceneIfNeeded();
+    syncEndEffectorPoseIfNeeded();
   }
 
   if (!skipBackendSync) {
@@ -2444,12 +2500,11 @@ function setRobotAngles(angles) {
   });
   if (!applyResult) {
     console.error("必须提供6或7个角度值");
-    calculateEndEffectorPosition();
+    syncEndEffectorPoseIfNeeded(true);
     return;
   }
-
-  jointAngles.value = [...applyResult.normalizedAngles];
-  gripperAngleDeg.value = applyResult.normalizedAngles[ARM_JOINT_COUNT];
+  syncJointDisplayFromSceneIfNeeded(true);
+  syncEndEffectorPoseIfNeeded(true);
 }
 
 // 修改为视角切换函数
@@ -2669,11 +2724,10 @@ function initRobot() {
       sliderInput(-Math.PI / 2, "link4_joint");
       sliderInput(-Math.PI / 2, "link5_joint");
       sliderInput(0, "gripper_joint");
-      jointAngles.value = [...DEFAULT_ANGLES_DEG];
-      gripperAngleDeg.value = DEFAULT_ANGLES_DEG[ARM_JOINT_COUNT];
 
       // 初始化后计算位置信息
-      calculateEndEffectorPosition();
+      syncJointDisplayFromSceneIfNeeded(true);
+      syncEndEffectorPoseIfNeeded(true);
     })
     .catch((error) => {
       console.error("机器人加载失败:", error);
@@ -2820,17 +2874,9 @@ const handleStateUpdate = (data) => {
   lastStateUpdate.value = now;
 };
 
-// 添加到状态缓冲区（用于插值）
+// 保留轻量时间戳缓冲，避免对完整状态做高频深拷贝导致界面卡顿。
 const addToStateBuffer = (state, timestamp) => {
-  stateUpdateHistory.value.push({
-    state: { ...state },
-    timestamp: timestamp
-  });
-
-  // 保持缓冲区大小
-  if (stateUpdateHistory.value.length > stateBufferSize.value) {
-    stateUpdateHistory.value.shift();
-  }
+  stateUpdateHistory.value = [{ state: null, timestamp }];
 };
 
 // 更新同步统计信息
@@ -3025,6 +3071,11 @@ onMounted(() => {
   }, 2000);
 
   runQuest3AccessChecks();
+});
+
+watch(isVrModeEntered, (entered) => {
+  if (!entered) return;
+  ensureVrModeActive();
 });
 
 onBeforeUnmount(() => {
@@ -3229,6 +3280,13 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(6px);
 }
 
+.vr-control-panel.quest-device {
+  width: min(420px, calc(100vw - 24px));
+  right: 12px;
+  top: 60px;
+  max-height: calc(100vh - 120px);
+}
+
 .vr-control-header {
   display: flex;
   justify-content: space-between;
@@ -3363,6 +3421,11 @@ onBeforeUnmount(() => {
 .vr-menu-buttons {
   display: grid;
   gap: 7px;
+  margin-top: 8px;
+}
+
+.vr-entry-buttons {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .vr-menu-btn {
@@ -3372,6 +3435,15 @@ onBeforeUnmount(() => {
   background: rgba(32, 55, 76, 0.92);
   color: #eff6fc;
   cursor: pointer;
+}
+
+.vr-menu-btn.enter {
+  border-color: rgba(90, 190, 130, 0.55);
+  background: rgba(30, 92, 60, 0.9);
+}
+
+.vr-menu-btn.enter:hover {
+  background: rgba(43, 118, 79, 0.94);
 }
 
 .vr-menu-btn:hover {
