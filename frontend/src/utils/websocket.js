@@ -103,6 +103,22 @@ class WebSocketManager {
       payload.source = options.source;
     }
 
+    if (typeof options.input_source === 'string' && options.input_source.length > 0) {
+      payload.input_source = options.input_source;
+    }
+
+    if (typeof options.selected_joint_group === 'string' && options.selected_joint_group.length > 0) {
+      payload.selected_joint_group = options.selected_joint_group;
+    }
+
+    if (options.raw_input && typeof options.raw_input === 'object') {
+      payload.raw_input = options.raw_input;
+    }
+
+    if (options.normalized_input && typeof options.normalized_input === 'object') {
+      payload.normalized_input = options.normalized_input;
+    }
+
     const message = {
       type: 'control',
       data: payload,

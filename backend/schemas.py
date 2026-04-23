@@ -46,6 +46,10 @@ class StepRequest(BaseModel):
     kd: float | None = None
     gripper_command: GripperCommand | None = None
     source: ControlSource = "manual"
+    input_source: str | None = None
+    selected_joint_group: str | None = None
+    raw_input: dict[str, Any] | None = None
+    normalized_input: dict[str, Any] | None = None
 
     class Config:
         extra = "ignore"

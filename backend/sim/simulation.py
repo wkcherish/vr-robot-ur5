@@ -271,6 +271,10 @@ class SimulationCore:
             "active_policy_path": None,
             "error_message": None,
         }
+        self._last_input_source: str | None = None
+        self._last_selected_joint_group: str | None = None
+        self._last_raw_input: dict[str, Any] | None = None
+        self._last_normalized_input: dict[str, Any] | None = None
         self._sim_time = 0.0
         self._dt = DEFAULT_DT
         self._stats = {
@@ -340,6 +344,23 @@ class SimulationCore:
                 snapshot["mj_qvel"] = self._mj_data.qvel.copy()
 
             self._source = request.source
+            self._last_input_source = (
+                str(request.input_source).strip() if request.input_source is not None else None
+            )
+            self._last_selected_joint_group = (
+                str(request.selected_joint_group).strip()
+                if request.selected_joint_group is not None
+                else None
+            )
+            self._last_raw_input = dict(request.raw_input) if isinstance(request.raw_input, dict) else None
+            self._last_normalized_input = (
+                dict(request.normalized_input) if isinstance(request.normalized_input, dict) else None
+            )
+            if request.source == "quest3_controller":
+                self._vr_state["last_quest_input_ts"] = time.time()
+                self._vr_state["input_source_available"]["controller"] = True
+                if self._last_selected_joint_group:
+                    self._vr_state["selected_joint_group"] = self._last_selected_joint_group
             n_steps = max(1, int(request.n_steps))
             self._apply_arm_command(target_positions, n_steps)
             self._apply_gripper_command(request.gripper_command, n_steps)
@@ -1051,6 +1072,10 @@ class SimulationCore:
             "active_policy_path": None,
             "error_message": None,
         }
+        self._last_input_source = None
+        self._last_selected_joint_group = None
+        self._last_raw_input = None
+        self._last_normalized_input = None
         self._sim_time = 0.0
         self._stats["steps"] = 0
         self._stats["commands"] = 0
@@ -1511,6 +1536,10 @@ class SimulationCore:
             "camera_capture_ok": bool(camera_state.get("camera_capture_ok", False)),
             "task_state": dict(self._task_state),
             "source": self._source,
+            "input_source": self._last_input_source,
+            "selected_joint_group": self._last_selected_joint_group,
+            "raw_input": deepcopy(self._last_raw_input),
+            "normalized_input": deepcopy(self._last_normalized_input),
             "vr": deepcopy(self._vr_state),
             "stats": {
                 "steps": int(self._stats["steps"]),
