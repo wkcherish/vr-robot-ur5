@@ -12,7 +12,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from backend.schemas import GripperCommand, StepRequest
+from backend.schemas import GripperCommand, StepRequest, VRStateUpdateRequest
 
 try:
     import mujoco as _mujoco  # type: ignore
@@ -242,6 +242,19 @@ class SimulationCore:
         self._objects_state: dict[str, dict[str, Any]] = {}
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
+        self._vr_state = {
+            "mode": "vr_disabled",
+            "input_source_available": {
+                "controller": False,
+                "hand": False,
+            },
+            "selected_joint_group": "arm_full",
+            "control_owner": "desktop_manual",
+            "recording_ready": False,
+            "last_quest_input_ts": None,
+            "active_policy_path": None,
+            "error_message": None,
+        }
         self._sim_time = 0.0
         self._dt = DEFAULT_DT
         self._stats = {
@@ -398,19 +411,74 @@ class SimulationCore:
         async with self._lock:
             self._source = "task"
             self._task_state = {"running": True, "name": task_name, "phase": "queued"}
+            self._vr_state["control_owner"] = "task"
             return self._build_state_locked()
 
     async def stop_task(self) -> dict[str, Any]:
         async with self._lock:
             self._source = "manual"
             self._task_state = {"running": False, "name": None, "phase": None}
+            self._vr_state["control_owner"] = "desktop_manual"
             return self._build_state_locked()
 
     async def set_source(self, source: str) -> dict[str, Any]:
-        if source not in {"manual", "task", "policy"}:
-            raise ValueError("source must be one of: manual, task, policy")
+        if source not in {"manual", "desktop_manual", "quest3_controller", "quest3_hand", "task", "policy"}:
+            raise ValueError(
+                "source must be one of: manual, desktop_manual, quest3_controller, quest3_hand, task, policy"
+            )
         async with self._lock:
             self._source = source
+            if source in {"manual", "desktop_manual"}:
+                self._vr_state["control_owner"] = "desktop_manual"
+            elif source == "quest3_controller":
+                self._vr_state["control_owner"] = "quest3_controller"
+            elif source == "quest3_hand":
+                self._vr_state["control_owner"] = "quest3_hand"
+            else:
+                self._vr_state["control_owner"] = source
+            if source in {"quest3_controller", "quest3_hand"}:
+                self._vr_state["last_quest_input_ts"] = time.time()
+            return self._build_state_locked()
+
+    async def update_vr_state(self, request: VRStateUpdateRequest) -> dict[str, Any]:
+        async with self._lock:
+            if request.mode is not None:
+                self._vr_state["mode"] = request.mode
+
+            if request.controller_available is not None:
+                self._vr_state["input_source_available"]["controller"] = bool(request.controller_available)
+
+            if request.hand_tracking_available is not None:
+                self._vr_state["input_source_available"]["hand"] = bool(request.hand_tracking_available)
+
+            if request.selected_joint_group is not None:
+                self._vr_state["selected_joint_group"] = str(request.selected_joint_group)
+
+            if request.recording_ready is not None:
+                self._vr_state["recording_ready"] = bool(request.recording_ready)
+
+            if request.last_quest_input_ts is not None:
+                self._vr_state["last_quest_input_ts"] = float(request.last_quest_input_ts)
+
+            if request.active_policy_path is not None:
+                self._vr_state["active_policy_path"] = str(request.active_policy_path)
+
+            if request.error_message is not None:
+                self._vr_state["error_message"] = str(request.error_message)
+
+            if request.source is not None:
+                self._source = request.source
+                if request.source in {"manual", "desktop_manual"}:
+                    self._vr_state["control_owner"] = "desktop_manual"
+                elif request.source == "quest3_controller":
+                    self._vr_state["control_owner"] = "quest3_controller"
+                    self._vr_state["last_quest_input_ts"] = time.time()
+                elif request.source == "quest3_hand":
+                    self._vr_state["control_owner"] = "quest3_hand"
+                    self._vr_state["last_quest_input_ts"] = time.time()
+                else:
+                    self._vr_state["control_owner"] = request.source
+
             return self._build_state_locked()
 
     def _load_scene_manifest(self) -> None:
@@ -954,6 +1022,19 @@ class SimulationCore:
         self._objects_state = self._collect_objects_state_locked()
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
+        self._vr_state = {
+            "mode": "vr_disabled",
+            "input_source_available": {
+                "controller": False,
+                "hand": False,
+            },
+            "selected_joint_group": "arm_full",
+            "control_owner": "desktop_manual",
+            "recording_ready": False,
+            "last_quest_input_ts": None,
+            "active_policy_path": None,
+            "error_message": None,
+        }
         self._sim_time = 0.0
         self._stats["steps"] = 0
         self._stats["commands"] = 0
@@ -1395,6 +1476,7 @@ class SimulationCore:
             "camera_capture_ok": bool(camera_state.get("camera_capture_ok", False)),
             "task_state": dict(self._task_state),
             "source": self._source,
+            "vr": deepcopy(self._vr_state),
             "stats": {
                 "steps": int(self._stats["steps"]),
                 "commands": int(self._stats["commands"]),

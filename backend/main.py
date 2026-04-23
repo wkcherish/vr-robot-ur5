@@ -645,7 +645,13 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
                 time.sleep(sleep_time)
 
 
-def _start_backend(host: str, port: int, reload_enabled: bool) -> subprocess.Popen[bytes]:
+def _start_backend(
+    host: str,
+    port: int,
+    reload_enabled: bool,
+    ssl_certfile: str | None = None,
+    ssl_keyfile: str | None = None,
+) -> subprocess.Popen[bytes]:
     cmd = [
         sys.executable,
         "-m",
@@ -660,6 +666,10 @@ def _start_backend(host: str, port: int, reload_enabled: bool) -> subprocess.Pop
     ]
     if reload_enabled:
         cmd.append("--reload")
+    if ssl_certfile:
+        cmd.extend(["--ssl-certfile", ssl_certfile])
+    if ssl_keyfile:
+        cmd.extend(["--ssl-keyfile", ssl_keyfile])
 
     backend_cwd = REPO_ROOT / "backend"
     print("[backend] starting:", " ".join(cmd))
@@ -674,7 +684,10 @@ def _health_check_host(host: str) -> str:
 
 def _wait_backend_ready(process: subprocess.Popen[bytes], host: str, port: int, timeout_s: float) -> None:
     check_host = _health_check_host(host)
-    health_url = f"http://{check_host}:{port}/health/"
+    process_args = [str(arg) for arg in (process.args or [])]
+    has_ssl = "--ssl-certfile" in process_args and "--ssl-keyfile" in process_args
+    health_scheme = "https" if has_ssl else "http"
+    health_url = f"{health_scheme}://{check_host}:{port}/health/"
     deadline = time.time() + timeout_s
 
     while time.time() < deadline:
@@ -733,6 +746,18 @@ def main() -> None:
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Backend host (default: 0.0.0.0).")
     parser.add_argument("--port", type=int, default=8000, help="Backend port (default: 8000).")
     parser.add_argument(
+        "--ssl-certfile",
+        type=str,
+        default=None,
+        help="SSL certificate file path (PEM). Provide with --ssl-keyfile to enable HTTPS/WSS.",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        type=str,
+        default=None,
+        help="SSL private key file path (PEM). Provide with --ssl-certfile to enable HTTPS/WSS.",
+    )
+    parser.add_argument(
         "--backend-timeout",
         type=float,
         default=30.0,
@@ -756,7 +781,13 @@ def main() -> None:
 
     backend_process: subprocess.Popen[bytes] | None = None
     try:
-        backend_process = _start_backend(host=args.host, port=args.port, reload_enabled=not args.no_reload)
+        backend_process = _start_backend(
+            host=args.host,
+            port=args.port,
+            reload_enabled=not args.no_reload,
+            ssl_certfile=args.ssl_certfile,
+            ssl_keyfile=args.ssl_keyfile,
+        )
         _wait_backend_ready(
             process=backend_process,
             host=args.host,
@@ -777,8 +808,9 @@ def main() -> None:
             if not model_path.exists():
                 raise FileNotFoundError(f"Model file not found: {model_path}")
             check_host = _health_check_host(args.host)
-            state_url = f"http://{check_host}:{args.port}/sim/state/"
-            step_url = f"http://{check_host}:{args.port}/sim/step/"
+            scheme = "https" if args.ssl_certfile and args.ssl_keyfile else "http"
+            state_url = f"{scheme}://{check_host}:{args.port}/sim/state/"
+            step_url = f"{scheme}://{check_host}:{args.port}/sim/step/"
             run_viewer(
                 model_path=model_path,
                 manifest_path=manifest_path,

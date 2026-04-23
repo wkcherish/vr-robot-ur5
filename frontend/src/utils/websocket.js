@@ -3,6 +3,8 @@
  * 提供全局 WebSocket 连接管理和消息发送功能
  */
 
+import { runtimeConfig } from "./runtimeConfig";
+
 class WebSocketManager {
   constructor() {
     this.websocket = null;
@@ -20,7 +22,7 @@ class WebSocketManager {
   }
 
   // 连接到 WebSocket 服务器
-  connect(url = 'ws://localhost:8000/sim/ws') {
+  connect(url = runtimeConfig.simWsUrl) {
     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
       console.log('WebSocket 已经连接');
       return;
@@ -120,6 +122,14 @@ class WebSocketManager {
     return this.sendMessage({
       type: 'stop_task',
       timestamp: Date.now()
+    });
+  }
+
+  sendVrStateUpdate(payload = {}) {
+    return this.sendMessage({
+      type: "vr_state",
+      data: payload,
+      timestamp: Date.now(),
     });
   }
 
@@ -245,6 +255,10 @@ class WebSocketManager {
 
       case 'task_result':
         this.emit('taskResult', data);
+        break;
+
+      case 'vr_state_result':
+        this.emit('vrStateResult', data);
         break;
 
       case 'error':

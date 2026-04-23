@@ -48,6 +48,13 @@ npm run dev
 启动后访问：
 - 前端：`http://localhost:5173`
 
+Quest3 建议使用 HTTPS 访问（例如 `https://<LAN_IP>:5173`），并确保后端也是 HTTPS/WSS。
+可通过环境变量启用前端 HTTPS 证书：
+
+```bash
+VITE_HTTPS_CERT=<path/to/cert.pem> VITE_HTTPS_KEY=<path/to/key.pem> npm run dev
+```
+
 ## 生产构建
 ```bash
 cd frontend
@@ -58,4 +65,3 @@ npm run preview
 ## 备注
 - `backend/` 目录已保留，但当前没有后端代码。
 - 如需接入后端服务，可按你的技术栈（如 FastAPI）在 `backend/` 中自行扩展。
-
