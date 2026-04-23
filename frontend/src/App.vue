@@ -40,49 +40,6 @@
             </div>
           </div>
 
-          <!-- 状态同步状态区 -->
-          <div class="panel-section" v-if="showStateSyncStatus">
-            <h4 class="section-title">状态同步</h4>
-            <div class="sync-status-grid">
-              <div class="sync-status-item">
-                <span class="sync-label">连接状态:</span>
-                <span class="sync-value" :class="{ 'sync-connected': isWebSocketConnected, 'sync-disconnected': !isWebSocketConnected }">
-                  {{ isWebSocketConnected ? '已连接' : '未连接' }}
-                </span>
-              </div>
-              <div class="sync-status-item">
-                <span class="sync-label">连接质量:</span>
-                <span class="sync-value" :class="{ 'sync-good': connectionQuality >= 80, 'sync-fair': connectionQuality >= 50 && connectionQuality < 80, 'sync-poor': connectionQuality < 50 }">
-                  {{ connectionQuality }}%
-                </span>
-              </div>
-              <div class="sync-status-item">
-                <span class="sync-label">实际帧率:</span>
-                <span class="sync-value">{{ actualUpdateRate.toFixed(1) }} Hz</span>
-              </div>
-              <div class="sync-status-item">
-                <span class="sync-label">网络延迟:</span>
-                <span class="sync-value" :class="{ 'sync-high-latency': networkLatency > 100 }">
-                  {{ networkLatency.toFixed(0) }} ms
-                </span>
-              </div>
-              <div class="sync-status-item">
-                <span class="sync-label">同步错误:</span>
-                <span class="sync-value" :class="{ 'sync-has-errors': stateSyncErrors > 0 }">
-                  {{ stateSyncErrors }}
-                </span>
-              </div>
-              <div class="sync-status-item">
-                <span class="sync-label">插值状态:</span>
-                <span class="sync-value">
-                  <button @click="toggleStateInterpolation" class="interpolation-toggle" :class="{ active: stateInterpolationEnabled }">
-                    {{ stateInterpolationEnabled ? '启用' : '禁用' }}
-                  </button>
-                </span>
-              </div>
-            </div>
-          </div>
-
           <!-- 角度控制区 -->
           <div class="panel-section">
             <h4 class="section-title">角度控制</h4>
@@ -171,7 +128,231 @@
           <div class="progress-text">任务进度: {{ taskProgress }}%</div>
         </div>
 
-        <!-- 引入相机状态面板 -->
+        <div class="vr-control-panel" :class="{ 'quest-device': isQuest3Device }" v-if="showVrControlPanel">
+          <div class="vr-control-header">
+            <h4>VR控制中心</h4>
+            <button class="vr-control-close" @click="showVrControlPanel = false">关闭</button>
+          </div>
+
+          <div class="vr-control-section">
+            <div class="vr-section-title">局域网接入分析</div>
+            <button class="network-check-button" @click="runQuest3AccessChecks">重新分析</button>
+            <div class="network-status-row">
+              <span class="network-label">访问端:</span>
+              <span class="network-value">{{ isQuest3Device ? "Quest3" : "桌面浏览器" }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">主机名:</span>
+              <span class="network-value">{{ localHostname || "-" }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">宿主机 IP:</span>
+              <span class="network-value">{{ localHostIp || "未解析" }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">前端访问地址:</span>
+              <span class="network-value">{{ hostPageAccessUrl || "自动生成中..." }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">后端 HTTP:</span>
+              <span class="network-value">{{ backendHttpOrigin }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">后端 WS:</span>
+              <span class="network-value">{{ backendWsAddress }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">health:</span>
+              <span class="network-value" :class="`status-${backendHealthStatus}`">
+                {{ normalizeStatusLabel(backendHealthStatus) }} | {{ backendHealthMessage }}
+              </span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">WebSocket:</span>
+              <span class="network-value" :class="`status-${wsCheckStatus}`">
+                {{ normalizeStatusLabel(wsCheckStatus) }} | {{ wsCheckMessage }}
+              </span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">D405链路:</span>
+              <span class="network-value" :class="`status-${d405CheckStatus}`">
+                {{ normalizeStatusLabel(d405CheckStatus) }} | {{ d405CheckMessage }}
+              </span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">录制配置:</span>
+              <span class="network-value" :class="`status-${recordingCheckStatus}`">
+                {{ normalizeStatusLabel(recordingCheckStatus) }} | {{ recordingCheckMessage }}
+              </span>
+            </div>
+            <div class="network-hint-row" v-for="hint in networkAccessHints" :key="hint">
+              {{ hint }}
+            </div>
+          </div>
+
+          <div class="vr-control-section">
+            <div class="vr-section-title">VR模式控制</div>
+            <div class="vr-mode-line">
+              <span class="vr-mode-chip" :class="`status-${vrModeState}`">{{ vrModeText }}</span>
+              <span class="vr-owner-chip">控制源: {{ vrControlOwnerText }}</span>
+            </div>
+            <div class="vr-menu-buttons vr-entry-buttons">
+              <button
+                class="vr-menu-btn enter"
+                :class="{ active: isVrModeEntered }"
+                @click="enterVrMode"
+              >
+                进入VR模式
+              </button>
+              <button
+                class="vr-menu-btn exit"
+                :class="{ active: !isVrModeEntered }"
+                @click="exitVrMode"
+              >
+                退出VR模式
+              </button>
+            </div>
+            <div class="vr-menu-buttons" v-if="isVrModeEntered">
+              <button
+                class="vr-menu-btn"
+                :class="{ active: vrModeState === 'vr_controller_mode' }"
+                @click="chooseVrInputMode('controller')"
+              >
+                手柄模式
+              </button>
+              <button
+                class="vr-menu-btn"
+                :class="{ active: vrModeState === 'vr_hand_mode' }"
+                @click="chooseVrInputMode('hand')"
+              >
+                手势模式
+              </button>
+            </div>
+            <div class="quest-controller-status" v-if="isVrModeEntered && vrModeState === 'vr_controller_mode'">
+              <div class="network-status-row">
+                <span class="network-label">当前关节组:</span>
+                <span class="network-value">{{ vrSelectedJointGroupText }}</span>
+              </div>
+              <div class="network-status-row" v-if="questControllerRawInput && questControllerRawInput.right">
+                <span class="network-label">右摇杆/扳机:</span>
+                <span class="network-value">
+                  X={{ Number(questControllerRawInput.right.stick_x || 0).toFixed(2) }},
+                  Y={{ Number(questControllerRawInput.right.stick_y || 0).toFixed(2) }},
+                  T={{ Number(questControllerRawInput.right.trigger || 0).toFixed(2) }}
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">灵敏度:</span>
+                <span class="network-value">
+                  <input
+                    class="vr-inline-slider"
+                    type="range"
+                    min="0.4"
+                    max="1.8"
+                    step="0.1"
+                    v-model.number="questControllerSensitivity"
+                  />
+                  {{ questControllerSensitivity.toFixed(1) }}
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">输入死区:</span>
+                <span class="network-value">
+                  <input
+                    class="vr-inline-slider"
+                    type="range"
+                    min="0.05"
+                    max="0.30"
+                    step="0.01"
+                    v-model.number="questControllerDeadzone"
+                  />
+                  {{ questControllerDeadzone.toFixed(2) }}
+                </span>
+              </div>
+              <div v-if="questControllerGroupToast" class="vr-joint-toast">{{ questControllerGroupToast }}</div>
+            </div>
+            <div class="quest-hand-status" v-if="isVrModeEntered && vrModeState === 'vr_hand_mode'">
+              <div class="network-status-row">
+                <span class="network-label">追踪稳定性:</span>
+                <span class="network-value" :class="{ 'status-ok': questHandTrackingStable, 'status-error': !questHandTrackingStable }">
+                  {{ questHandTrackingStable ? "稳定" : "不稳定" }} | {{ (questHandTrackingStability * 100).toFixed(0) }}%
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">手势模式:</span>
+                <span class="network-value">
+                  {{ questHandInputMode === "dual_hand" ? "双手模式" : "单手降级模式" }}
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">当前关节组:</span>
+                <span class="network-value">{{ vrSelectedJointGroupText }}</span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">手势灵敏度:</span>
+                <span class="network-value">
+                  <input
+                    class="vr-inline-slider"
+                    type="range"
+                    min="0.4"
+                    max="1.8"
+                    step="0.1"
+                    v-model.number="questHandSensitivity"
+                  />
+                  {{ questHandSensitivity.toFixed(1) }}
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questHandRawInput && questHandRawInput.input_source_count !== undefined">
+                <span class="network-label">输入源计数:</span>
+                <span class="network-value">{{ questHandRawInput.input_source_count }}</span>
+              </div>
+              <div v-if="questHandGroupToast" class="vr-joint-toast">{{ questHandGroupToast }}</div>
+            </div>
+            <div v-if="vrErrorMessage" class="vr-menu-error">{{ vrErrorMessage }}</div>
+          </div>
+
+          <div class="vr-control-section">
+            <div class="vr-section-title">状态同步</div>
+            <div class="sync-status-grid compact">
+              <div class="sync-status-item">
+                <span class="sync-label">连接状态:</span>
+                <span class="sync-value" :class="{ 'sync-connected': isWebSocketConnected, 'sync-disconnected': !isWebSocketConnected }">
+                  {{ isWebSocketConnected ? '已连接' : '未连接' }}
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">连接质量:</span>
+                <span class="sync-value" :class="{ 'sync-good': connectionQuality >= 80, 'sync-fair': connectionQuality >= 50 && connectionQuality < 80, 'sync-poor': connectionQuality < 50 }">
+                  {{ connectionQuality }}%
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">实际帧率:</span>
+                <span class="sync-value">{{ actualUpdateRate.toFixed(1) }} Hz</span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">网络延迟:</span>
+                <span class="sync-value" :class="{ 'sync-high-latency': networkLatency > 100 }">
+                  {{ networkLatency.toFixed(0) }} ms
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">同步错误:</span>
+                <span class="sync-value" :class="{ 'sync-has-errors': stateSyncErrors > 0 }">
+                  {{ stateSyncErrors }}
+                </span>
+              </div>
+              <div class="sync-status-item">
+                <span class="sync-label">插值状态:</span>
+                <span class="sync-value">
+                  <button @click="toggleStateInterpolation" class="interpolation-toggle" :class="{ active: stateInterpolationEnabled }">
+                    {{ stateInterpolationEnabled ? '启用' : '禁用' }}
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <!-- 添加底部控制面板 -->
         <div class="panel-controls">
@@ -211,11 +392,11 @@
             <span class="panel-icon">📊</span> 任务进度
           </button>
           <button
-            @click="togglePanel('sync')"
+            @click="togglePanel('vr-control')"
             class="panel-control-button"
-            :class="{ active: showStateSyncStatus }"
+            :class="{ active: showVrControlPanel }"
           >
-            <span class="panel-icon">🔄</span> 状态同步
+            <span class="panel-icon">🥽</span> VR控制
           </button>
         </div>
       </div>
@@ -224,14 +405,24 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
-import Menu from "./components/robot.vue";
-import Control from "./components/control.vue"; // 引入仿真控制组件
+import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from "vue";
+const Menu = defineAsyncComponent(() => import("./components/robot.vue"));
+const Control = defineAsyncComponent(() => import("./components/control.vue"));
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
-import axios from "axios";
 import websocketManager from "./utils/websocket.js"; // 引入WebSocket管理器
+import { runtimeConfig, getDeviceCategory } from "./utils/runtimeConfig.js";
+import { get, post } from "./utils/network.js";
+import { readQuestControllerSnapshot } from "./utils/questControllerInput.js";
+import { createQuestControllerTeleop } from "./utils/questControllerTeleop.js";
+import {
+  startQuestHandInput,
+  stopQuestHandInput,
+  readQuestHandSnapshot,
+  getQuestHandInputStatus,
+} from "./utils/questHandInput.js";
+import { createQuestHandTeleop } from "./utils/questHandTeleop.js";
 
 // 修改视角控制为下拉菜单
 const selectedView = ref("perspective"); // 默认选择透视视角
@@ -240,11 +431,11 @@ const taskProgress = ref(0);
 
 // 各面板显示状态控制
 const showSlider = ref(false); // 滑块面板默认不显示
-const showRobotPanel = ref(false); // 机器人控制面板默认显示
-const showControlPanel = ref(false); // 仿真控制面板默认显示
+const showRobotPanel = ref(false); // 机器人控制面板默认不显示
+const showControlPanel = ref(false); // 仿真控制面板默认不显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
-const showStateSyncStatus = ref(true); // 状态同步状态默认显示
+const showVrControlPanel = ref(false); // VR控制中心默认不显示
 const ARM_JOINT_COUNT = 6;
 const TOTAL_INPUT_JOINT_COUNT = 7;
 const GRIPPER_MIN_RAD = 0;
@@ -253,6 +444,19 @@ const GRIPPER_MIN_DEG = 0;
 const GRIPPER_MAX_DEG = (GRIPPER_MAX_RAD * 180) / Math.PI;
 const DEFAULT_ANGLES_DEG = [0, -90, 90, -90, -90, 0, 0];
 const DEFAULT_TEST_ANGLES_DEG = [60, -90, 90, -140, -90, 0, 0];
+const BACKEND_ARM_JOINT_NAMES = [
+  "shoulder_pan_joint",
+  "shoulder_lift_joint",
+  "elbow_joint",
+  "wrist_1_joint",
+  "wrist_2_joint",
+  "wrist_3_joint",
+];
+const LOCAL_MANUAL_SOURCES = new Set([
+  "desktop_manual",
+  "quest3_controller",
+  "quest3_hand",
+]);
 const ARM_JOINT_NAMES = [
   "link1_joint",
   "link2_joint",
@@ -304,12 +508,23 @@ const sliderSyncTimer = ref(null);
 const lastRealtimeSliderSendAt = ref(0);
 const pendingManualTarget = ref(null);
 const realtimeSliderFallbackInFlight = ref(false);
+const backendPoseSmoothingEnabled = ref(true);
+const backendPoseSmoothingAlpha = ref(0.26);
+const backendRenderTarget = ref(null);
 
-const REALTIME_SLIDER_DEBOUNCE_MS = 20;
-const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 30;
-const MANUAL_STATE_GUARD_MS = 800;
+const REALTIME_SLIDER_DEBOUNCE_MS = 16;
+const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 33;
+const MANUAL_STATE_GUARD_MS = 700;
 const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
 const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
+const QUEST_CONTROLLER_SEND_HZ = 25;
+const QUEST_CONTROLLER_SEND_INTERVAL_MS = Math.round(1000 / QUEST_CONTROLLER_SEND_HZ);
+const QUEST_HAND_SEND_HZ = 25;
+const QUEST_HAND_SEND_INTERVAL_MS = Math.round(1000 / QUEST_HAND_SEND_HZ);
+const MAX_RENDER_PIXEL_RATIO = 1.5;
+const QUEST_MAX_RENDER_PIXEL_RATIO = 1.0;
+const UI_SYNC_INTERVAL_MS = 66;
+const UI_POSE_SYNC_INTERVAL_MS = 100;
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -326,6 +541,110 @@ const stateBufferSize = ref(10); // 状态缓冲区大小
 const connectionQuality = ref(100); // 连接质量百分比
 const robotPosition = ref({ x: 0, y: 0, z: 0 });
 const robotOrientation = ref({ roll: 0, pitch: 0, yaw: 0 });
+
+const deviceCategory = ref(getDeviceCategory());
+const localHostname = ref("");
+const localHostIp = ref("");
+const hostPageAccessUrl = ref("");
+const backendHealthStatus = ref("unknown");
+const backendHealthMessage = ref("未检查");
+const wsCheckStatus = ref("unknown");
+const wsCheckMessage = ref("未检查");
+const d405CheckStatus = ref("unknown");
+const d405CheckMessage = ref("未检查");
+const recordingCheckStatus = ref("unknown");
+const recordingCheckMessage = ref("未检查");
+const networkPrereqOk = ref(false);
+
+const vrModeState = ref("vr_disabled");
+const selectedVrInputMode = ref("");
+const vrErrorMessage = ref("");
+const vrSelectedJointGroup = ref("arm_full");
+const vrControlOwner = ref("desktop_manual");
+const lastLocalVrModeSetAt = ref(0);
+const questControllerAvailable = ref(false);
+const questControllerStatusText = ref("未激活");
+const questControllerSensitivity = ref(1.0);
+const questControllerDeadzone = ref(0.14);
+const questControllerGroupToast = ref("");
+const questControllerGroupToastAt = ref(0);
+const questControllerRawInput = ref(null);
+const questControllerLoopTimer = ref(null);
+const questControllerFallbackInFlight = ref(false);
+const lastQuestControllerTickAt = ref(0);
+const questHandAvailable = ref(false);
+const questHandStatusText = ref("未激活");
+const questHandSensitivity = ref(0.9);
+const questHandTrackingStable = ref(false);
+const questHandTrackingStability = ref(0);
+const questHandInputMode = ref("dual_hand");
+const questHandGroupToast = ref("");
+const questHandGroupToastAt = ref(0);
+const questHandRawInput = ref(null);
+const questHandLoopTimer = ref(null);
+const questHandFallbackInFlight = ref(false);
+const lastQuestHandTickAt = ref(0);
+
+const VR_MODE_LOCAL_LOCK_MS = 1200;
+const VR_ENTERED_MODES = new Set(["vr_ready", "vr_controller_mode", "vr_hand_mode"]);
+
+const uiLastJointSyncAt = ref(0);
+const uiLastPoseSyncAt = ref(0);
+
+let questControllerTeleop = createQuestControllerTeleop({
+  deadzone: questControllerDeadzone.value,
+  sensitivity: questControllerSensitivity.value,
+});
+let questHandTeleop = createQuestHandTeleop({
+  sensitivity: questHandSensitivity.value,
+});
+
+const isQuest3Device = computed(() => deviceCategory.value === "quest3");
+const backendHttpOrigin = computed(() => runtimeConfig.backendOrigin);
+const backendWsAddress = computed(() => runtimeConfig.simWsUrl);
+const networkAccessHints = computed(() => {
+  const hints = [];
+  if (!localHostIp.value) {
+    hints.push("主机 IP 未解析，建议手动设置 VITE_HOST_IP。");
+  }
+  if (isQuest3Device.value) {
+    hints.push("当前为 Quest3 访问，请确认与主机处于同一局域网。");
+  }
+  return hints;
+});
+
+const vrSelectedJointGroupText = computed(() => {
+  const mapping = {
+    upper_arm: "大臂组",
+    forearm: "前臂组",
+    wrist: "腕部组",
+    arm_full: "全臂",
+  };
+  return mapping[vrSelectedJointGroup.value] || "未选择";
+});
+
+const vrModeText = computed(() => {
+  if (vrModeState.value === "vr_controller_mode") return "手柄模式";
+  if (vrModeState.value === "vr_hand_mode") return "手势模式";
+  if (vrModeState.value === "vr_ready") return "待机";
+  if (vrModeState.value === "vr_disabled") return "未启用";
+  if (vrModeState.value === "vr_error") return "异常";
+  return "未知";
+});
+
+const isVrModeEntered = computed(() => VR_ENTERED_MODES.has(vrModeState.value));
+
+const vrControlOwnerText = computed(() => {
+  const mapping = {
+    desktop_manual: "桌面手动",
+    quest3_controller: "Quest3手柄",
+    quest3_hand: "Quest3手势",
+    task: "任务执行",
+    policy: "策略控制",
+    manual: "手动",
+  };
+  return mapping[vrControlOwner.value] || "未知";
+});
 
 // 兼容旧 UI 关节名(link*_joint)与当前 URDF 关节名
 const jointNameMap = {
@@ -374,6 +693,14 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function getRenderPixelRatio() {
+  const dpr =
+    typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1;
+  if (!Number.isFinite(dpr)) return 1;
+  const maxRatio = isQuest3Device.value ? QUEST_MAX_RENDER_PIXEL_RATIO : MAX_RENDER_PIXEL_RATIO;
+  return clamp(dpr, 1, maxRatio);
+}
+
 const BACKEND_FRAME_Z_OFFSET = 0.5;
 const BACKEND_TO_FRONTEND_ROT = new THREE.Quaternion().setFromAxisAngle(
   new THREE.Vector3(1, 0, 0),
@@ -386,6 +713,385 @@ function toRadians(degrees) {
 
 function toDegrees(radians) {
   return (Number(radians) * 180) / Math.PI;
+}
+
+function readHostCandidate() {
+  const envHostIp = String(import.meta.env.VITE_HOST_IP || "").trim();
+  if (envHostIp) return envHostIp;
+
+  if (typeof window === "undefined" || !window.location) return "";
+  const host = String(window.location.hostname || "").trim();
+  if (!host || host === "localhost" || host === "127.0.0.1") return "";
+  return host;
+}
+
+function buildPageAccessUrlFromHost(hostValue) {
+  const host = String(hostValue || "").trim();
+  if (!host) return "";
+  const pagePort = Number(import.meta.env.VITE_PAGE_PORT || window.location.port || 5173);
+  const preferProtocol = String(import.meta.env.VITE_PAGE_PROTOCOL || "").trim().toLowerCase();
+  const forceHttpsRaw = String(import.meta.env.VITE_FORCE_HTTPS_PAGE_URL || "").trim().toLowerCase();
+  const forceHttpsByFlag = ["1", "true", "yes", "on"].includes(forceHttpsRaw);
+  const hasHttpsCertEnv =
+    String(import.meta.env.VITE_HTTPS_CERT || "").trim().length > 0 &&
+    String(import.meta.env.VITE_HTTPS_KEY || "").trim().length > 0;
+  const pageIsHttps =
+    typeof window !== "undefined" && window.location && window.location.protocol === "https:";
+  const shouldUseHttps =
+    preferProtocol === "https" ||
+    (preferProtocol !== "http" && (forceHttpsByFlag || hasHttpsCertEnv || pageIsHttps || isLikelySameLan(host)));
+  const pageProtocol = shouldUseHttps ? "https://" : "http://";
+  if (host.includes(":")) {
+    return pageProtocol + "[" + host + "]:" + pagePort;
+  }
+  return pageProtocol + host + ":" + pagePort;
+}
+
+function normalizeStatusLabel(status) {
+  if (status === "ok") return "可用";
+  if (status === "error") return "异常";
+  if (status === "checking") return "检查中";
+  return "未检查";
+}
+
+function isLikelySameLan(ipLikeHost) {
+  const host = String(ipLikeHost || "").trim();
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1") return false;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return true;
+  if (host.endsWith(".local")) return true;
+  return false;
+}
+
+function updateNetworkPrereq() {
+  const lanOk = isLikelySameLan(localHostIp.value) || isLikelySameLan(localHostname.value);
+  const checksOk =
+    backendHealthStatus.value === "ok" &&
+    wsCheckStatus.value === "ok" &&
+    d405CheckStatus.value === "ok" &&
+    recordingCheckStatus.value === "ok";
+  networkPrereqOk.value = lanOk && checksOk;
+}
+
+async function checkBackendHealth() {
+  backendHealthStatus.value = "checking";
+  backendHealthMessage.value = "检查 /health/...";
+  try {
+    const response = await get("/health/", { timeout: 2000 });
+    const status = String(response?.data?.status || "").toLowerCase();
+    const service = response?.data?.service || "backend";
+    if (status === "healthy" || status === "degraded") {
+      backendHealthStatus.value = "ok";
+      backendHealthMessage.value = service + " 在线(" + status + ")";
+
+      const hostIpFromBackend = String(response?.data?.host_ip || "").trim();
+      if (hostIpFromBackend) {
+        localHostIp.value = hostIpFromBackend;
+      }
+
+      if (!localHostname.value && typeof window !== "undefined" && window.location) {
+        localHostname.value = String(window.location.hostname || "").trim();
+      }
+
+      if (!localHostIp.value && localHostname.value) {
+        localHostIp.value = localHostname.value;
+      }
+
+      const preferredHost = localHostIp.value || localHostname.value;
+      if (preferredHost) {
+        hostPageAccessUrl.value = buildPageAccessUrlFromHost(preferredHost);
+      }
+    } else {
+      backendHealthStatus.value = "error";
+      backendHealthMessage.value = "健康检查返回异常状态";
+    }
+  } catch (error) {
+    backendHealthStatus.value = "error";
+    backendHealthMessage.value = "健康检查失败: " + (error?.message || error);
+  }
+}
+
+function checkWebSocketReady() {
+  wsCheckStatus.value = websocketManager.isConnected ? "ok" : "error";
+  wsCheckMessage.value = websocketManager.isConnected
+    ? "WebSocket 已连接"
+    : "WebSocket 未连接";
+}
+
+function updateHandTrackingFromBackend(state) {
+  const vr = state?.vr || {};
+  const handAvailable = Boolean(vr?.input_source_available?.hand);
+  if (typeof vr?.mode === "string" && vr.mode === "vr_hand_mode") {
+    questHandAvailable.value = handAvailable;
+  }
+  const backendStability = Number(state?.normalized_input?.tracking_stability);
+  if (Number.isFinite(backendStability)) {
+    questHandTrackingStability.value = clamp(backendStability, 0, 1);
+    questHandTrackingStable.value = backendStability >= 0.45;
+  }
+  const backendInputMode = String(state?.normalized_input?.hand_input_mode || "").trim();
+  if (backendInputMode === "dual_hand" || backendInputMode === "single_hand") {
+    questHandInputMode.value = backendInputMode;
+  }
+}
+
+function checkD405ObservationReady(state) {
+  const camera = state?.camera;
+  const cameraDevice = String(camera?.device || "");
+  const rgbName = String(camera?.rgb?.interface_name || "");
+  const depthName = String(camera?.depth?.interface_name || "");
+  const captureOk = Boolean(state?.camera_capture_ok ?? camera?.camera_capture_ok);
+  const frameAligned = Boolean(camera?.frame_aligned);
+  const recordable = Boolean(camera?.recordable_training_observation);
+
+  const isD405 = cameraDevice === "intel_realsense_d405";
+  const hasStreams = rgbName.length > 0 && depthName.length > 0;
+
+  if (isD405 && hasStreams && captureOk && frameAligned && recordable) {
+    d405CheckStatus.value = "ok";
+    d405CheckMessage.value = "D405 RGB-D 已就绪";
+    return;
+  }
+
+  d405CheckStatus.value = "error";
+  d405CheckMessage.value = "D405 观测链未就绪";
+}
+
+function checkRecordingBindingReady(state) {
+  const camera = state?.camera;
+  const intrinsicsVersion = String(camera?.camera_intrinsics_version || "");
+  const extrinsicsVersion = String(camera?.camera_extrinsics_version || "");
+  const recordable = Boolean(camera?.recordable_training_observation);
+
+  if (recordable && intrinsicsVersion.length > 0 && extrinsicsVersion.length > 0) {
+    recordingCheckStatus.value = "ok";
+    recordingCheckMessage.value = "RGB-D 录制配置已绑定";
+    return;
+  }
+
+  recordingCheckStatus.value = "error";
+  recordingCheckMessage.value = "录制配置未绑定(缺少标定版本或录制标记)";
+}
+
+function applyVrStateFromBackend(state) {
+  const vr = state?.vr;
+  if (!vr || typeof vr !== "object") return;
+  if (typeof vr.mode === "string") {
+    if (!shouldIgnoreBackendVrMode(vr.mode)) {
+      vrModeState.value = vr.mode;
+    }
+  }
+  if (typeof vr.selected_joint_group === "string" && vr.selected_joint_group.length > 0) {
+    vrSelectedJointGroup.value = vr.selected_joint_group;
+  }
+  if (typeof vr.control_owner === "string" && vr.control_owner.length > 0) {
+    vrControlOwner.value = vr.control_owner;
+  }
+  if (typeof vr.error_message === "string") {
+    vrErrorMessage.value = vr.error_message;
+  }
+  const selectedGroup = String(state?.selected_joint_group || "").trim();
+  if (selectedGroup) {
+    vrSelectedJointGroup.value = selectedGroup;
+  }
+  const inputSource = String(state?.input_source || "").trim();
+  if (inputSource === "quest3_controller" || inputSource === "quest3_hand") {
+    vrControlOwner.value = inputSource;
+  }
+  if (state?.raw_input && typeof state.raw_input === "object") {
+    questControllerRawInput.value = state.raw_input;
+    questHandRawInput.value = state.raw_input;
+  }
+  updateHandTrackingFromBackend(state);
+}
+
+function syncVrStateToBackend(payload) {
+  if (websocketManager.isConnected) {
+    websocketManager.sendVrStateUpdate(payload);
+    return;
+  }
+
+  post("/sim/vr/state/", payload).catch((error) => {
+    console.warn("VR状态同步失败:", error?.message || error);
+  });
+}
+
+function setVrModeLocally(mode) {
+  vrModeState.value = mode;
+  lastLocalVrModeSetAt.value = Date.now();
+}
+
+function shouldIgnoreBackendVrMode(mode) {
+  if (!mode) return false;
+  const now = Date.now();
+  const elapsed = now - Number(lastLocalVrModeSetAt.value || 0);
+  if (elapsed <= VR_MODE_LOCAL_LOCK_MS && mode !== vrModeState.value) {
+    return true;
+  }
+  return false;
+}
+
+async function runQuest3AccessChecks() {
+  await checkBackendHealth();
+
+  const latestWsOk = websocketManager.isConnected;
+
+  try {
+    const stateResponse = await get("/sim/state/", { timeout: 2000 });
+    const state = stateResponse?.data || null;
+    checkD405ObservationReady(state);
+    checkRecordingBindingReady(state);
+    applyVrStateFromBackend(state);
+  } catch (error) {
+    d405CheckStatus.value = "error";
+    d405CheckMessage.value = "读取状态失败: " + (error?.message || error);
+    recordingCheckStatus.value = "error";
+    recordingCheckMessage.value = "录制配置检查失败";
+  }
+
+  wsCheckStatus.value = latestWsOk ? "ok" : "error";
+  wsCheckMessage.value = latestWsOk ? "WebSocket 已连接" : "WebSocket 未连接";
+  updateNetworkPrereq();
+  if (!isQuest3Device.value && !vrErrorMessage.value) {
+    vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
+  } else if (isQuest3Device.value && !networkPrereqOk.value && !vrErrorMessage.value) {
+    vrErrorMessage.value = "局域网接入前置检查未通过";
+  } else if (networkPrereqOk.value && vrModeState.value !== "vr_error") {
+    vrErrorMessage.value = "";
+  }
+}
+
+function chooseVrInputMode(mode) {
+  if (mode !== "controller" && mode !== "hand") return;
+  if (!isVrModeEntered.value) {
+    vrErrorMessage.value = "请先点击“进入VR模式”，再选择手柄或手势模式。";
+    return;
+  }
+  selectedVrInputMode.value = mode;
+  if (!isQuest3Device.value) {
+    vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
+  } else if (!networkPrereqOk.value || !isWebSocketConnected.value) {
+    vrErrorMessage.value = "局域网或连接检查未完全通过，已尝试进入模式。";
+  } else {
+    vrErrorMessage.value = "";
+  }
+
+  if (mode === "controller") {
+    stopQuestHandLoop();
+    setVrModeLocally("vr_controller_mode");
+    vrControlOwner.value = "quest3_controller";
+    vrSelectedJointGroup.value = questControllerTeleop.getState().selected_joint_group;
+    syncVrStateToBackend({
+      mode: "vr_controller_mode",
+      source: "quest3_controller",
+      selected_joint_group: vrSelectedJointGroup.value,
+      controller_available: true,
+      recording_ready: recordingCheckStatus.value === "ok",
+      last_quest_input_ts: Date.now() / 1000,
+      error_message: "",
+    });
+    startQuestControllerLoop();
+    return;
+  }
+
+  stopQuestControllerLoop();
+  void startQuestHandLoop();
+  setVrModeLocally("vr_hand_mode");
+  vrControlOwner.value = "quest3_hand";
+  syncVrStateToBackend({
+    mode: "vr_hand_mode",
+    source: "quest3_hand",
+    selected_joint_group: vrSelectedJointGroup.value,
+    hand_tracking_available: true,
+    recording_ready: recordingCheckStatus.value === "ok",
+    last_quest_input_ts: Date.now() / 1000,
+    error_message: "",
+  });
+}
+
+async function enterVrMode() {
+  await runQuest3AccessChecks();
+  if (!isQuest3Device.value) {
+    vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
+    return;
+  }
+  if (!networkPrereqOk.value) {
+    vrErrorMessage.value = "前置检查未通过，请先确认网络、WebSocket、D405和录制配置状态。";
+    return;
+  }
+
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
+  setVrModeLocally("vr_ready");
+  vrControlOwner.value = "desktop_manual";
+  vrErrorMessage.value = "";
+  syncVrStateToBackend({
+    mode: "vr_ready",
+    source: "desktop_manual",
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    error_message: "",
+  });
+
+  const autoMode = selectedVrInputMode.value === "hand" ? "hand" : "controller";
+  chooseVrInputMode(autoMode);
+}
+
+function ensureVrModeActive() {
+  if (isQuestControllerModeActive() || isQuestHandModeActive()) {
+    return;
+  }
+  const autoMode = selectedVrInputMode.value === "hand" ? "hand" : "controller";
+  chooseVrInputMode(autoMode);
+}
+
+function exitVrMode() {
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
+  selectedVrInputMode.value = "";
+  setVrModeLocally("vr_disabled");
+  vrControlOwner.value = "desktop_manual";
+  vrErrorMessage.value = "";
+  syncVrStateToBackend({
+    mode: "vr_disabled",
+    source: "desktop_manual",
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    error_message: "",
+  });
+}
+
+function handleQuestDisconnected() {
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
+  if (vrControlOwner.value !== "quest3_controller" && vrControlOwner.value !== "quest3_hand") {
+    return;
+  }
+  selectedVrInputMode.value = "";
+  setVrModeLocally("vr_error");
+  vrErrorMessage.value = "Quest3连接中断，已停止发送新的控制命令。";
+  vrControlOwner.value = "desktop_manual";
+  syncVrStateToBackend({
+    mode: "vr_error",
+    source: "desktop_manual",
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    error_message: vrErrorMessage.value,
+  });
+}
+
+function markQuestHandRecordingAnomaly(tag = "hand_tracking_lost") {
+  syncVrStateToBackend({
+    mode: "vr_hand_mode",
+    source: "quest3_hand",
+    hand_tracking_available: false,
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: false,
+    last_quest_input_ts: Date.now() / 1000,
+    error_message: `recording_anomaly:${tag}`,
+  });
 }
 
 function getCurrentArmRadians() {
@@ -402,6 +1108,396 @@ function getCurrentGripperRadians() {
 
 function toGripperOpening(gripperRadians) {
   return clamp(gripperRadians / GRIPPER_MAX_RAD, 0, 1);
+}
+
+function isQuestControllerModeActive() {
+  return (
+    vrModeState.value === "vr_controller_mode" &&
+    (selectedVrInputMode.value === "controller" || vrControlOwner.value === "quest3_controller")
+  );
+}
+
+function isQuestHandModeActive() {
+  return (
+    vrModeState.value === "vr_hand_mode" &&
+    (selectedVrInputMode.value === "hand" || vrControlOwner.value === "quest3_hand")
+  );
+}
+
+function rebuildQuestControllerTeleop() {
+  questControllerTeleop = createQuestControllerTeleop({
+    deadzone: questControllerDeadzone.value,
+    sensitivity: questControllerSensitivity.value,
+  });
+}
+
+function rebuildQuestHandTeleop() {
+  questHandTeleop = createQuestHandTeleop({
+    sensitivity: questHandSensitivity.value,
+  });
+}
+
+function updateQuestGroupToast(groupLabel) {
+  questControllerGroupToast.value = `已切换到${groupLabel}`;
+  questControllerGroupToastAt.value = Date.now();
+}
+
+function cleanupQuestGroupToast(nowMs = Date.now()) {
+  if (!questControllerGroupToast.value) return;
+  if (nowMs - Number(questControllerGroupToastAt.value) > 1400) {
+    questControllerGroupToast.value = "";
+  }
+}
+
+function updateQuestHandGroupToast(groupLabel) {
+  questHandGroupToast.value = `已切换到${groupLabel}`;
+  questHandGroupToastAt.value = Date.now();
+}
+
+function cleanupQuestHandGroupToast(nowMs = Date.now()) {
+  if (!questHandGroupToast.value) return;
+  if (nowMs - Number(questHandGroupToastAt.value) > 1400) {
+    questHandGroupToast.value = "";
+  }
+}
+
+function buildQuestControlPayload(mapped) {
+  return {
+    target_positions: mapped.target_positions,
+    n_steps: 2,
+    control_mode: "position",
+    gripper_command: { mode: "open_close", value: mapped.gripper_opening },
+    source: "quest3_controller",
+    input_source: "quest3_controller",
+    selected_joint_group: mapped.selected_joint_group,
+    raw_input: mapped.raw_input || null,
+    normalized_input: mapped.normalized_input || null,
+  };
+}
+
+function buildQuestHandControlPayload(mapped) {
+  return {
+    target_positions: mapped.target_positions,
+    n_steps: 2,
+    control_mode: "position",
+    gripper_command: { mode: "open_close", value: mapped.gripper_opening },
+    source: "quest3_hand",
+    input_source: "quest3_hand",
+    selected_joint_group: mapped.selected_joint_group,
+    raw_input: mapped.raw_input || null,
+    normalized_input: {
+      ...(mapped.normalized_input || {}),
+      tracking_stability: mapped.tracking_stability,
+      hand_input_mode: mapped.hand_input_mode,
+    },
+  };
+}
+
+function applyQuestCommandLocally(mapped) {
+  const armRadians = mapped.target_positions.slice(0, ARM_JOINT_COUNT);
+  const gripperOpening = clamp(mapped.gripper_opening, 0, 1);
+  const gripperRad = gripperOpening * GRIPPER_MAX_RAD;
+  rememberPendingManualTarget(armRadians, gripperOpening);
+
+  isApplyingBackendState.value = true;
+  try {
+    BACKEND_ARM_JOINT_NAMES.forEach((jointName, index) => {
+      const joint = robot?.joints?.[jointName];
+      const value = Number(armRadians[index]);
+      if (!joint || !Number.isFinite(value)) return;
+      joint.setJointValue(value);
+    });
+    setGripperJointValue(gripperRad, { skipPoseUpdate: true });
+    syncJointDisplayFromSceneIfNeeded(true);
+    syncEndEffectorPoseIfNeeded(true);
+  } finally {
+    isApplyingBackendState.value = false;
+  }
+}
+
+async function sendQuestControlByHttp(payload) {
+  if (questControllerFallbackInFlight.value) return;
+  questControllerFallbackInFlight.value = true;
+  try {
+    const resp = await post("/sim/step/", payload);
+    if (resp?.data?.state) {
+      applyBackendStateToScene(resp.data.state);
+      clearPendingManualTarget();
+    }
+  } catch (error) {
+    clearPendingManualTarget();
+    questControllerStatusText.value = "手柄控制HTTP发送失败";
+    console.warn("Quest3手柄HTTP控制发送失败:", error?.message || error);
+  } finally {
+    questControllerFallbackInFlight.value = false;
+  }
+}
+
+function sendQuestControlToBackend(mapped) {
+  if (!mapped?.has_command) return;
+  const payload = buildQuestControlPayload(mapped);
+  applyQuestCommandLocally(mapped);
+
+  if (websocketManager.isConnected) {
+    const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
+    if (sent) return;
+  }
+
+  sendQuestControlByHttp(payload);
+}
+
+function applyQuestSafetyHoldState() {
+  markQuestHandRecordingAnomaly("tracking_unstable");
+  syncVrStateToBackend({
+    mode: "vr_hand_mode",
+    source: "quest3_hand",
+    hand_tracking_available: false,
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    last_quest_input_ts: Date.now() / 1000,
+    error_message: "手势追踪不稳定，已进入安全保持状态",
+  });
+}
+
+async function sendQuestHandControlByHttp(payload) {
+  if (questHandFallbackInFlight.value) return;
+  questHandFallbackInFlight.value = true;
+  try {
+    const resp = await post("/sim/step/", payload);
+    if (resp?.data?.state) {
+      applyBackendStateToScene(resp.data.state);
+      clearPendingManualTarget();
+    }
+  } catch (error) {
+    clearPendingManualTarget();
+    questHandStatusText.value = "手势控制HTTP发送失败";
+    console.warn("Quest3手势HTTP控制发送失败:", error?.message || error);
+  } finally {
+    questHandFallbackInFlight.value = false;
+  }
+}
+
+function sendQuestHandControlToBackend(mapped) {
+  if (!mapped?.has_command) return;
+  const payload = buildQuestHandControlPayload(mapped);
+  applyQuestCommandLocally(mapped);
+
+  if (websocketManager.isConnected) {
+    const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
+    if (sent) return;
+  }
+  sendQuestHandControlByHttp(payload);
+}
+
+function runQuestControllerTick() {
+  cleanupQuestGroupToast();
+  if (!isQuestControllerModeActive()) {
+    questControllerAvailable.value = false;
+    questControllerStatusText.value = "未激活";
+    return;
+  }
+
+  const nowMs = Date.now();
+  const prevTickAt = Number(lastQuestControllerTickAt.value) || nowMs;
+  const dtSec = clamp((nowMs - prevTickAt) / 1000, 1 / 120, 1 / 10);
+  lastQuestControllerTickAt.value = nowMs;
+
+  const snapshot = readQuestControllerSnapshot();
+  questControllerRawInput.value = snapshot?.raw || null;
+
+  if (!snapshot?.available) {
+    questControllerAvailable.value = false;
+    questControllerStatusText.value = "未检测到手柄";
+    syncVrStateToBackend({
+      mode: "vr_controller_mode",
+      source: "quest3_controller",
+      controller_available: false,
+      selected_joint_group: vrSelectedJointGroup.value,
+      recording_ready: recordingCheckStatus.value === "ok",
+      last_quest_input_ts: nowMs / 1000,
+      error_message: "Quest3手柄未就绪",
+    });
+    return;
+  }
+
+  questControllerAvailable.value = true;
+  questControllerStatusText.value = "采样中";
+
+  const mapped = questControllerTeleop.applySnapshot(
+    snapshot,
+    getCurrentArmRadians(),
+    toGripperOpening(getCurrentGripperRadians()),
+    dtSec
+  );
+
+  if (mapped?.selected_joint_group) {
+    if (vrSelectedJointGroup.value !== mapped.selected_joint_group) {
+      updateQuestGroupToast(mapped.selected_joint_group_label || mapped.selected_joint_group);
+    }
+    vrSelectedJointGroup.value = mapped.selected_joint_group;
+  }
+
+  syncVrStateToBackend({
+    mode: "vr_controller_mode",
+    source: "quest3_controller",
+    controller_available: Boolean(snapshot.available),
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    last_quest_input_ts: nowMs / 1000,
+    error_message: "",
+  });
+
+  if (mapped?.has_command) {
+    sendQuestControlToBackend(mapped);
+  }
+}
+
+function markQuestHandSafeHold(reasonText, anomalyTag = "tracking_unstable") {
+  questHandAvailable.value = false;
+  questHandTrackingStable.value = false;
+  questHandStatusText.value = reasonText;
+  markQuestHandRecordingAnomaly(anomalyTag);
+  applyQuestSafetyHoldState();
+}
+
+function runQuestHandTick() {
+  cleanupQuestHandGroupToast();
+  if (!isQuestHandModeActive()) {
+    questHandAvailable.value = false;
+    questHandStatusText.value = "未激活";
+    return;
+  }
+
+  const status = getQuestHandInputStatus();
+  const nowMs = Date.now();
+  const prevTickAt = Number(lastQuestHandTickAt.value) || nowMs;
+  const dtSec = clamp((nowMs - prevTickAt) / 1000, 1 / 120, 1 / 10);
+  lastQuestHandTickAt.value = nowMs;
+
+  if (!status.ready) {
+    markQuestHandSafeHold("手势会话未就绪", "session_not_ready");
+    return;
+  }
+
+  const snapshot = readQuestHandSnapshot();
+  questHandRawInput.value = snapshot?.raw || null;
+  questHandTrackingStability.value = clamp(snapshot?.tracking_stability || 0, 0, 1);
+
+  if (!snapshot?.available) {
+    markQuestHandSafeHold("未检测到稳定手势", "hand_not_tracked");
+    return;
+  }
+
+  questHandAvailable.value = true;
+  questHandStatusText.value = "采样中";
+  const mapped = questHandTeleop.applySnapshot(
+    snapshot,
+    getCurrentArmRadians(),
+    toGripperOpening(getCurrentGripperRadians()),
+    dtSec
+  );
+
+  questHandTrackingStable.value = Boolean(mapped?.tracking_stable);
+  questHandInputMode.value = mapped?.hand_input_mode || "dual_hand";
+  questHandStatusText.value = buildHandTrackingStatusText();
+
+  if (!mapped?.tracking_stable) {
+    markQuestHandSafeHold("追踪不稳定(已保持)", "tracking_unstable");
+    return;
+  }
+
+  if (mapped?.selected_joint_group) {
+    if (vrSelectedJointGroup.value !== mapped.selected_joint_group) {
+      updateQuestHandGroupToast(mapped.selected_joint_group_label || mapped.selected_joint_group);
+    }
+    vrSelectedJointGroup.value = mapped.selected_joint_group;
+  }
+
+  syncVrStateToBackend({
+    mode: "vr_hand_mode",
+    source: "quest3_hand",
+    hand_tracking_available: true,
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    last_quest_input_ts: nowMs / 1000,
+    error_message: "",
+  });
+
+  if (mapped?.has_command) {
+    sendQuestHandControlToBackend(mapped);
+  }
+}
+
+function handleQuestGamepadConnectionEvent(event) {
+  const gamepadId = String(event?.gamepad?.id || "").toLowerCase();
+  const isQuestPad = /(quest|oculus|meta|touch|xr-standard)/i.test(gamepadId);
+  if (!isQuestControllerModeActive() || !isQuestPad) return;
+  if (event?.type === "gamepadconnected") {
+    questControllerStatusText.value = "手柄已连接";
+  } else if (event?.type === "gamepaddisconnected") {
+    questControllerStatusText.value = "手柄已断开";
+    questControllerAvailable.value = false;
+  }
+}
+
+function startQuestControllerLoop() {
+  stopQuestControllerLoop();
+  rebuildQuestControllerTeleop();
+  questControllerAvailable.value = false;
+  questControllerStatusText.value = "启动中";
+  lastQuestControllerTickAt.value = Date.now();
+  questControllerLoopTimer.value = setInterval(
+    runQuestControllerTick,
+    QUEST_CONTROLLER_SEND_INTERVAL_MS
+  );
+}
+
+async function startQuestHandLoop() {
+  stopQuestHandLoop();
+  rebuildQuestHandTeleop();
+  await startQuestHandInput();
+  questHandAvailable.value = false;
+  questHandStatusText.value = "启动中";
+  lastQuestHandTickAt.value = Date.now();
+  questHandLoopTimer.value = setInterval(runQuestHandTick, QUEST_HAND_SEND_INTERVAL_MS);
+}
+
+function stopQuestControllerLoop() {
+  if (questControllerLoopTimer.value) {
+    clearInterval(questControllerLoopTimer.value);
+    questControllerLoopTimer.value = null;
+  }
+  questControllerAvailable.value = false;
+  questControllerStatusText.value = "未激活";
+  questControllerRawInput.value = null;
+  questControllerGroupToast.value = "";
+  questControllerGroupToastAt.value = 0;
+  lastQuestControllerTickAt.value = 0;
+}
+
+function stopQuestHandLoop() {
+  if (questHandLoopTimer.value) {
+    clearInterval(questHandLoopTimer.value);
+    questHandLoopTimer.value = null;
+  }
+  stopQuestHandInput();
+  questHandTeleop.reset();
+  questHandAvailable.value = false;
+  questHandStatusText.value = "未激活";
+  questHandTrackingStable.value = false;
+  questHandTrackingStability.value = 0;
+  questHandInputMode.value = "dual_hand";
+  questHandRawInput.value = null;
+  questHandGroupToast.value = "";
+  questHandGroupToastAt.value = 0;
+  lastQuestHandTickAt.value = 0;
+}
+
+function buildHandTrackingStatusText() {
+  if (!questHandAvailable.value) return "未检测到稳定手势";
+  if (!questHandTrackingStable.value) return "追踪不稳定(已保持)";
+  const modeText = questHandInputMode.value === "dual_hand" ? "双手" : "单手";
+  return `采样中(${modeText})`;
 }
 
 function buildGripperCommand(options = {}) {
@@ -444,6 +1540,14 @@ function rememberPendingManualTarget(armRadians, gripperOpening) {
     arm: armRadians.slice(0, ARM_JOINT_COUNT).map((v) => Number(v)),
     gripper: opening * GRIPPER_MAX_RAD,
   };
+
+  // Keep scene-side smoothing target aligned with the latest manual command
+  // so UI interaction does not get pulled back by an older backend snapshot.
+  backendRenderTarget.value = {
+    timestamp: pendingManualTarget.value.sentAt,
+    arm: [...pendingManualTarget.value.arm],
+    gripper: pendingManualTarget.value.gripper,
+  };
 }
 
 function clearPendingManualTarget() {
@@ -456,9 +1560,23 @@ function isBackendStateAlignedWithPendingTarget(state) {
     return true;
   }
 
+  const incomingJointNames = Array.isArray(state?.joint_names)
+    ? state.joint_names.map((name) => String(name))
+    : [];
+
   let maxArmError = 0;
   for (let i = 0; i < ARM_JOINT_COUNT; i++) {
-    const backendValue = Number(state.qpos[i]);
+    let backendValue = Number(state.qpos[i]);
+    if (incomingJointNames.length > 0) {
+      const expectedName = BACKEND_ARM_JOINT_NAMES[i];
+      const incomingIndex = incomingJointNames.indexOf(expectedName);
+      if (incomingIndex >= 0) {
+        const mappedValue = Number(state.qpos[incomingIndex]);
+        if (Number.isFinite(mappedValue)) {
+          backendValue = mappedValue;
+        }
+      }
+    }
     if (!Number.isFinite(backendValue)) continue;
     const error = Math.abs(backendValue - pending.arm[i]);
     if (error > maxArmError) maxArmError = error;
@@ -475,7 +1593,11 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
   const pending = pendingManualTarget.value;
   if (!pending) return true;
 
-  if (state?.source && state.source !== "manual") {
+  if (
+    typeof state?.source === "string" &&
+    state.source.length > 0 &&
+    !LOCAL_MANUAL_SOURCES.has(state.source)
+  ) {
     clearPendingManualTarget();
     return true;
   }
@@ -587,6 +1709,142 @@ function backendQuaternionToFrontend(quaternionWXYZ) {
   return BACKEND_TO_FRONTEND_ROT.clone().multiply(qBackend).normalize();
 }
 
+function buildBackendRenderTarget(state) {
+  if (!state || typeof state !== "object") return null;
+  if (!Array.isArray(state.qpos) || state.qpos.length < ARM_JOINT_COUNT) return null;
+
+  const incomingJointNames = Array.isArray(state.joint_names)
+    ? state.joint_names.map((name) => String(name))
+    : [];
+
+  const armRadians = BACKEND_ARM_JOINT_NAMES.map((jointName, index) => {
+    if (incomingJointNames.length > 0) {
+      const incomingIndex = incomingJointNames.indexOf(jointName);
+      if (incomingIndex >= 0) {
+        const mappedValue = Number(state.qpos[incomingIndex]);
+        if (Number.isFinite(mappedValue)) return mappedValue;
+      }
+    }
+    const fallback = Number(state.qpos[index]);
+    return Number.isFinite(fallback) ? fallback : 0;
+  });
+
+  const gripperRadians = getGripperRadiansFromBackendState(state);
+  const clampedGripper =
+    gripperRadians === null
+      ? clamp(getCurrentGripperRadians(), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD)
+      : clamp(Number(gripperRadians), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+
+  return {
+    timestamp: Date.now(),
+    arm: armRadians,
+    gripper: clampedGripper,
+  };
+}
+
+function getCurrentSceneArmRadians() {
+  if (!robot || !robot.joints) {
+    return getCurrentArmRadians();
+  }
+
+  return BACKEND_ARM_JOINT_NAMES.map((jointName, index) => {
+    const joint = robot.joints[jointName];
+    const value = Number(joint?.jointValue?.[0]);
+    if (Number.isFinite(value)) return value;
+    return toRadians(jointAngles.value?.[index] ?? DEFAULT_ANGLES_DEG[index]);
+  });
+}
+
+function shouldSyncUiSnapshot(lastAtRef, intervalMs, force = false) {
+  if (force) {
+    lastAtRef.value = Date.now();
+    return true;
+  }
+  const now = Date.now();
+  const lastAt = Number(lastAtRef.value || 0);
+  if (now - lastAt < intervalMs) {
+    return false;
+  }
+  lastAtRef.value = now;
+  return true;
+}
+
+function syncJointDisplayFromSceneIfNeeded(force = false) {
+  if (!shouldSyncUiSnapshot(uiLastJointSyncAt, UI_SYNC_INTERVAL_MS, force)) return;
+  const armRadians = getCurrentSceneArmRadians();
+  const gripperRadians = clamp(getCurrentGripperRadians(), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+  const armAnglesDeg = armRadians.map((rad) => toDegrees(rad));
+  const gripperDeg = clamp(toDegrees(gripperRadians), GRIPPER_MIN_DEG, GRIPPER_MAX_DEG);
+  jointAngles.value = [...armAnglesDeg, gripperDeg];
+  gripperAngleDeg.value = gripperDeg;
+}
+
+function syncEndEffectorPoseIfNeeded(force = false) {
+  if (!shouldSyncUiSnapshot(uiLastPoseSyncAt, UI_POSE_SYNC_INTERVAL_MS, force)) return;
+  calculateEndEffectorPosition();
+}
+
+function getSceneJointInterpolationAlpha() {
+  if (!backendPoseSmoothingEnabled.value) return 1.0;
+  const alpha = Number(backendPoseSmoothingAlpha.value);
+  if (!Number.isFinite(alpha)) return 1.0;
+  return clamp(alpha, 0.05, 1.0);
+}
+
+function interpolateArmPose(currentArm, targetArm, alpha) {
+  const out = [];
+  const count = Math.min(currentArm.length, targetArm.length, ARM_JOINT_COUNT);
+  for (let i = 0; i < count; i++) {
+    const current = Number(currentArm[i]);
+    const target = Number(targetArm[i]);
+    if (!Number.isFinite(current) || !Number.isFinite(target)) {
+      out.push(Number.isFinite(target) ? target : 0);
+      continue;
+    }
+    out.push(current + (target - current) * alpha);
+  }
+  return out;
+}
+
+function interpolateScalar(current, target, alpha) {
+  const c = Number(current);
+  const t = Number(target);
+  if (!Number.isFinite(c)) return Number.isFinite(t) ? t : 0;
+  if (!Number.isFinite(t)) return c;
+  return c + (t - c) * alpha;
+}
+
+function applySmoothedBackendPose() {
+  const target = backendRenderTarget.value;
+  if (!target || !robot || !robot.joints) return;
+
+  const alpha = getSceneJointInterpolationAlpha();
+  const currentArm = getCurrentSceneArmRadians();
+  const nextArm = interpolateArmPose(currentArm, target.arm, alpha);
+  const currentGrip = getCurrentGripperRadians();
+  const nextGrip = clamp(
+    interpolateScalar(currentGrip, target.gripper, alpha),
+    GRIPPER_MIN_RAD,
+    GRIPPER_MAX_RAD
+  );
+
+  isApplyingBackendState.value = true;
+  try {
+    BACKEND_ARM_JOINT_NAMES.forEach((jointName, index) => {
+      const joint = robot.joints[jointName];
+      const value = Number(nextArm[index]);
+      if (!joint || !Number.isFinite(value)) return;
+      joint.setJointValue(value);
+    });
+
+    setGripperJointValue(nextGrip, { skipPoseUpdate: true });
+    syncJointDisplayFromSceneIfNeeded();
+    syncEndEffectorPoseIfNeeded();
+  } finally {
+    isApplyingBackendState.value = false;
+  }
+}
+
 function applySceneObjectPoseFromBackend(objectId, objectState) {
   const model = sceneObjectModels.get(objectId);
   if (!model) return;
@@ -610,29 +1868,22 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
 function applyBackendStateToScene(state) {
   if (!state || typeof state !== "object") return;
 
+  const renderTarget = buildBackendRenderTarget(state);
+  if (renderTarget) {
+    backendRenderTarget.value = renderTarget;
+    applySmoothedBackendPose();
+  }
+
   isApplyingBackendState.value = true;
   try {
-    if (Array.isArray(state.qpos) && state.qpos.length >= ARM_JOINT_COUNT) {
-      const armAnglesDeg = state.qpos
-        .slice(0, ARM_JOINT_COUNT)
-        .map((rad) => toDegrees(rad));
-      const gripperRadians = getGripperRadiansFromBackendState(state);
-      const gripperDeg =
-        gripperRadians !== null
-          ? clamp(toDegrees(gripperRadians), GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)
-          : getGripperDegFromQpos(state.qpos);
-      const fullAngles = [...armAnglesDeg, gripperDeg];
-
-      jointAngles.value = fullAngles;
-      gripperAngleDeg.value = gripperDeg;
-      setRobotAngles(fullAngles);
-      calculateEndEffectorPosition();
-    }
-
     if (state?.objects && typeof state.objects === "object") {
       Object.entries(state.objects).forEach(([objectId, objectState]) => {
         applySceneObjectPoseFromBackend(objectId, objectState);
       });
+    }
+    if (renderTarget) {
+      syncJointDisplayFromSceneIfNeeded(true);
+      syncEndEffectorPoseIfNeeded(true);
     }
   } finally {
     isApplyingBackendState.value = false;
@@ -641,15 +1892,20 @@ function applyBackendStateToScene(state) {
 
 function applyAnglesToRobot(anglesDeg, options = {}) {
   const skipBackendSync = options.skipBackendSync !== false;
+  const skipPoseUpdate = options.skipPoseUpdate === true;
   const normalizedAngles = normalizeInputAngles(anglesDeg);
   if (!normalizedAngles) return null;
 
   const radians = normalizedAngles.map((value) => toRadians(value));
 
   ARM_JOINT_NAMES.forEach((jointName, index) => {
-    sliderInput(radians[index], jointName, { skipBackendSync });
+    sliderInput(radians[index], jointName, { skipBackendSync, skipPoseUpdate });
   });
-  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint", { skipBackendSync });
+  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint", { skipBackendSync, skipPoseUpdate });
+
+  if (skipPoseUpdate) {
+    syncEndEffectorPoseIfNeeded(true);
+  }
 
   return {
     normalizedAngles,
@@ -675,12 +1931,12 @@ const fetchData = async () => {
   if (websocketManager.isConnected) return;
 
   const trySimState = async () => {
-    const resp = await axios.get("http://localhost:8000/sim/state/", { timeout: 3000 });
+    const resp = await get("/sim/state/");
     return resp.data;
   };
 
   const tryLegacy = async () => {
-    const resp = await axios.get("http://localhost:8000/data/", { timeout: 3000 });
+    const resp = await get("/data/");
     return resp.data;
   };
 
@@ -706,12 +1962,10 @@ const fetchData = async () => {
       }
       const normalizedAngles = normalizeInputAngles(vals.map((v) => Number(v)));
       if (normalizedAngles) {
-        jointAngles.value = normalizedAngles;
-        gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
         setRobotAngles(normalizedAngles);
       }
       updateTaskProgress();
-      calculateEndEffectorPosition();
+      syncEndEffectorPoseIfNeeded(true);
       fetchFailures.value = 0;
       return;
     }
@@ -735,7 +1989,7 @@ const fetchData = async () => {
 };
 
 const sendArmCommandToBackend = async (armRadians, options = {}) => {
-  const n_steps = options.n_steps || 50;
+  const n_steps = options.n_steps || 30;
   const control_mode = options.control_mode || "position";
   const gripperCommand = buildGripperCommand(options);
   rememberPendingManualTarget(armRadians, gripperCommand.value);
@@ -746,27 +2000,11 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
       n_steps,
       control_mode,
       gripper_command: gripperCommand,
-      source: "manual",
+      source: "desktop_manual",
     });
 
     if (sent) {
       sendCommandPending.value = true;
-
-      // 额外发送一次短时“保持”命令，避免后端控制目标被中间状态覆盖
-      setTimeout(() => {
-        try {
-          if (websocketManager.isConnected) {
-            websocketManager.sendControlCommand(armRadians, {
-              n_steps: 1,
-              control_mode: "position",
-              gripper_command: gripperCommand,
-              source: "manual",
-            });
-          }
-        } catch (err) {
-          console.warn("发送保持命令失败:", err);
-        }
-      }, 120);
 
       // 安全超时：防止 controlResult 丢失导致前端永久 pending
       setTimeout(() => {
@@ -786,19 +2024,19 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
   // WS 不可用时直接 HTTP 下发，避免前端先动后被旧状态拉回
   sendCommandPending.value = true;
   try {
-    const resp = await axios.post("http://localhost:8000/sim/step/", {
+    const resp = await post("/sim/step/", {
       target_positions: armRadians,
       n_steps,
       control_mode,
       gripper_command: gripperCommand,
-      source: "manual",
+      source: "desktop_manual",
     });
 
     const status = String(resp?.data?.status || "").toLowerCase();
     if (status !== "success") {
       clearPendingManualTarget();
       try {
-        const latest = await axios.get("http://localhost:8000/sim/state/", { timeout: 1500 });
+        const latest = await get("/sim/state/", { timeout: 1500 });
         if (latest?.data) {
           applyBackendStateToScene(latest.data);
         }
@@ -844,8 +2082,8 @@ const testSendData = async () => {
 
     const { normalizedAngles, radians } = applyResult;
     const armRadians = radians.slice(0, ARM_JOINT_COUNT);
-    gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
-    jointAngles.value = normalizedAngles;
+    syncJointDisplayFromSceneIfNeeded(true);
+    syncEndEffectorPoseIfNeeded(true);
 
     if (!websocketManager.isConnected) {
       receivedText.value = "已在本地设置角度（未接入仿真）";
@@ -871,7 +2109,7 @@ const testSendData = async () => {
 // 优化开始获取数据的函数
 const startFetchingData = () => {
   if (!websocketManager.isConnected) {
-    websocketManager.connect();
+    websocketManager.connect(runtimeConfig.simWsUrl);
   } else {
     websocketManager.requestState();
   }
@@ -884,10 +2122,14 @@ const startFetchingData = () => {
   console.log("已连接机器人，开始同步位置");
   // 重置任务进度
   taskProgress.value = 0;
+  checkWebSocketReady();
+  updateNetworkPrereq();
 };
 
 // 优化停止连接的函数
 const stopFetchingData = () => {
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
   isFetching.value = false;
   sendCommandPending.value = false;
   clearPendingManualTarget();
@@ -899,6 +2141,13 @@ const stopFetchingData = () => {
   }
   console.log("已断开机器人连接");
   taskProgress.value = 100;
+
+  if (vrControlOwner.value === "quest3_controller" || vrControlOwner.value === "quest3_hand") {
+    handleQuestDisconnected();
+  } else {
+    checkWebSocketReady();
+    updateNetworkPrereq();
+  }
 };
 
 // 格式化角度数组显示
@@ -944,8 +2193,8 @@ async function inputRobotAngles() {
 
   const { radians } = applyResult;
   const armRadians = radians.slice(0, ARM_JOINT_COUNT);
-  gripperAngleDeg.value = normalizedAngles[ARM_JOINT_COUNT];
-  jointAngles.value = normalizedAngles;
+  syncJointDisplayFromSceneIfNeeded(true);
+  syncEndEffectorPoseIfNeeded(true);
 
   if (!websocketManager.isConnected) {
     receivedText.value = "已在本地设置角度（未接入仿真）";
@@ -1064,8 +2313,8 @@ function togglePanel(panel) {
     case "progress":
       showTaskProgress.value = !showTaskProgress.value;
       break;
-    case "sync":
-      showStateSyncStatus.value = !showStateSyncStatus.value;
+    case "vr-control":
+      showVrControlPanel.value = !showVrControlPanel.value;
       break;
   }
 }
@@ -1078,11 +2327,9 @@ function resolveJointName(name) {
   return null;
 }
 
-function setGripperJointValue(value) {
+function setGripperJointValue(value, options = {}) {
+  const skipPoseUpdate = options.skipPoseUpdate === true;
   const clampedValue = clamp(value, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
-  gripperAngleDeg.value = toDegrees(clampedValue);
-  ensureJointAnglesBuffer();
-  jointAngles.value[ARM_JOINT_COUNT] = gripperAngleDeg.value;
 
   if (!robot || !robot.joints) return;
 
@@ -1104,6 +2351,11 @@ function setGripperJointValue(value) {
     joint.setJointValue(jointValue);
     hasApplied = true;
   });
+
+  if (!skipPoseUpdate) {
+    syncJointDisplayFromSceneIfNeeded();
+    syncEndEffectorPoseIfNeeded();
+  }
 
   if (!hasApplied && !warnedMissingJoints.has("gripper_joint")) {
     warnedMissingJoints.add("gripper_joint");
@@ -1136,10 +2388,10 @@ function sendRealtimeSliderControl(options = {}) {
 
   const sent = websocketManager.isConnected
     ? websocketManager.sendControlCommand(armRadians, {
-        n_steps: 20,
+        n_steps: 2,
         control_mode: "position",
         gripper_command: gripperCommand,
-        source: "manual",
+        source: "desktop_manual",
       })
     : false;
 
@@ -1150,14 +2402,13 @@ function sendRealtimeSliderControl(options = {}) {
       return;
     }
     realtimeSliderFallbackInFlight.value = true;
-    axios
-      .post("http://localhost:8000/sim/step/", {
-        target_positions: armRadians,
-        n_steps: 20,
-        control_mode: "position",
-        gripper_command: gripperCommand,
-        source: "manual",
-      })
+    post("/sim/step/", {
+      target_positions: armRadians,
+      n_steps: 2,
+      control_mode: "position",
+      gripper_command: gripperCommand,
+      source: "desktop_manual",
+    })
       .then((resp) => {
         if (resp?.data?.state) {
           applyBackendStateToScene(resp.data.state);
@@ -1189,18 +2440,18 @@ function flushRealtimeSliderSync() {
     clearTimeout(sliderSyncTimer.value);
     sliderSyncTimer.value = null;
   }
-  sendRealtimeSliderControl({ force: true });
+  sendRealtimeSliderControl();
 }
 
 // 修改sliderInput函数，确保每次角度变化时更新位置信息
 function sliderInput(value, name, options = {}) {
   const skipBackendSync = options.skipBackendSync === true;
+  const skipPoseUpdate = options.skipPoseUpdate === true;
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return;
 
   if (name === "gripper_joint") {
-    setGripperJointValue(numericValue);
-    calculateEndEffectorPosition();
+    setGripperJointValue(numericValue, { skipPoseUpdate });
     if (!skipBackendSync) {
       rememberPendingManualTarget(
         getCurrentArmRadians(),
@@ -1221,16 +2472,11 @@ function sliderInput(value, name, options = {}) {
   }
 
   ensureJointAnglesBuffer();
-  const armJointIndex = ARM_JOINT_NAMES.findIndex(
-    (legacyName) => legacyName === name || legacyName === resolvedName || jointNameMap[legacyName] === resolvedName
-  );
-  if (armJointIndex >= 0) {
-    jointAngles.value[armJointIndex] = toDegrees(numericValue);
-  }
-
   robot.joints[resolvedName].setJointValue(numericValue);
-  // 在每次关节变化后立即更新位置信息
-  calculateEndEffectorPosition();
+  if (!skipPoseUpdate) {
+    syncJointDisplayFromSceneIfNeeded();
+    syncEndEffectorPoseIfNeeded();
+  }
 
   if (!skipBackendSync) {
     rememberPendingManualTarget(
@@ -1248,15 +2494,17 @@ function sliderCommit(value, name) {
 
 // 新增设置机器臂六个角度的函数
 function setRobotAngles(angles) {
-  const applyResult = applyAnglesToRobot(angles, { skipBackendSync: true });
+  const applyResult = applyAnglesToRobot(angles, {
+    skipBackendSync: true,
+    skipPoseUpdate: true,
+  });
   if (!applyResult) {
     console.error("必须提供6或7个角度值");
-    calculateEndEffectorPosition();
+    syncEndEffectorPoseIfNeeded(true);
     return;
   }
-
-  jointAngles.value = [...applyResult.normalizedAngles];
-  gripperAngleDeg.value = applyResult.normalizedAngles[ARM_JOINT_COUNT];
+  syncJointDisplayFromSceneIfNeeded(true);
+  syncEndEffectorPoseIfNeeded(true);
 }
 
 // 修改为视角切换函数
@@ -1313,7 +2561,7 @@ function initBase() {
 
   // 设置渲染器尺寸
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setPixelRatio(getRenderPixelRatio());
 
   // 设置渲染器颜色
   renderer.setClearColor("#DCDCDC");
@@ -1348,11 +2596,10 @@ function initOrbitControls() {
 
 // render渲染器
 function render() {
+  // Keep approaching latest backend state between WS ticks for visually smooth motion.
+  applySmoothedBackendPose();
   renderer.render(scene, camera);
   controls.update();
-
-  // 每帧都更新位置信息
-  calculateEndEffectorPosition();
 
   requestAnimationFrame(render);
 }
@@ -1364,7 +2611,7 @@ function addHelpLine() {
   scene.add(gridHelper);
 }
 
-function loadUrdfModel(modelPath, onLoad) {
+function loadUrdfModel(modelPath, onLoad, onError) {
   const loader = new URDFLoader();
   loader.load(
     modelPath,
@@ -1375,8 +2622,17 @@ function loadUrdfModel(modelPath, onLoad) {
     undefined,
     (error) => {
       console.error("URDF加载失败:", modelPath, error);
+      if (typeof onError === "function") {
+        onError(error);
+      }
     }
   );
+}
+
+function loadUrdfModelAsync(modelPath) {
+  return new Promise((resolve, reject) => {
+    loadUrdfModel(modelPath, resolve, reject);
+  });
 }
 
 function focusCameraOnObject(object) {
@@ -1405,15 +2661,18 @@ initOrbitControls();
 addHelpLine();
 
 function initSceneObjects() {
-  SCENE_OBJECT_CONFIGS.forEach((config) => {
-    loadUrdfModel(config.assetPath, (result) => {
+  SCENE_OBJECT_CONFIGS.forEach(async (config) => {
+    try {
+      const result = await loadUrdfModelAsync(config.assetPath);
       const { position, rotation, scale } = config.transform;
       result.scale.set(scale[0], scale[1], scale[2]);
       result.position.set(position[0], position[1], position[2]);
       result.rotation.set(rotation[0], rotation[1], rotation[2]);
       scene.add(result);
       sceneObjectModels.set(config.id, result);
-    });
+    } catch (error) {
+      console.error("场景对象加载失败:", config.assetPath, error);
+    }
   });
 }
 
@@ -1433,39 +2692,46 @@ function attachWristCameraMount() {
     wristCameraMountModel.parent.remove(wristCameraMountModel);
   }
 
-  loadUrdfModel(WRIST_CAMERA_MOUNT_CONFIG.assetPath, (mountAssembly) => {
-    const { position, rotation, scale } = WRIST_CAMERA_MOUNT_CONFIG.transform;
-    mountAssembly.scale.set(scale[0], scale[1], scale[2]);
-    mountAssembly.position.set(position[0], position[1], position[2]);
-    mountAssembly.rotation.set(rotation[0], rotation[1], rotation[2]);
-    parentLink.add(mountAssembly);
-    wristCameraMountModel = mountAssembly;
-  });
+  loadUrdfModelAsync(WRIST_CAMERA_MOUNT_CONFIG.assetPath)
+    .then((mountAssembly) => {
+      const { position, rotation, scale } = WRIST_CAMERA_MOUNT_CONFIG.transform;
+      mountAssembly.scale.set(scale[0], scale[1], scale[2]);
+      mountAssembly.position.set(position[0], position[1], position[2]);
+      mountAssembly.rotation.set(rotation[0], rotation[1], rotation[2]);
+      parentLink.add(mountAssembly);
+      wristCameraMountModel = mountAssembly;
+    })
+    .catch((error) => {
+      console.error("腕部相机支架加载失败:", error);
+    });
 }
 
 function initRobot() {
-  loadUrdfModel(urdf, (result) => {
-    robot = result;
-    console.log("机器人关节:", Object.keys(robot.joints || {}));
+  loadUrdfModelAsync(urdf)
+    .then((result) => {
+      robot = result;
+      console.log("机器人关节:", Object.keys(robot.joints || {}));
 
-    //设置ROBOT坐标z朝上
-    robot.rotation.x = -Math.PI / 2;
-    robot.rotation.z = 0;
-    robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
-    scene.add(robot);
-    attachWristCameraMount();
-    focusCameraOnObject(robot);
-    sliderInput(-Math.PI / 2, "link2_joint");
-    sliderInput(Math.PI / 2, "link3_joint");
-    sliderInput(-Math.PI / 2, "link4_joint");
-    sliderInput(-Math.PI / 2, "link5_joint");
-    sliderInput(0, "gripper_joint");
-    jointAngles.value = [...DEFAULT_ANGLES_DEG];
-    gripperAngleDeg.value = DEFAULT_ANGLES_DEG[ARM_JOINT_COUNT];
+      //设置ROBOT坐标z朝上
+      robot.rotation.x = -Math.PI / 2;
+      robot.rotation.z = 0;
+      robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
+      scene.add(robot);
+      attachWristCameraMount();
+      focusCameraOnObject(robot);
+      sliderInput(-Math.PI / 2, "link2_joint");
+      sliderInput(Math.PI / 2, "link3_joint");
+      sliderInput(-Math.PI / 2, "link4_joint");
+      sliderInput(-Math.PI / 2, "link5_joint");
+      sliderInput(0, "gripper_joint");
 
-    // 初始化后计算位置信息
-    calculateEndEffectorPosition();
-  });
+      // 初始化后计算位置信息
+      syncJointDisplayFromSceneIfNeeded(true);
+      syncEndEffectorPoseIfNeeded(true);
+    })
+    .catch((error) => {
+      console.error("机器人加载失败:", error);
+    });
 }
 
 // 按顺序加载模型
@@ -1496,6 +2762,9 @@ const setupWebSocketStateSync = () => {
       clearPendingManualTarget();
       lastRealtimeSliderSendAt.value = 0;
       resetStateSync();
+      checkWebSocketReady();
+      updateNetworkPrereq();
+      handleQuestDisconnected();
     }
   });
 
@@ -1508,6 +2777,15 @@ const setupWebSocketStateSync = () => {
   websocketManager.on('controlResult', (data) => {
     console.log('Received controlResult:', data);
     sendCommandPending.value = false;
+    if (isQuestControllerModeActive()) {
+      const state = data?.state;
+      if (state && typeof state === "object") {
+        const backendGroup = String(state.selected_joint_group || "").trim();
+        if (backendGroup) {
+          vrSelectedJointGroup.value = backendGroup;
+        }
+      }
+    }
     if (data?.status && String(data.status).toLowerCase() !== "success") {
       clearPendingManualTarget();
       if (websocketManager.isConnected) {
@@ -1542,6 +2820,16 @@ const setupWebSocketStateSync = () => {
     clearPendingManualTarget();
     lastRealtimeSliderSendAt.value = 0;
     resetStateSync();
+    checkWebSocketReady();
+    updateNetworkPrereq();
+    handleQuestDisconnected();
+  });
+
+  websocketManager.on('vrStateResult', (data) => {
+    if (data?.state) {
+      applyVrStateFromBackend(data.state);
+      updateNetworkPrereq();
+    }
   });
 };
 
@@ -1558,11 +2846,22 @@ const handleStateUpdate = (data) => {
 
   // 更新状态
   simulationState.value = data;
+  applyVrStateFromBackend(data);
+  checkD405ObservationReady(data);
+  checkRecordingBindingReady(data);
+  checkWebSocketReady();
+  updateNetworkPrereq();
 
   // 手动控制刚发出时，短时间忽略明显滞后的旧状态，避免前端“回弹到初始位”
   if (shouldApplyIncomingBackendState(data, now)) {
-    // 以后端回传状态为准，统一驱动机器人/夹爪/对象
+    // 以后端回传状态为准，统一驱动机器人/夹爪/对象（带平滑）
     applyBackendStateToScene(data);
+  } else {
+    const pendingTarget = buildBackendRenderTarget(data);
+    if (pendingTarget) {
+      backendRenderTarget.value = pendingTarget;
+      applySmoothedBackendPose();
+    }
   }
 
   // 添加到状态历史缓冲区
@@ -1575,17 +2874,9 @@ const handleStateUpdate = (data) => {
   lastStateUpdate.value = now;
 };
 
-// 添加到状态缓冲区（用于插值）
+// 保留轻量时间戳缓冲，避免对完整状态做高频深拷贝导致界面卡顿。
 const addToStateBuffer = (state, timestamp) => {
-  stateUpdateHistory.value.push({
-    state: { ...state },
-    timestamp: timestamp
-  });
-
-  // 保持缓冲区大小
-  if (stateUpdateHistory.value.length > stateBufferSize.value) {
-    stateUpdateHistory.value.shift();
-  }
+  stateUpdateHistory.value = [{ state: null, timestamp }];
 };
 
 // 更新同步统计信息
@@ -1667,6 +2958,7 @@ const getInterpolatedState = (targetTime) => {
 const resetStateSync = () => {
   simulationState.value = null;
   stateUpdateHistory.value = [];
+  backendRenderTarget.value = null;
   networkLatency.value = 0;
   stateSyncErrors.value = 0;
   actualUpdateRate.value = 0;
@@ -1678,6 +2970,7 @@ const resetStateSync = () => {
 // 切换状态插值
 const toggleStateInterpolation = () => {
   stateInterpolationEnabled.value = !stateInterpolationEnabled.value;
+  backendPoseSmoothingEnabled.value = stateInterpolationEnabled.value;
   console.log(`状态插值: ${stateInterpolationEnabled.value ? '启用' : '禁用'}`);
 };
 
@@ -1709,23 +3002,56 @@ const getStateSyncStatus = () => {
   };
 };
 
+watch(questControllerSensitivity, () => {
+  rebuildQuestControllerTeleop();
+});
+
+watch(questControllerDeadzone, () => {
+  rebuildQuestControllerTeleop();
+});
+
+watch(questHandSensitivity, () => {
+  rebuildQuestHandTeleop();
+});
+
+watch(questHandTrackingStable, () => {
+  if (!isQuestHandModeActive()) return;
+  questHandStatusText.value = buildHandTrackingStatusText();
+});
+
+watch(questHandInputMode, () => {
+  if (!isQuestHandModeActive()) return;
+  questHandStatusText.value = buildHandTrackingStatusText();
+});
+
 const handleWindowResize = () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setPixelRatio(getRenderPixelRatio());
 };
 
 const taskProgressInterval = ref(null);
 
 onMounted(() => {
+  localHostname.value = typeof window !== "undefined" ? window.location.hostname : "";
+  localHostIp.value = readHostCandidate();
+  if (localHostIp.value) {
+    hostPageAccessUrl.value = buildPageAccessUrlFromHost(localHostIp.value);
+  } else if (localHostname.value) {
+    hostPageAccessUrl.value = buildPageAccessUrlFromHost(localHostname.value);
+  } else {
+    hostPageAccessUrl.value =
+      typeof window !== "undefined" && window.location ? window.location.origin : "";
+  }
+
   // 设置WebSocket状态同步
   setupWebSocketStateSync();
 
   // 如果WebSocket未连接，尝试连接
   if (!isWebSocketConnected.value) {
     setTimeout(() => {
-      websocketManager.connect();
+      websocketManager.connect(runtimeConfig.simWsUrl);
     }, 1000);
   }
 
@@ -1735,15 +3061,26 @@ onMounted(() => {
   render();
 
   window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
+  window.addEventListener("gamepaddisconnected", handleQuestGamepadConnectionEvent);
 
   taskProgressInterval.value = setInterval(() => {
     if (isFetching.value && taskProgress.value < 95) {
       updateTaskProgress();
     }
   }, 2000);
+
+  runQuest3AccessChecks();
+});
+
+watch(isVrModeEntered, (entered) => {
+  if (!entered) return;
+  ensureVrModeActive();
 });
 
 onBeforeUnmount(() => {
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
   stopFetchingData();
   if (sliderSyncTimer.value) {
     clearTimeout(sliderSyncTimer.value);
@@ -1754,10 +3091,13 @@ onBeforeUnmount(() => {
     taskProgressInterval.value = null;
   }
   window.removeEventListener("resize", handleWindowResize);
+  window.removeEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
+  window.removeEventListener("gamepaddisconnected", handleQuestGamepadConnectionEvent);
   // 清理WebSocket监听器
   websocketManager.off('statusChange');
   websocketManager.off('stateUpdate');
   websocketManager.off('controlResult');
+  websocketManager.off('vrStateResult');
   websocketManager.off('error');
   websocketManager.off('disconnected');
 });
@@ -1922,6 +3262,242 @@ onBeforeUnmount(() => {
   text-align: center;
   font-weight: bold;
   color: #333;
+}
+
+.vr-control-panel {
+  position: fixed;
+  top: 72px;
+  right: 20px;
+  width: 460px;
+  max-height: calc(100vh - 164px);
+  overflow-y: auto;
+  background: rgba(18, 28, 38, 0.88);
+  color: #e8eef3;
+  border: 1px solid rgba(119, 156, 186, 0.35);
+  border-radius: 12px;
+  padding: 12px;
+  z-index: 11;
+  backdrop-filter: blur(6px);
+}
+
+.vr-control-panel.quest-device {
+  width: min(420px, calc(100vw - 24px));
+  right: 12px;
+  top: 60px;
+  max-height: calc(100vh - 120px);
+}
+
+.vr-control-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(119, 156, 186, 0.2);
+  padding-bottom: 8px;
+}
+
+.vr-control-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #d7ebff;
+}
+
+.vr-control-close {
+  padding: 5px 9px;
+  border: 1px solid rgba(119, 156, 186, 0.6);
+  border-radius: 6px;
+  background: rgba(40, 68, 96, 0.9);
+  color: #d7ebff;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.vr-control-close:hover {
+  background: rgba(52, 84, 116, 0.95);
+}
+
+.vr-control-section {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(119, 156, 186, 0.2);
+  background: rgba(13, 21, 29, 0.5);
+}
+
+.vr-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: #d8ecff;
+}
+
+.network-check-button {
+  padding: 5px 9px;
+  border: 1px solid rgba(119, 156, 186, 0.6);
+  border-radius: 6px;
+  background: rgba(40, 68, 96, 0.9);
+  color: #d7ebff;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.network-check-button:hover {
+  background: rgba(52, 84, 116, 0.95);
+}
+
+.network-status-row {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.network-label {
+  color: #9bc3e2;
+}
+
+.network-value {
+  color: #eef4f8;
+  word-break: break-all;
+}
+
+.network-hint-row {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #b4d7f1;
+}
+
+.vr-mode-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.vr-mode-chip,
+.vr-owner-chip {
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(56, 87, 115, 0.65);
+  color: #e6f2fb;
+}
+
+.quest-controller-status {
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(121, 167, 198, 0.25);
+  background: rgba(14, 24, 34, 0.62);
+}
+
+.quest-hand-status {
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(121, 167, 198, 0.25);
+  background: rgba(14, 24, 34, 0.62);
+}
+
+.vr-inline-slider {
+  width: 140px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.vr-joint-toast {
+  margin-top: 8px;
+  border: 1px solid rgba(121, 220, 164, 0.65);
+  border-radius: 6px;
+  background: rgba(33, 95, 64, 0.82);
+  color: #dffdea;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.vr-menu-buttons {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.vr-entry-buttons {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vr-menu-btn {
+  border: 1px solid rgba(116, 148, 175, 0.5);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(32, 55, 76, 0.92);
+  color: #eff6fc;
+  cursor: pointer;
+}
+
+.vr-menu-btn.enter {
+  border-color: rgba(90, 190, 130, 0.55);
+  background: rgba(30, 92, 60, 0.9);
+}
+
+.vr-menu-btn.enter:hover {
+  background: rgba(43, 118, 79, 0.94);
+}
+
+.vr-menu-btn:hover {
+  background: rgba(44, 71, 95, 0.94);
+}
+
+.vr-menu-btn.active {
+  border-color: rgba(121, 220, 164, 0.85);
+  background: rgba(39, 110, 72, 0.95);
+  color: #eafff3;
+}
+
+.vr-menu-btn.exit {
+  border-color: rgba(196, 95, 95, 0.65);
+  background: rgba(88, 36, 36, 0.9);
+}
+
+.vr-menu-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #ffc4c4;
+}
+
+.status-ok {
+  color: #72d88a;
+}
+
+.status-error {
+  color: #ff9b9b;
+}
+
+.status-checking {
+  color: #f6d07a;
+}
+
+.status-unknown {
+  color: #b6cad7;
+}
+
+.status-vr_disabled {
+  color: #b6cad7;
+}
+
+.status-vr_ready {
+  color: #72d88a;
+}
+
+.status-vr_controller_mode,
+.status-vr_hand_mode {
+  color: #92e6ff;
+}
+
+.status-vr_error {
+  color: #ff9b9b;
 }
 
 .position-info,
@@ -2232,6 +3808,10 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.sync-status-grid.compact {
+  grid-template-columns: 1fr;
+}
+
 .sync-status-item {
   display: flex;
   justify-content: space-between;
@@ -2314,6 +3894,14 @@ onBeforeUnmount(() => {
 
   .sync-status-grid {
     grid-template-columns: 1fr;
+  }
+
+  .vr-control-panel {
+    width: calc(100% - 40px);
+    max-height: calc(100vh - 200px);
+    left: 20px;
+    right: 20px;
+    top: 70px;
   }
 }
 </style>

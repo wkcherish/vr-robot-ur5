@@ -53,6 +53,24 @@ pip install -r backend/requirements.txt
 uvicorn backend.api_app:app --reload --host 0.0.0.0 --port 8000
 ```
 
+### Quest3 HTTPS/WSS 推荐启动方式
+
+Quest3 若通过 `https://` 访问前端，后端也应使用 `https://`，WebSocket 需使用 `wss://`，避免混合内容被浏览器拦截。
+
+```bash
+uvicorn backend.api_app:app --host 0.0.0.0 --port 8000 \
+  --ssl-certfile <path/to/cert.pem> \
+  --ssl-keyfile <path/to/key.pem>
+```
+
+也可以用统一入口：
+
+```bash
+python backend/main.py --host 0.0.0.0 --port 8000 \
+  --ssl-certfile <path/to/cert.pem> \
+  --ssl-keyfile <path/to/key.pem>
+```
+
 如果你使用环境变量，可参考 `backend/.env.example`。
 
 ## 打开 MuJoCo 可视化界面

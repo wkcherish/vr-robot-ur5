@@ -12,7 +12,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from backend.schemas import GripperCommand, StepRequest
+from backend.schemas import GripperCommand, StepRequest, VRStateUpdateRequest
 
 try:
     import mujoco as _mujoco  # type: ignore
@@ -45,6 +45,8 @@ DEFAULT_GRIPPER_JOINT_NAMES = [
 DEFAULT_HOME_QPOS = [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0]
 DEFAULT_DT = 0.02
 GRIPPER_DRIVER_LIMIT = 0.87
+ARM_COMMAND_BLEND_PER_STEP = 0.12
+GRIPPER_COMMAND_BLEND_PER_STEP = 0.16
 TOOL_FRAME_CANDIDATES = ["tool0", "wrist_3_link"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
@@ -54,8 +56,8 @@ BACKEND_FRAME_Z_OFFSET = 0.5
 BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
 MAX_ALLOWED_PENETRATION_M = 5e-4
 MAX_COLLISION_REPORTS = 3
-DEFAULT_CAMERA_MOUNT_POSITION = [0.0, -0.003, -0.017]
-DEFAULT_CAMERA_MOUNT_QUATERNION = [0.707107, 0.0, 0.0, -0.707107]
+DEFAULT_CAMERA_MOUNT_POSITION = [0.0, -0.077929684, 0.055]
+DEFAULT_CAMERA_MOUNT_QUATERNION = [1.0, 0.0, 0.0, 0.0]
 DEFAULT_RGB_STREAM = {
     "interface_name": "sim_camera_rgb",
     "camera_name": "d405_rgb",
@@ -89,6 +91,20 @@ class _QueuedCommand:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _compute_command_blend(n_steps: int, per_step_blend: float) -> float:
+    """
+    Convert a per-step blend ratio to a final blend for this command horizon.
+    Small n_steps -> smoother incremental move; large n_steps -> closer to target.
+    """
+    steps = max(1, int(n_steps))
+    per_step = _clamp(float(per_step_blend), 0.0, 1.0)
+    if per_step <= 0.0:
+        return 0.0
+    if per_step >= 1.0:
+        return 1.0
+    return 1.0 - math.pow(1.0 - per_step, steps)
 
 
 def _rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> list[float]:
@@ -242,6 +258,23 @@ class SimulationCore:
         self._objects_state: dict[str, dict[str, Any]] = {}
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
+        self._vr_state = {
+            "mode": "vr_disabled",
+            "input_source_available": {
+                "controller": False,
+                "hand": False,
+            },
+            "selected_joint_group": "arm_full",
+            "control_owner": "desktop_manual",
+            "recording_ready": False,
+            "last_quest_input_ts": None,
+            "active_policy_path": None,
+            "error_message": None,
+        }
+        self._last_input_source: str | None = None
+        self._last_selected_joint_group: str | None = None
+        self._last_raw_input: dict[str, Any] | None = None
+        self._last_normalized_input: dict[str, Any] | None = None
         self._sim_time = 0.0
         self._dt = DEFAULT_DT
         self._stats = {
@@ -311,6 +344,23 @@ class SimulationCore:
                 snapshot["mj_qvel"] = self._mj_data.qvel.copy()
 
             self._source = request.source
+            self._last_input_source = (
+                str(request.input_source).strip() if request.input_source is not None else None
+            )
+            self._last_selected_joint_group = (
+                str(request.selected_joint_group).strip()
+                if request.selected_joint_group is not None
+                else None
+            )
+            self._last_raw_input = dict(request.raw_input) if isinstance(request.raw_input, dict) else None
+            self._last_normalized_input = (
+                dict(request.normalized_input) if isinstance(request.normalized_input, dict) else None
+            )
+            if request.source == "quest3_controller":
+                self._vr_state["last_quest_input_ts"] = time.time()
+                self._vr_state["input_source_available"]["controller"] = True
+                if self._last_selected_joint_group:
+                    self._vr_state["selected_joint_group"] = self._last_selected_joint_group
             n_steps = max(1, int(request.n_steps))
             self._apply_arm_command(target_positions, n_steps)
             self._apply_gripper_command(request.gripper_command, n_steps)
@@ -366,9 +416,9 @@ class SimulationCore:
             self._reset_state_locked()
             return self._build_state_locked()
 
-    async def get_state(self) -> dict[str, Any]:
+    async def get_state(self, refresh_camera: bool = True) -> dict[str, Any]:
         async with self._lock:
-            return self._build_state_locked()
+            return self._build_state_locked(refresh_camera=refresh_camera)
 
     async def get_camera_observation(self, include_data: bool = False) -> dict[str, Any]:
         async with self._lock:
@@ -398,19 +448,74 @@ class SimulationCore:
         async with self._lock:
             self._source = "task"
             self._task_state = {"running": True, "name": task_name, "phase": "queued"}
+            self._vr_state["control_owner"] = "task"
             return self._build_state_locked()
 
     async def stop_task(self) -> dict[str, Any]:
         async with self._lock:
             self._source = "manual"
             self._task_state = {"running": False, "name": None, "phase": None}
+            self._vr_state["control_owner"] = "desktop_manual"
             return self._build_state_locked()
 
     async def set_source(self, source: str) -> dict[str, Any]:
-        if source not in {"manual", "task", "policy"}:
-            raise ValueError("source must be one of: manual, task, policy")
+        if source not in {"manual", "desktop_manual", "quest3_controller", "quest3_hand", "task", "policy"}:
+            raise ValueError(
+                "source must be one of: manual, desktop_manual, quest3_controller, quest3_hand, task, policy"
+            )
         async with self._lock:
             self._source = source
+            if source in {"manual", "desktop_manual"}:
+                self._vr_state["control_owner"] = "desktop_manual"
+            elif source == "quest3_controller":
+                self._vr_state["control_owner"] = "quest3_controller"
+            elif source == "quest3_hand":
+                self._vr_state["control_owner"] = "quest3_hand"
+            else:
+                self._vr_state["control_owner"] = source
+            if source in {"quest3_controller", "quest3_hand"}:
+                self._vr_state["last_quest_input_ts"] = time.time()
+            return self._build_state_locked()
+
+    async def update_vr_state(self, request: VRStateUpdateRequest) -> dict[str, Any]:
+        async with self._lock:
+            if request.mode is not None:
+                self._vr_state["mode"] = request.mode
+
+            if request.controller_available is not None:
+                self._vr_state["input_source_available"]["controller"] = bool(request.controller_available)
+
+            if request.hand_tracking_available is not None:
+                self._vr_state["input_source_available"]["hand"] = bool(request.hand_tracking_available)
+
+            if request.selected_joint_group is not None:
+                self._vr_state["selected_joint_group"] = str(request.selected_joint_group)
+
+            if request.recording_ready is not None:
+                self._vr_state["recording_ready"] = bool(request.recording_ready)
+
+            if request.last_quest_input_ts is not None:
+                self._vr_state["last_quest_input_ts"] = float(request.last_quest_input_ts)
+
+            if request.active_policy_path is not None:
+                self._vr_state["active_policy_path"] = str(request.active_policy_path)
+
+            if request.error_message is not None:
+                self._vr_state["error_message"] = str(request.error_message)
+
+            if request.source is not None:
+                self._source = request.source
+                if request.source in {"manual", "desktop_manual"}:
+                    self._vr_state["control_owner"] = "desktop_manual"
+                elif request.source == "quest3_controller":
+                    self._vr_state["control_owner"] = "quest3_controller"
+                    self._vr_state["last_quest_input_ts"] = time.time()
+                elif request.source == "quest3_hand":
+                    self._vr_state["control_owner"] = "quest3_hand"
+                    self._vr_state["last_quest_input_ts"] = time.time()
+                else:
+                    self._vr_state["control_owner"] = request.source
+
             return self._build_state_locked()
 
     def _load_scene_manifest(self) -> None:
@@ -954,6 +1059,23 @@ class SimulationCore:
         self._objects_state = self._collect_objects_state_locked()
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
+        self._vr_state = {
+            "mode": "vr_disabled",
+            "input_source_available": {
+                "controller": False,
+                "hand": False,
+            },
+            "selected_joint_group": "arm_full",
+            "control_owner": "desktop_manual",
+            "recording_ready": False,
+            "last_quest_input_ts": None,
+            "active_policy_path": None,
+            "error_message": None,
+        }
+        self._last_input_source = None
+        self._last_selected_joint_group = None
+        self._last_raw_input = None
+        self._last_normalized_input = None
         self._sim_time = 0.0
         self._stats["steps"] = 0
         self._stats["commands"] = 0
@@ -1022,15 +1144,20 @@ class SimulationCore:
                 current.append(float(self._mj_data.qpos[qpos_addr]) if qpos_addr is not None else 0.0)
 
         target = [float(v) for v in target_positions]
+        blend = _compute_command_blend(n_steps, ARM_COMMAND_BLEND_PER_STEP)
+        applied = [
+            current[idx] + (target[idx] - current[idx]) * blend
+            for idx in range(len(target))
+        ]
         duration = max(self._dt, n_steps * self._dt)
-        self._arm_qvel = [(target[i] - current[i]) / duration for i in range(len(target))]
-        self._arm_qpos = list(target)
+        self._arm_qvel = [(applied[i] - current[i]) / duration for i in range(len(applied))]
+        self._arm_qpos = list(applied)
 
         if self._using_mujoco_model() and self._mj_data is not None:
             for idx, name in enumerate(self._arm_joint_names):
                 qpos_addr = self._arm_joint_qpos_addr.get(name)
                 if qpos_addr is not None:
-                    self._mj_data.qpos[qpos_addr] = float(target[idx])
+                    self._mj_data.qpos[qpos_addr] = float(applied[idx])
             if _mujoco is not None and self._mj_model is not None:
                 _mujoco.mj_forward(self._mj_model, self._mj_data)
 
@@ -1042,9 +1169,17 @@ class SimulationCore:
         if command.mode != "open_close":
             raise ValueError(f"Unsupported gripper command mode: {command.mode}")
 
-        target_opening = _clamp(float(command.value), 0.0, 1.0)
+        current_opening = float(self._gripper_opening)
+        if self._using_mujoco_model() and self._mj_data is not None:
+            driver_addr = self._gripper_joint_qpos_addr.get("left_driver_joint")
+            if driver_addr is not None:
+                current_opening = _clamp(float(self._mj_data.qpos[driver_addr]) / GRIPPER_DRIVER_LIMIT, 0.0, 1.0)
+
+        desired_opening = _clamp(float(command.value), 0.0, 1.0)
+        blend = _compute_command_blend(n_steps, GRIPPER_COMMAND_BLEND_PER_STEP)
+        target_opening = current_opening + (desired_opening - current_opening) * blend
         duration = max(self._dt, n_steps * self._dt)
-        self._gripper_velocity = (target_opening - self._gripper_opening) / duration
+        self._gripper_velocity = (target_opening - current_opening) / duration
         self._gripper_opening = target_opening
         self._gripper_joints = self._map_gripper_joints(self._gripper_opening)
 
@@ -1364,7 +1499,7 @@ class SimulationCore:
             observation.update(self._build_camera_frame_data_locked())
         return observation
 
-    def _build_state_locked(self) -> dict[str, Any]:
+    def _build_state_locked(self, refresh_camera: bool = True) -> dict[str, Any]:
         if self._using_mujoco_model() and self._mj_data is not None:
             arm_qpos = []
             for idx, name in enumerate(self._arm_joint_names):
@@ -1380,7 +1515,13 @@ class SimulationCore:
         qpos = list(self._arm_qpos) + [gripper_driver]
         qvel = list(self._arm_qvel) + [self._gripper_velocity]
         ee_pose = self._compute_ee_pose_locked()
-        camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
+        if refresh_camera:
+            camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
+        elif self._camera_last_state is not None:
+            camera_state = deepcopy(self._camera_last_state)
+        else:
+            # Initialize camera snapshot once so lightweight broadcasts can reuse it.
+            camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
         return {
             "timestamp": time.time(),
             "sim_time": self._sim_time,
@@ -1395,6 +1536,11 @@ class SimulationCore:
             "camera_capture_ok": bool(camera_state.get("camera_capture_ok", False)),
             "task_state": dict(self._task_state),
             "source": self._source,
+            "input_source": self._last_input_source,
+            "selected_joint_group": self._last_selected_joint_group,
+            "raw_input": deepcopy(self._last_raw_input),
+            "normalized_input": deepcopy(self._last_normalized_input),
+            "vr": deepcopy(self._vr_state),
             "stats": {
                 "steps": int(self._stats["steps"]),
                 "commands": int(self._stats["commands"]),
