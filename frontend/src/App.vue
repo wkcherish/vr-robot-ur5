@@ -365,9 +365,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
-import Menu from "./components/robot.vue";
-import Control from "./components/control.vue"; // 引入仿真控制组件
+import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from "vue";
+const Menu = defineAsyncComponent(() => import("./components/robot.vue"));
+const Control = defineAsyncComponent(() => import("./components/control.vue"));
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
@@ -384,8 +384,8 @@ const taskProgress = ref(0);
 
 // 各面板显示状态控制
 const showSlider = ref(false); // 滑块面板默认不显示
-const showRobotPanel = ref(false); // 机器人控制面板默认显示
-const showControlPanel = ref(false); // 仿真控制面板默认显示
+const showRobotPanel = ref(false); // 机器人控制面板默认不显示
+const showControlPanel = ref(false); // 仿真控制面板默认不显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
 const showVrControlPanel = ref(false); // VR控制中心默认不显示
@@ -472,6 +472,7 @@ const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
 const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
 const QUEST_CONTROLLER_SEND_HZ = 25;
 const QUEST_CONTROLLER_SEND_INTERVAL_MS = Math.round(1000 / QUEST_CONTROLLER_SEND_HZ);
+const MAX_RENDER_PIXEL_RATIO = 1.5;
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -616,6 +617,13 @@ const calculateEndEffectorPosition = () => {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function getRenderPixelRatio() {
+  const dpr =
+    typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1;
+  if (!Number.isFinite(dpr)) return 1;
+  return clamp(dpr, 1, MAX_RENDER_PIXEL_RATIO);
 }
 
 const BACKEND_FRAME_Z_OFFSET = 0.5;
@@ -2198,7 +2206,7 @@ function initBase() {
 
   // 设置渲染器尺寸
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setPixelRatio(getRenderPixelRatio());
 
   // 设置渲染器颜色
   renderer.setClearColor("#DCDCDC");
@@ -2248,7 +2256,7 @@ function addHelpLine() {
   scene.add(gridHelper);
 }
 
-function loadUrdfModel(modelPath, onLoad) {
+function loadUrdfModel(modelPath, onLoad, onError) {
   const loader = new URDFLoader();
   loader.load(
     modelPath,
@@ -2259,8 +2267,17 @@ function loadUrdfModel(modelPath, onLoad) {
     undefined,
     (error) => {
       console.error("URDF加载失败:", modelPath, error);
+      if (typeof onError === "function") {
+        onError(error);
+      }
     }
   );
+}
+
+function loadUrdfModelAsync(modelPath) {
+  return new Promise((resolve, reject) => {
+    loadUrdfModel(modelPath, resolve, reject);
+  });
 }
 
 function focusCameraOnObject(object) {
@@ -2289,15 +2306,18 @@ initOrbitControls();
 addHelpLine();
 
 function initSceneObjects() {
-  SCENE_OBJECT_CONFIGS.forEach((config) => {
-    loadUrdfModel(config.assetPath, (result) => {
+  SCENE_OBJECT_CONFIGS.forEach(async (config) => {
+    try {
+      const result = await loadUrdfModelAsync(config.assetPath);
       const { position, rotation, scale } = config.transform;
       result.scale.set(scale[0], scale[1], scale[2]);
       result.position.set(position[0], position[1], position[2]);
       result.rotation.set(rotation[0], rotation[1], rotation[2]);
       scene.add(result);
       sceneObjectModels.set(config.id, result);
-    });
+    } catch (error) {
+      console.error("场景对象加载失败:", config.assetPath, error);
+    }
   });
 }
 
@@ -2317,39 +2337,47 @@ function attachWristCameraMount() {
     wristCameraMountModel.parent.remove(wristCameraMountModel);
   }
 
-  loadUrdfModel(WRIST_CAMERA_MOUNT_CONFIG.assetPath, (mountAssembly) => {
-    const { position, rotation, scale } = WRIST_CAMERA_MOUNT_CONFIG.transform;
-    mountAssembly.scale.set(scale[0], scale[1], scale[2]);
-    mountAssembly.position.set(position[0], position[1], position[2]);
-    mountAssembly.rotation.set(rotation[0], rotation[1], rotation[2]);
-    parentLink.add(mountAssembly);
-    wristCameraMountModel = mountAssembly;
-  });
+  loadUrdfModelAsync(WRIST_CAMERA_MOUNT_CONFIG.assetPath)
+    .then((mountAssembly) => {
+      const { position, rotation, scale } = WRIST_CAMERA_MOUNT_CONFIG.transform;
+      mountAssembly.scale.set(scale[0], scale[1], scale[2]);
+      mountAssembly.position.set(position[0], position[1], position[2]);
+      mountAssembly.rotation.set(rotation[0], rotation[1], rotation[2]);
+      parentLink.add(mountAssembly);
+      wristCameraMountModel = mountAssembly;
+    })
+    .catch((error) => {
+      console.error("腕部相机支架加载失败:", error);
+    });
 }
 
 function initRobot() {
-  loadUrdfModel(urdf, (result) => {
-    robot = result;
-    console.log("机器人关节:", Object.keys(robot.joints || {}));
+  loadUrdfModelAsync(urdf)
+    .then((result) => {
+      robot = result;
+      console.log("机器人关节:", Object.keys(robot.joints || {}));
 
-    //设置ROBOT坐标z朝上
-    robot.rotation.x = -Math.PI / 2;
-    robot.rotation.z = 0;
-    robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
-    scene.add(robot);
-    attachWristCameraMount();
-    focusCameraOnObject(robot);
-    sliderInput(-Math.PI / 2, "link2_joint");
-    sliderInput(Math.PI / 2, "link3_joint");
-    sliderInput(-Math.PI / 2, "link4_joint");
-    sliderInput(-Math.PI / 2, "link5_joint");
-    sliderInput(0, "gripper_joint");
-    jointAngles.value = [...DEFAULT_ANGLES_DEG];
-    gripperAngleDeg.value = DEFAULT_ANGLES_DEG[ARM_JOINT_COUNT];
+      //设置ROBOT坐标z朝上
+      robot.rotation.x = -Math.PI / 2;
+      robot.rotation.z = 0;
+      robot.position.set(-0.2, 0.5, 0.0); // 将机械臂放置在实验台上
+      scene.add(robot);
+      attachWristCameraMount();
+      focusCameraOnObject(robot);
+      sliderInput(-Math.PI / 2, "link2_joint");
+      sliderInput(Math.PI / 2, "link3_joint");
+      sliderInput(-Math.PI / 2, "link4_joint");
+      sliderInput(-Math.PI / 2, "link5_joint");
+      sliderInput(0, "gripper_joint");
+      jointAngles.value = [...DEFAULT_ANGLES_DEG];
+      gripperAngleDeg.value = DEFAULT_ANGLES_DEG[ARM_JOINT_COUNT];
 
-    // 初始化后计算位置信息
-    calculateEndEffectorPosition();
-  });
+      // 初始化后计算位置信息
+      calculateEndEffectorPosition();
+    })
+    .catch((error) => {
+      console.error("机器人加载失败:", error);
+    });
 }
 
 // 按顺序加载模型
@@ -2640,7 +2668,7 @@ const handleWindowResize = () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setPixelRatio(getRenderPixelRatio());
 };
 
 const taskProgressInterval = ref(null);
