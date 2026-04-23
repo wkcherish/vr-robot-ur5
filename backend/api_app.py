@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import socket
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,7 +14,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from backend.schemas import CommandResult, ErrorResponse, HealthResponse, ResetRequest, StepRequest, WSMessage
+from backend.schemas import (
+    CommandResult,
+    ErrorResponse,
+    HealthResponse,
+    ResetRequest,
+    StepRequest,
+    VRStateUpdateRequest,
+    WSMessage,
+)
 from backend.sim import SimulationCore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +68,30 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+def _guess_host_ip() -> str | None:
+    env_host_ip = str(os.getenv("HOST_IP", "")).strip()
+    if env_host_ip:
+        return env_host_ip
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            guessed = sock.getsockname()[0]
+            if guessed and not guessed.startswith("127."):
+                return guessed
+    except Exception:
+        pass
+
+    try:
+        hostname_ip = socket.gethostbyname(socket.gethostname())
+        if hostname_ip and not hostname_ip.startswith("127."):
+            return hostname_ip
+    except Exception:
+        pass
+
+    return None
 
 
 def _error_payload(code: str, message: str, detail: str | None = None) -> dict[str, Any]:
@@ -111,6 +144,7 @@ async def health() -> HealthResponse:
         timestamp=time.time(),
         model_backend=simulation.model_backend,
         scene_manifest=simulation.scene_manifest_path,
+        host_ip=_guess_host_ip(),
     )
 
 
@@ -152,6 +186,16 @@ async def post_sim_reset(request: ResetRequest) -> CommandResult:
         return CommandResult(status="error", message=f"reset failed: {exc}")
 
     return CommandResult(status="success", message="simulation reset", state=state)
+
+
+@app.post("/sim/vr/state/", response_model=CommandResult)
+async def post_sim_vr_state(request: VRStateUpdateRequest) -> CommandResult:
+    try:
+        state = await simulation.update_vr_state(request)
+    except Exception as exc:
+        return CommandResult(status="error", message=f"vr state update failed: {exc}")
+
+    return CommandResult(status="success", message="vr state updated", state=state)
 
 
 @app.get("/data/")
@@ -237,7 +281,8 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
     if message_type == "control":
         try:
             request = StepRequest.model_validate(message_data)
-            request.source = "manual"
+            if not getattr(request, "source", None):
+                request.source = "desktop_manual"
             state = await simulation.enqueue_step(request)
             return {
                 "type": "control_result",
@@ -268,6 +313,23 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             return _error_payload("RESET_VALIDATION_ERROR", "Invalid reset payload", str(exc))
         except Exception as exc:
             return _error_payload("RESET_EXECUTION_ERROR", "Reset failed", str(exc))
+
+    if message_type == "vr_state":
+        try:
+            request = VRStateUpdateRequest.model_validate(message_data)
+            state = await simulation.update_vr_state(request)
+            return {
+                "type": "vr_state_result",
+                "data": {
+                    "status": "success",
+                    "message": "vr state updated",
+                    "state": state,
+                },
+            }
+        except ValidationError as exc:
+            return _error_payload("VR_STATE_VALIDATION_ERROR", "Invalid vr state payload", str(exc))
+        except Exception as exc:
+            return _error_payload("VR_STATE_EXECUTION_ERROR", "VR state update failed", str(exc))
 
     if message_type == "execute_task":
         task_name = str(message_data.get("task_name", "quest3_tool_sorting_v1"))
