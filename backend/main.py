@@ -299,6 +299,8 @@ def _apply_pose_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, pose: dict
 
 
 def _fetch_backend_state(state_url: str, timeout_s: float) -> dict[str, object] | None:
+    query_separator = "&" if "?" in state_url else "?"
+    state_url = f"{state_url}{query_separator}refresh_camera=false"
     try:
         with urlopen(state_url, timeout=timeout_s) as resp:
             if not (200 <= int(resp.status) < 300):

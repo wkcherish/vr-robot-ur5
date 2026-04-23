@@ -102,7 +102,8 @@ def _error_payload(code: str, message: str, detail: str | None = None) -> dict[s
 async def _state_broadcast_loop() -> None:
     while True:
         if manager.active_count > 0:
-            state = await simulation.get_state()
+            # Keep broadcast lightweight to reduce lock hold time and improve control responsiveness.
+            state = await simulation.get_state(refresh_camera=False)
             await manager.broadcast({"type": "state_broadcast", "data": state})
         await asyncio.sleep(STATE_BROADCAST_INTERVAL)
 
@@ -149,8 +150,8 @@ async def health() -> HealthResponse:
 
 
 @app.get("/sim/state/")
-async def get_sim_state() -> dict[str, Any]:
-    return await simulation.get_state()
+async def get_sim_state(refresh_camera: bool = True) -> dict[str, Any]:
+    return await simulation.get_state(refresh_camera=refresh_camera)
 
 
 @app.get("/sim/observation/")
@@ -260,7 +261,8 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
         return {"type": "pong", "data": {"timestamp": time.time()}}
 
     if message_type == "get_state":
-        state = await simulation.get_state()
+        refresh_camera = bool(message_data.get("refresh_camera", True))
+        state = await simulation.get_state(refresh_camera=refresh_camera)
         return {"type": "state_update", "data": state}
 
     if message_type == "get_observation":

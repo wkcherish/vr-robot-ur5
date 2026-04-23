@@ -84,7 +84,9 @@ class WebSocketManager {
   sendControlCommand(targetPositions, options = {}) {
     const payload = {
       target_positions: targetPositions,
-      n_steps: options.n_steps || 10,
+      n_steps: Number.isFinite(Number(options.n_steps))
+        ? Math.max(1, Math.floor(Number(options.n_steps)))
+        : 2,
       kp: options.kp,
       kd: options.kd,
       control_mode: options.control_mode || 'position'
