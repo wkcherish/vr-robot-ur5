@@ -196,6 +196,55 @@
               <span class="vr-mode-chip" :class="`status-${vrModeState}`">{{ vrModeText }}</span>
               <span class="vr-owner-chip">控制源: {{ vrControlOwnerText }}</span>
             </div>
+            <div class="quest-controller-status" v-if="vrModeState === 'vr_controller_mode'">
+              <div class="network-status-row">
+                <span class="network-label">手柄链路:</span>
+                <span class="network-value" :class="{ 'status-ok': questControllerAvailable, 'status-error': !questControllerAvailable }">
+                  {{ questControllerStatusText }}
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">当前关节组:</span>
+                <span class="network-value">{{ vrSelectedJointGroupText }}</span>
+              </div>
+              <div class="network-status-row" v-if="questControllerRawInput && questControllerRawInput.right">
+                <span class="network-label">右摇杆/扳机:</span>
+                <span class="network-value">
+                  X={{ Number(questControllerRawInput.right.stick_x || 0).toFixed(2) }},
+                  Y={{ Number(questControllerRawInput.right.stick_y || 0).toFixed(2) }},
+                  T={{ Number(questControllerRawInput.right.trigger || 0).toFixed(2) }}
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">灵敏度:</span>
+                <span class="network-value">
+                  <input
+                    class="vr-inline-slider"
+                    type="range"
+                    min="0.4"
+                    max="1.8"
+                    step="0.1"
+                    v-model.number="questControllerSensitivity"
+                  />
+                  {{ questControllerSensitivity.toFixed(1) }}
+                </span>
+              </div>
+              <div class="network-status-row">
+                <span class="network-label">输入死区:</span>
+                <span class="network-value">
+                  <input
+                    class="vr-inline-slider"
+                    type="range"
+                    min="0.05"
+                    max="0.30"
+                    step="0.01"
+                    v-model.number="questControllerDeadzone"
+                  />
+                  {{ questControllerDeadzone.toFixed(2) }}
+                </span>
+              </div>
+              <div v-if="questControllerGroupToast" class="vr-joint-toast">{{ questControllerGroupToast }}</div>
+            </div>
             <div class="vr-menu-buttons">
               <button
                 class="vr-menu-btn"
@@ -316,7 +365,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import Menu from "./components/robot.vue";
 import Control from "./components/control.vue"; // 引入仿真控制组件
 import * as THREE from "three";
@@ -325,6 +374,8 @@ import URDFLoader from "urdf-loader";
 import websocketManager from "./utils/websocket.js"; // 引入WebSocket管理器
 import { runtimeConfig, getDeviceCategory } from "./utils/runtimeConfig.js";
 import { get, post } from "./utils/network.js";
+import { readQuestControllerSnapshot } from "./utils/questControllerInput.js";
+import { createQuestControllerTeleop } from "./utils/questControllerTeleop.js";
 
 // 修改视角控制为下拉菜单
 const selectedView = ref("perspective"); // 默认选择透视视角
@@ -354,7 +405,11 @@ const BACKEND_ARM_JOINT_NAMES = [
   "wrist_2_joint",
   "wrist_3_joint",
 ];
-const LOCAL_MANUAL_SOURCES = new Set(["desktop_manual"]);
+const LOCAL_MANUAL_SOURCES = new Set([
+  "desktop_manual",
+  "quest3_controller",
+  "quest3_hand",
+]);
 const ARM_JOINT_NAMES = [
   "link1_joint",
   "link2_joint",
@@ -415,6 +470,8 @@ const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 33;
 const MANUAL_STATE_GUARD_MS = 700;
 const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
 const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
+const QUEST_CONTROLLER_SEND_HZ = 25;
+const QUEST_CONTROLLER_SEND_INTERVAL_MS = Math.round(1000 / QUEST_CONTROLLER_SEND_HZ);
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -451,6 +508,21 @@ const selectedVrInputMode = ref("");
 const vrErrorMessage = ref("");
 const vrSelectedJointGroup = ref("arm_full");
 const vrControlOwner = ref("desktop_manual");
+const questControllerAvailable = ref(false);
+const questControllerStatusText = ref("未激活");
+const questControllerSensitivity = ref(1.0);
+const questControllerDeadzone = ref(0.14);
+const questControllerGroupToast = ref("");
+const questControllerGroupToastAt = ref(0);
+const questControllerRawInput = ref(null);
+const questControllerLoopTimer = ref(null);
+const questControllerFallbackInFlight = ref(false);
+const lastQuestControllerTickAt = ref(0);
+
+let questControllerTeleop = createQuestControllerTeleop({
+  deadzone: questControllerDeadzone.value,
+  sensitivity: questControllerSensitivity.value,
+});
 
 const isQuest3Device = computed(() => deviceCategory.value === "quest3");
 const backendHttpOrigin = computed(() => runtimeConfig.backendOrigin);
@@ -466,6 +538,16 @@ const networkAccessHints = computed(() => {
     hints.push("桌面端可用于排查后端与 WebSocket 可达性。");
   }
   return hints;
+});
+
+const vrSelectedJointGroupText = computed(() => {
+  const mapping = {
+    upper_arm: "大臂组",
+    forearm: "前臂组",
+    wrist: "腕部组",
+    arm_full: "全臂",
+  };
+  return mapping[vrSelectedJointGroup.value] || "未选择";
 });
 
 const vrModeText = computed(() => {
@@ -708,6 +790,17 @@ function applyVrStateFromBackend(state) {
   if (typeof vr.error_message === "string") {
     vrErrorMessage.value = vr.error_message;
   }
+  const selectedGroup = String(state?.selected_joint_group || "").trim();
+  if (selectedGroup) {
+    vrSelectedJointGroup.value = selectedGroup;
+  }
+  const inputSource = String(state?.input_source || "").trim();
+  if (inputSource === "quest3_controller" || inputSource === "quest3_hand") {
+    vrControlOwner.value = inputSource;
+  }
+  if (state?.raw_input && typeof state.raw_input === "object") {
+    questControllerRawInput.value = state.raw_input;
+  }
 }
 
 function syncVrStateToBackend(payload) {
@@ -785,6 +878,7 @@ function chooseVrInputMode(mode) {
   if (mode === "controller") {
     vrModeState.value = "vr_controller_mode";
     vrControlOwner.value = "quest3_controller";
+    vrSelectedJointGroup.value = questControllerTeleop.getState().selected_joint_group;
     syncVrStateToBackend({
       mode: "vr_controller_mode",
       source: "quest3_controller",
@@ -794,9 +888,11 @@ function chooseVrInputMode(mode) {
       last_quest_input_ts: Date.now() / 1000,
       error_message: "",
     });
+    startQuestControllerLoop();
     return;
   }
 
+  stopQuestControllerLoop();
   vrModeState.value = "vr_hand_mode";
   vrControlOwner.value = "quest3_hand";
   syncVrStateToBackend({
@@ -811,6 +907,7 @@ function chooseVrInputMode(mode) {
 }
 
 function exitVrMode() {
+  stopQuestControllerLoop();
   selectedVrInputMode.value = "";
   vrModeState.value = networkPrereqOk.value ? "vr_ready" : "vr_disabled";
   vrControlOwner.value = "desktop_manual";
@@ -824,6 +921,7 @@ function exitVrMode() {
 }
 
 function handleQuestDisconnected() {
+  stopQuestControllerLoop();
   if (vrControlOwner.value !== "quest3_controller" && vrControlOwner.value !== "quest3_hand") {
     return;
   }
@@ -854,6 +952,200 @@ function getCurrentGripperRadians() {
 
 function toGripperOpening(gripperRadians) {
   return clamp(gripperRadians / GRIPPER_MAX_RAD, 0, 1);
+}
+
+function isQuestControllerModeActive() {
+  return (
+    vrModeState.value === "vr_controller_mode" &&
+    (selectedVrInputMode.value === "controller" || vrControlOwner.value === "quest3_controller")
+  );
+}
+
+function rebuildQuestControllerTeleop() {
+  questControllerTeleop = createQuestControllerTeleop({
+    deadzone: questControllerDeadzone.value,
+    sensitivity: questControllerSensitivity.value,
+  });
+}
+
+function updateQuestGroupToast(groupLabel) {
+  questControllerGroupToast.value = `已切换到${groupLabel}`;
+  questControllerGroupToastAt.value = Date.now();
+}
+
+function cleanupQuestGroupToast(nowMs = Date.now()) {
+  if (!questControllerGroupToast.value) return;
+  if (nowMs - Number(questControllerGroupToastAt.value) > 1400) {
+    questControllerGroupToast.value = "";
+  }
+}
+
+function buildQuestControlPayload(mapped) {
+  return {
+    target_positions: mapped.target_positions,
+    n_steps: 2,
+    control_mode: "position",
+    gripper_command: { mode: "open_close", value: mapped.gripper_opening },
+    source: "quest3_controller",
+    input_source: "quest3_controller",
+    selected_joint_group: mapped.selected_joint_group,
+    raw_input: mapped.raw_input || null,
+    normalized_input: mapped.normalized_input || null,
+  };
+}
+
+function applyQuestCommandLocally(mapped) {
+  const armRadians = mapped.target_positions.slice(0, ARM_JOINT_COUNT);
+  const gripperOpening = clamp(mapped.gripper_opening, 0, 1);
+  const gripperRad = gripperOpening * GRIPPER_MAX_RAD;
+  rememberPendingManualTarget(armRadians, gripperOpening);
+
+  isApplyingBackendState.value = true;
+  try {
+    BACKEND_ARM_JOINT_NAMES.forEach((jointName, index) => {
+      const joint = robot?.joints?.[jointName];
+      const value = Number(armRadians[index]);
+      if (!joint || !Number.isFinite(value)) return;
+      joint.setJointValue(value);
+    });
+    setGripperJointValue(gripperRad, { skipPoseUpdate: true });
+    jointAngles.value = [...armRadians.map((rad) => toDegrees(rad)), toDegrees(gripperRad)];
+    gripperAngleDeg.value = toDegrees(gripperRad);
+    calculateEndEffectorPosition();
+  } finally {
+    isApplyingBackendState.value = false;
+  }
+}
+
+async function sendQuestControlByHttp(payload) {
+  if (questControllerFallbackInFlight.value) return;
+  questControllerFallbackInFlight.value = true;
+  try {
+    const resp = await post("/sim/step/", payload);
+    if (resp?.data?.state) {
+      applyBackendStateToScene(resp.data.state);
+      clearPendingManualTarget();
+    }
+  } catch (error) {
+    clearPendingManualTarget();
+    questControllerStatusText.value = "手柄控制HTTP发送失败";
+    console.warn("Quest3手柄HTTP控制发送失败:", error?.message || error);
+  } finally {
+    questControllerFallbackInFlight.value = false;
+  }
+}
+
+function sendQuestControlToBackend(mapped) {
+  if (!mapped?.has_command) return;
+  const payload = buildQuestControlPayload(mapped);
+  applyQuestCommandLocally(mapped);
+
+  if (websocketManager.isConnected) {
+    const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
+    if (sent) return;
+  }
+
+  sendQuestControlByHttp(payload);
+}
+
+function runQuestControllerTick() {
+  cleanupQuestGroupToast();
+  if (!isQuestControllerModeActive()) {
+    questControllerAvailable.value = false;
+    questControllerStatusText.value = "未激活";
+    return;
+  }
+
+  const nowMs = Date.now();
+  const prevTickAt = Number(lastQuestControllerTickAt.value) || nowMs;
+  const dtSec = clamp((nowMs - prevTickAt) / 1000, 1 / 120, 1 / 10);
+  lastQuestControllerTickAt.value = nowMs;
+
+  const snapshot = readQuestControllerSnapshot();
+  questControllerRawInput.value = snapshot?.raw || null;
+
+  if (!snapshot?.available) {
+    questControllerAvailable.value = false;
+    questControllerStatusText.value = "未检测到手柄";
+    syncVrStateToBackend({
+      mode: "vr_controller_mode",
+      source: "quest3_controller",
+      controller_available: false,
+      selected_joint_group: vrSelectedJointGroup.value,
+      recording_ready: recordingCheckStatus.value === "ok",
+      last_quest_input_ts: nowMs / 1000,
+      error_message: "Quest3手柄未就绪",
+    });
+    return;
+  }
+
+  questControllerAvailable.value = true;
+  questControllerStatusText.value = "采样中";
+
+  const mapped = questControllerTeleop.applySnapshot(
+    snapshot,
+    getCurrentArmRadians(),
+    toGripperOpening(getCurrentGripperRadians()),
+    dtSec
+  );
+
+  if (mapped?.selected_joint_group) {
+    if (vrSelectedJointGroup.value !== mapped.selected_joint_group) {
+      updateQuestGroupToast(mapped.selected_joint_group_label || mapped.selected_joint_group);
+    }
+    vrSelectedJointGroup.value = mapped.selected_joint_group;
+  }
+
+  syncVrStateToBackend({
+    mode: "vr_controller_mode",
+    source: "quest3_controller",
+    controller_available: Boolean(snapshot.available),
+    selected_joint_group: vrSelectedJointGroup.value,
+    recording_ready: recordingCheckStatus.value === "ok",
+    last_quest_input_ts: nowMs / 1000,
+    error_message: "",
+  });
+
+  if (mapped?.has_command) {
+    sendQuestControlToBackend(mapped);
+  }
+}
+
+function handleQuestGamepadConnectionEvent(event) {
+  const gamepadId = String(event?.gamepad?.id || "").toLowerCase();
+  const isQuestPad = /(quest|oculus|meta|touch|xr-standard)/i.test(gamepadId);
+  if (!isQuestControllerModeActive() || !isQuestPad) return;
+  if (event?.type === "gamepadconnected") {
+    questControllerStatusText.value = "手柄已连接";
+  } else if (event?.type === "gamepaddisconnected") {
+    questControllerStatusText.value = "手柄已断开";
+    questControllerAvailable.value = false;
+  }
+}
+
+function startQuestControllerLoop() {
+  stopQuestControllerLoop();
+  rebuildQuestControllerTeleop();
+  questControllerAvailable.value = false;
+  questControllerStatusText.value = "启动中";
+  lastQuestControllerTickAt.value = Date.now();
+  questControllerLoopTimer.value = setInterval(
+    runQuestControllerTick,
+    QUEST_CONTROLLER_SEND_INTERVAL_MS
+  );
+}
+
+function stopQuestControllerLoop() {
+  if (questControllerLoopTimer.value) {
+    clearInterval(questControllerLoopTimer.value);
+    questControllerLoopTimer.value = null;
+  }
+  questControllerAvailable.value = false;
+  questControllerStatusText.value = "未激活";
+  questControllerRawInput.value = null;
+  questControllerGroupToast.value = "";
+  questControllerGroupToastAt.value = 0;
+  lastQuestControllerTickAt.value = 0;
 }
 
 function buildGripperCommand(options = {}) {
@@ -1465,6 +1757,7 @@ const startFetchingData = () => {
 
 // 优化停止连接的函数
 const stopFetchingData = () => {
+  stopQuestControllerLoop();
   isFetching.value = false;
   sendCommandPending.value = false;
   clearPendingManualTarget();
@@ -2102,6 +2395,15 @@ const setupWebSocketStateSync = () => {
   websocketManager.on('controlResult', (data) => {
     console.log('Received controlResult:', data);
     sendCommandPending.value = false;
+    if (isQuestControllerModeActive()) {
+      const state = data?.state;
+      if (state && typeof state === "object") {
+        const backendGroup = String(state.selected_joint_group || "").trim();
+        if (backendGroup) {
+          vrSelectedJointGroup.value = backendGroup;
+        }
+      }
+    }
     if (data?.status && String(data.status).toLowerCase() !== "success") {
       clearPendingManualTarget();
       if (websocketManager.isConnected) {
@@ -2326,6 +2628,14 @@ const getStateSyncStatus = () => {
   };
 };
 
+watch(questControllerSensitivity, () => {
+  rebuildQuestControllerTeleop();
+});
+
+watch(questControllerDeadzone, () => {
+  rebuildQuestControllerTeleop();
+});
+
 const handleWindowResize = () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -2363,6 +2673,8 @@ onMounted(() => {
   render();
 
   window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
+  window.addEventListener("gamepaddisconnected", handleQuestGamepadConnectionEvent);
 
   taskProgressInterval.value = setInterval(() => {
     if (isFetching.value && taskProgress.value < 95) {
@@ -2374,6 +2686,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  stopQuestControllerLoop();
   stopFetchingData();
   if (sliderSyncTimer.value) {
     clearTimeout(sliderSyncTimer.value);
@@ -2384,6 +2697,8 @@ onBeforeUnmount(() => {
     taskProgressInterval.value = null;
   }
   window.removeEventListener("resize", handleWindowResize);
+  window.removeEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
+  window.removeEventListener("gamepaddisconnected", handleQuestGamepadConnectionEvent);
   // 清理WebSocket监听器
   websocketManager.off('statusChange');
   websocketManager.off('stateUpdate');
@@ -2668,6 +2983,30 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: rgba(56, 87, 115, 0.65);
   color: #e6f2fb;
+}
+
+.quest-controller-status {
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(121, 167, 198, 0.25);
+  background: rgba(14, 24, 34, 0.62);
+}
+
+.vr-inline-slider {
+  width: 140px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.vr-joint-toast {
+  margin-top: 8px;
+  border: 1px solid rgba(121, 220, 164, 0.65);
+  border-radius: 6px;
+  background: rgba(33, 95, 64, 0.82);
+  color: #dffdea;
+  padding: 6px 8px;
+  font-size: 12px;
 }
 
 .vr-menu-buttons {
