@@ -45,6 +45,8 @@ DEFAULT_GRIPPER_JOINT_NAMES = [
 DEFAULT_HOME_QPOS = [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0]
 DEFAULT_DT = 0.02
 GRIPPER_DRIVER_LIMIT = 0.87
+ARM_COMMAND_BLEND_PER_STEP = 0.12
+GRIPPER_COMMAND_BLEND_PER_STEP = 0.16
 TOOL_FRAME_CANDIDATES = ["tool0", "wrist_3_link"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
@@ -89,6 +91,20 @@ class _QueuedCommand:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _compute_command_blend(n_steps: int, per_step_blend: float) -> float:
+    """
+    Convert a per-step blend ratio to a final blend for this command horizon.
+    Small n_steps -> smoother incremental move; large n_steps -> closer to target.
+    """
+    steps = max(1, int(n_steps))
+    per_step = _clamp(float(per_step_blend), 0.0, 1.0)
+    if per_step <= 0.0:
+        return 0.0
+    if per_step >= 1.0:
+        return 1.0
+    return 1.0 - math.pow(1.0 - per_step, steps)
 
 
 def _rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> list[float]:
@@ -379,9 +395,9 @@ class SimulationCore:
             self._reset_state_locked()
             return self._build_state_locked()
 
-    async def get_state(self) -> dict[str, Any]:
+    async def get_state(self, refresh_camera: bool = True) -> dict[str, Any]:
         async with self._lock:
-            return self._build_state_locked()
+            return self._build_state_locked(refresh_camera=refresh_camera)
 
     async def get_camera_observation(self, include_data: bool = False) -> dict[str, Any]:
         async with self._lock:
@@ -1103,15 +1119,20 @@ class SimulationCore:
                 current.append(float(self._mj_data.qpos[qpos_addr]) if qpos_addr is not None else 0.0)
 
         target = [float(v) for v in target_positions]
+        blend = _compute_command_blend(n_steps, ARM_COMMAND_BLEND_PER_STEP)
+        applied = [
+            current[idx] + (target[idx] - current[idx]) * blend
+            for idx in range(len(target))
+        ]
         duration = max(self._dt, n_steps * self._dt)
-        self._arm_qvel = [(target[i] - current[i]) / duration for i in range(len(target))]
-        self._arm_qpos = list(target)
+        self._arm_qvel = [(applied[i] - current[i]) / duration for i in range(len(applied))]
+        self._arm_qpos = list(applied)
 
         if self._using_mujoco_model() and self._mj_data is not None:
             for idx, name in enumerate(self._arm_joint_names):
                 qpos_addr = self._arm_joint_qpos_addr.get(name)
                 if qpos_addr is not None:
-                    self._mj_data.qpos[qpos_addr] = float(target[idx])
+                    self._mj_data.qpos[qpos_addr] = float(applied[idx])
             if _mujoco is not None and self._mj_model is not None:
                 _mujoco.mj_forward(self._mj_model, self._mj_data)
 
@@ -1123,9 +1144,17 @@ class SimulationCore:
         if command.mode != "open_close":
             raise ValueError(f"Unsupported gripper command mode: {command.mode}")
 
-        target_opening = _clamp(float(command.value), 0.0, 1.0)
+        current_opening = float(self._gripper_opening)
+        if self._using_mujoco_model() and self._mj_data is not None:
+            driver_addr = self._gripper_joint_qpos_addr.get("left_driver_joint")
+            if driver_addr is not None:
+                current_opening = _clamp(float(self._mj_data.qpos[driver_addr]) / GRIPPER_DRIVER_LIMIT, 0.0, 1.0)
+
+        desired_opening = _clamp(float(command.value), 0.0, 1.0)
+        blend = _compute_command_blend(n_steps, GRIPPER_COMMAND_BLEND_PER_STEP)
+        target_opening = current_opening + (desired_opening - current_opening) * blend
         duration = max(self._dt, n_steps * self._dt)
-        self._gripper_velocity = (target_opening - self._gripper_opening) / duration
+        self._gripper_velocity = (target_opening - current_opening) / duration
         self._gripper_opening = target_opening
         self._gripper_joints = self._map_gripper_joints(self._gripper_opening)
 
@@ -1445,7 +1474,7 @@ class SimulationCore:
             observation.update(self._build_camera_frame_data_locked())
         return observation
 
-    def _build_state_locked(self) -> dict[str, Any]:
+    def _build_state_locked(self, refresh_camera: bool = True) -> dict[str, Any]:
         if self._using_mujoco_model() and self._mj_data is not None:
             arm_qpos = []
             for idx, name in enumerate(self._arm_joint_names):
@@ -1461,7 +1490,13 @@ class SimulationCore:
         qpos = list(self._arm_qpos) + [gripper_driver]
         qvel = list(self._arm_qvel) + [self._gripper_velocity]
         ee_pose = self._compute_ee_pose_locked()
-        camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
+        if refresh_camera:
+            camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
+        elif self._camera_last_state is not None:
+            camera_state = deepcopy(self._camera_last_state)
+        else:
+            # Initialize camera snapshot once so lightweight broadcasts can reuse it.
+            camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
         return {
             "timestamp": time.time(),
             "sim_time": self._sim_time,

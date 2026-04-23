@@ -20,7 +20,8 @@
     "vue": "^3.2.47"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^4.1.0",
-    "vite": "^4.2.0"
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "vite": "^6.4.2"
   }
 }

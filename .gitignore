@@ -4,3 +4,5 @@ node_modules
 **/__pycache__/
 *.pyc
 backend/MUJOCO_LOG.TXT
+
+frontend/dist

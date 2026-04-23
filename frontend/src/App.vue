@@ -337,7 +337,7 @@ const showRobotPanel = ref(false); // 机器人控制面板默认显示
 const showControlPanel = ref(false); // 仿真控制面板默认显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
-const showVrControlPanel = ref(true); // VR控制中心默认显示
+const showVrControlPanel = ref(false); // VR控制中心默认不显示
 const ARM_JOINT_COUNT = 6;
 const TOTAL_INPUT_JOINT_COUNT = 7;
 const GRIPPER_MIN_RAD = 0;
@@ -346,6 +346,15 @@ const GRIPPER_MIN_DEG = 0;
 const GRIPPER_MAX_DEG = (GRIPPER_MAX_RAD * 180) / Math.PI;
 const DEFAULT_ANGLES_DEG = [0, -90, 90, -90, -90, 0, 0];
 const DEFAULT_TEST_ANGLES_DEG = [60, -90, 90, -140, -90, 0, 0];
+const BACKEND_ARM_JOINT_NAMES = [
+  "shoulder_pan_joint",
+  "shoulder_lift_joint",
+  "elbow_joint",
+  "wrist_1_joint",
+  "wrist_2_joint",
+  "wrist_3_joint",
+];
+const LOCAL_MANUAL_SOURCES = new Set(["desktop_manual"]);
 const ARM_JOINT_NAMES = [
   "link1_joint",
   "link2_joint",
@@ -397,10 +406,13 @@ const sliderSyncTimer = ref(null);
 const lastRealtimeSliderSendAt = ref(0);
 const pendingManualTarget = ref(null);
 const realtimeSliderFallbackInFlight = ref(false);
+const backendPoseSmoothingEnabled = ref(true);
+const backendPoseSmoothingAlpha = ref(0.26);
+const backendRenderTarget = ref(null);
 
-const REALTIME_SLIDER_DEBOUNCE_MS = 20;
-const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 30;
-const MANUAL_STATE_GUARD_MS = 800;
+const REALTIME_SLIDER_DEBOUNCE_MS = 16;
+const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 33;
+const MANUAL_STATE_GUARD_MS = 700;
 const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
 const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
 
@@ -884,6 +896,14 @@ function rememberPendingManualTarget(armRadians, gripperOpening) {
     arm: armRadians.slice(0, ARM_JOINT_COUNT).map((v) => Number(v)),
     gripper: opening * GRIPPER_MAX_RAD,
   };
+
+  // Keep scene-side smoothing target aligned with the latest manual command
+  // so UI interaction does not get pulled back by an older backend snapshot.
+  backendRenderTarget.value = {
+    timestamp: pendingManualTarget.value.sentAt,
+    arm: [...pendingManualTarget.value.arm],
+    gripper: pendingManualTarget.value.gripper,
+  };
 }
 
 function clearPendingManualTarget() {
@@ -896,9 +916,23 @@ function isBackendStateAlignedWithPendingTarget(state) {
     return true;
   }
 
+  const incomingJointNames = Array.isArray(state?.joint_names)
+    ? state.joint_names.map((name) => String(name))
+    : [];
+
   let maxArmError = 0;
   for (let i = 0; i < ARM_JOINT_COUNT; i++) {
-    const backendValue = Number(state.qpos[i]);
+    let backendValue = Number(state.qpos[i]);
+    if (incomingJointNames.length > 0) {
+      const expectedName = BACKEND_ARM_JOINT_NAMES[i];
+      const incomingIndex = incomingJointNames.indexOf(expectedName);
+      if (incomingIndex >= 0) {
+        const mappedValue = Number(state.qpos[incomingIndex]);
+        if (Number.isFinite(mappedValue)) {
+          backendValue = mappedValue;
+        }
+      }
+    }
     if (!Number.isFinite(backendValue)) continue;
     const error = Math.abs(backendValue - pending.arm[i]);
     if (error > maxArmError) maxArmError = error;
@@ -915,7 +949,11 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
   const pending = pendingManualTarget.value;
   if (!pending) return true;
 
-  if (state?.source && state.source !== "manual") {
+  if (
+    typeof state?.source === "string" &&
+    state.source.length > 0 &&
+    !LOCAL_MANUAL_SOURCES.has(state.source)
+  ) {
     clearPendingManualTarget();
     return true;
   }
@@ -1027,6 +1065,114 @@ function backendQuaternionToFrontend(quaternionWXYZ) {
   return BACKEND_TO_FRONTEND_ROT.clone().multiply(qBackend).normalize();
 }
 
+function buildBackendRenderTarget(state) {
+  if (!state || typeof state !== "object") return null;
+  if (!Array.isArray(state.qpos) || state.qpos.length < ARM_JOINT_COUNT) return null;
+
+  const incomingJointNames = Array.isArray(state.joint_names)
+    ? state.joint_names.map((name) => String(name))
+    : [];
+
+  const armRadians = BACKEND_ARM_JOINT_NAMES.map((jointName, index) => {
+    if (incomingJointNames.length > 0) {
+      const incomingIndex = incomingJointNames.indexOf(jointName);
+      if (incomingIndex >= 0) {
+        const mappedValue = Number(state.qpos[incomingIndex]);
+        if (Number.isFinite(mappedValue)) return mappedValue;
+      }
+    }
+    const fallback = Number(state.qpos[index]);
+    return Number.isFinite(fallback) ? fallback : 0;
+  });
+
+  const gripperRadians = getGripperRadiansFromBackendState(state);
+  const clampedGripper =
+    gripperRadians === null
+      ? clamp(getCurrentGripperRadians(), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD)
+      : clamp(Number(gripperRadians), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+
+  return {
+    timestamp: Date.now(),
+    arm: armRadians,
+    gripper: clampedGripper,
+  };
+}
+
+function getCurrentSceneArmRadians() {
+  if (!robot || !robot.joints) {
+    return getCurrentArmRadians();
+  }
+
+  return BACKEND_ARM_JOINT_NAMES.map((jointName, index) => {
+    const joint = robot.joints[jointName];
+    const value = Number(joint?.jointValue?.[0]);
+    if (Number.isFinite(value)) return value;
+    return toRadians(jointAngles.value?.[index] ?? DEFAULT_ANGLES_DEG[index]);
+  });
+}
+
+function getSceneJointInterpolationAlpha() {
+  if (!backendPoseSmoothingEnabled.value) return 1.0;
+  const alpha = Number(backendPoseSmoothingAlpha.value);
+  if (!Number.isFinite(alpha)) return 1.0;
+  return clamp(alpha, 0.05, 1.0);
+}
+
+function interpolateArmPose(currentArm, targetArm, alpha) {
+  const out = [];
+  const count = Math.min(currentArm.length, targetArm.length, ARM_JOINT_COUNT);
+  for (let i = 0; i < count; i++) {
+    const current = Number(currentArm[i]);
+    const target = Number(targetArm[i]);
+    if (!Number.isFinite(current) || !Number.isFinite(target)) {
+      out.push(Number.isFinite(target) ? target : 0);
+      continue;
+    }
+    out.push(current + (target - current) * alpha);
+  }
+  return out;
+}
+
+function interpolateScalar(current, target, alpha) {
+  const c = Number(current);
+  const t = Number(target);
+  if (!Number.isFinite(c)) return Number.isFinite(t) ? t : 0;
+  if (!Number.isFinite(t)) return c;
+  return c + (t - c) * alpha;
+}
+
+function applySmoothedBackendPose() {
+  const target = backendRenderTarget.value;
+  if (!target || !robot || !robot.joints) return;
+
+  const alpha = getSceneJointInterpolationAlpha();
+  const currentArm = getCurrentSceneArmRadians();
+  const nextArm = interpolateArmPose(currentArm, target.arm, alpha);
+  const currentGrip = getCurrentGripperRadians();
+  const nextGrip = clamp(
+    interpolateScalar(currentGrip, target.gripper, alpha),
+    GRIPPER_MIN_RAD,
+    GRIPPER_MAX_RAD
+  );
+
+  isApplyingBackendState.value = true;
+  try {
+    BACKEND_ARM_JOINT_NAMES.forEach((jointName, index) => {
+      const joint = robot.joints[jointName];
+      const value = Number(nextArm[index]);
+      if (!joint || !Number.isFinite(value)) return;
+      joint.setJointValue(value);
+      ensureJointAnglesBuffer();
+      jointAngles.value[index] = toDegrees(value);
+    });
+
+    setGripperJointValue(nextGrip, { skipPoseUpdate: true });
+    calculateEndEffectorPosition();
+  } finally {
+    isApplyingBackendState.value = false;
+  }
+}
+
 function applySceneObjectPoseFromBackend(objectId, objectState) {
   const model = sceneObjectModels.get(objectId);
   if (!model) return;
@@ -1050,23 +1196,23 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
 function applyBackendStateToScene(state) {
   if (!state || typeof state !== "object") return;
 
+  const renderTarget = buildBackendRenderTarget(state);
+  if (renderTarget) {
+    backendRenderTarget.value = renderTarget;
+    applySmoothedBackendPose();
+  }
+
   isApplyingBackendState.value = true;
   try {
-    if (Array.isArray(state.qpos) && state.qpos.length >= ARM_JOINT_COUNT) {
-      const armAnglesDeg = state.qpos
-        .slice(0, ARM_JOINT_COUNT)
-        .map((rad) => toDegrees(rad));
-      const gripperRadians = getGripperRadiansFromBackendState(state);
-      const gripperDeg =
-        gripperRadians !== null
-          ? clamp(toDegrees(gripperRadians), GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)
-          : getGripperDegFromQpos(state.qpos);
-      const fullAngles = [...armAnglesDeg, gripperDeg];
-
-      jointAngles.value = fullAngles;
+    if (renderTarget) {
+      const armAnglesDeg = renderTarget.arm.map((rad) => toDegrees(rad));
+      const gripperDeg = clamp(
+        toDegrees(renderTarget.gripper),
+        GRIPPER_MIN_DEG,
+        GRIPPER_MAX_DEG
+      );
+      jointAngles.value = [...armAnglesDeg, gripperDeg];
       gripperAngleDeg.value = gripperDeg;
-      setRobotAngles(fullAngles);
-      calculateEndEffectorPosition();
     }
 
     if (state?.objects && typeof state.objects === "object") {
@@ -1081,15 +1227,20 @@ function applyBackendStateToScene(state) {
 
 function applyAnglesToRobot(anglesDeg, options = {}) {
   const skipBackendSync = options.skipBackendSync !== false;
+  const skipPoseUpdate = options.skipPoseUpdate === true;
   const normalizedAngles = normalizeInputAngles(anglesDeg);
   if (!normalizedAngles) return null;
 
   const radians = normalizedAngles.map((value) => toRadians(value));
 
   ARM_JOINT_NAMES.forEach((jointName, index) => {
-    sliderInput(radians[index], jointName, { skipBackendSync });
+    sliderInput(radians[index], jointName, { skipBackendSync, skipPoseUpdate });
   });
-  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint", { skipBackendSync });
+  sliderInput(radians[ARM_JOINT_COUNT], "gripper_joint", { skipBackendSync, skipPoseUpdate });
+
+  if (skipPoseUpdate) {
+    calculateEndEffectorPosition();
+  }
 
   return {
     normalizedAngles,
@@ -1175,7 +1326,7 @@ const fetchData = async () => {
 };
 
 const sendArmCommandToBackend = async (armRadians, options = {}) => {
-  const n_steps = options.n_steps || 50;
+  const n_steps = options.n_steps || 30;
   const control_mode = options.control_mode || "position";
   const gripperCommand = buildGripperCommand(options);
   rememberPendingManualTarget(armRadians, gripperCommand.value);
@@ -1191,22 +1342,6 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
 
     if (sent) {
       sendCommandPending.value = true;
-
-      // 额外发送一次短时“保持”命令，避免后端控制目标被中间状态覆盖
-      setTimeout(() => {
-        try {
-          if (websocketManager.isConnected) {
-            websocketManager.sendControlCommand(armRadians, {
-              n_steps: 1,
-              control_mode: "position",
-              gripper_command: gripperCommand,
-              source: "desktop_manual",
-            });
-          }
-        } catch (err) {
-          console.warn("发送保持命令失败:", err);
-        }
-      }, 120);
 
       // 安全超时：防止 controlResult 丢失导致前端永久 pending
       setTimeout(() => {
@@ -1527,7 +1662,8 @@ function resolveJointName(name) {
   return null;
 }
 
-function setGripperJointValue(value) {
+function setGripperJointValue(value, options = {}) {
+  const skipPoseUpdate = options.skipPoseUpdate === true;
   const clampedValue = clamp(value, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
   gripperAngleDeg.value = toDegrees(clampedValue);
   ensureJointAnglesBuffer();
@@ -1553,6 +1689,10 @@ function setGripperJointValue(value) {
     joint.setJointValue(jointValue);
     hasApplied = true;
   });
+
+  if (!skipPoseUpdate) {
+    calculateEndEffectorPosition();
+  }
 
   if (!hasApplied && !warnedMissingJoints.has("gripper_joint")) {
     warnedMissingJoints.add("gripper_joint");
@@ -1585,7 +1725,7 @@ function sendRealtimeSliderControl(options = {}) {
 
   const sent = websocketManager.isConnected
     ? websocketManager.sendControlCommand(armRadians, {
-        n_steps: 20,
+        n_steps: 2,
         control_mode: "position",
         gripper_command: gripperCommand,
         source: "desktop_manual",
@@ -1601,11 +1741,11 @@ function sendRealtimeSliderControl(options = {}) {
     realtimeSliderFallbackInFlight.value = true;
     post("/sim/step/", {
       target_positions: armRadians,
-        n_steps: 20,
-        control_mode: "position",
-        gripper_command: gripperCommand,
-        source: "desktop_manual",
-      })
+      n_steps: 2,
+      control_mode: "position",
+      gripper_command: gripperCommand,
+      source: "desktop_manual",
+    })
       .then((resp) => {
         if (resp?.data?.state) {
           applyBackendStateToScene(resp.data.state);
@@ -1637,18 +1777,18 @@ function flushRealtimeSliderSync() {
     clearTimeout(sliderSyncTimer.value);
     sliderSyncTimer.value = null;
   }
-  sendRealtimeSliderControl({ force: true });
+  sendRealtimeSliderControl();
 }
 
 // 修改sliderInput函数，确保每次角度变化时更新位置信息
 function sliderInput(value, name, options = {}) {
   const skipBackendSync = options.skipBackendSync === true;
+  const skipPoseUpdate = options.skipPoseUpdate === true;
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return;
 
   if (name === "gripper_joint") {
-    setGripperJointValue(numericValue);
-    calculateEndEffectorPosition();
+    setGripperJointValue(numericValue, { skipPoseUpdate });
     if (!skipBackendSync) {
       rememberPendingManualTarget(
         getCurrentArmRadians(),
@@ -1677,8 +1817,9 @@ function sliderInput(value, name, options = {}) {
   }
 
   robot.joints[resolvedName].setJointValue(numericValue);
-  // 在每次关节变化后立即更新位置信息
-  calculateEndEffectorPosition();
+  if (!skipPoseUpdate) {
+    calculateEndEffectorPosition();
+  }
 
   if (!skipBackendSync) {
     rememberPendingManualTarget(
@@ -1696,7 +1837,10 @@ function sliderCommit(value, name) {
 
 // 新增设置机器臂六个角度的函数
 function setRobotAngles(angles) {
-  const applyResult = applyAnglesToRobot(angles, { skipBackendSync: true });
+  const applyResult = applyAnglesToRobot(angles, {
+    skipBackendSync: true,
+    skipPoseUpdate: true,
+  });
   if (!applyResult) {
     console.error("必须提供6或7个角度值");
     calculateEndEffectorPosition();
@@ -1796,11 +1940,10 @@ function initOrbitControls() {
 
 // render渲染器
 function render() {
+  // Keep approaching latest backend state between WS ticks for visually smooth motion.
+  applySmoothedBackendPose();
   renderer.render(scene, camera);
   controls.update();
-
-  // 每帧都更新位置信息
-  calculateEndEffectorPosition();
 
   requestAnimationFrame(render);
 }
@@ -2027,8 +2170,14 @@ const handleStateUpdate = (data) => {
 
   // 手动控制刚发出时，短时间忽略明显滞后的旧状态，避免前端“回弹到初始位”
   if (shouldApplyIncomingBackendState(data, now)) {
-    // 以后端回传状态为准，统一驱动机器人/夹爪/对象
+    // 以后端回传状态为准，统一驱动机器人/夹爪/对象（带平滑）
     applyBackendStateToScene(data);
+  } else {
+    const pendingTarget = buildBackendRenderTarget(data);
+    if (pendingTarget) {
+      backendRenderTarget.value = pendingTarget;
+      applySmoothedBackendPose();
+    }
   }
 
   // 添加到状态历史缓冲区
@@ -2133,6 +2282,7 @@ const getInterpolatedState = (targetTime) => {
 const resetStateSync = () => {
   simulationState.value = null;
   stateUpdateHistory.value = [];
+  backendRenderTarget.value = null;
   networkLatency.value = 0;
   stateSyncErrors.value = 0;
   actualUpdateRate.value = 0;
@@ -2144,6 +2294,7 @@ const resetStateSync = () => {
 // 切换状态插值
 const toggleStateInterpolation = () => {
   stateInterpolationEnabled.value = !stateInterpolationEnabled.value;
+  backendPoseSmoothingEnabled.value = stateInterpolationEnabled.value;
   console.log(`状态插值: ${stateInterpolationEnabled.value ? '启用' : '禁用'}`);
 };
 

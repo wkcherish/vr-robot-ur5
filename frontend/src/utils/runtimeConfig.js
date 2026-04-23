@@ -36,9 +36,9 @@ function inferBackendOrigin() {
     return "http://localhost:8000";
   }
 
-  const preferredProtocol = window.location.protocol === "https:" ? "https" : "http";
-  const host = window.location.hostname || "localhost";
-  return preferredProtocol + "://" + host + ":8000";
+  // Default to same-origin relative path so Vite dev server proxy can bridge
+  // HTTPS frontend to HTTP backend without browser mixed-content/CORS issues.
+  return "";
 }
 
 function inferBackendWsUrl(origin) {
@@ -52,16 +52,20 @@ function inferBackendWsUrl(origin) {
 }
 
 const backendOrigin = inferBackendOrigin();
-const backendWsBase = inferBackendWsUrl(backendOrigin);
+const backendWsBase = backendOrigin
+  ? inferBackendWsUrl(backendOrigin)
+  : (typeof window !== "undefined" && window.location
+      ? window.location.origin.replace(/^http/i, "ws")
+      : "");
 
 export const runtimeConfig = {
-  backendOrigin,
+  backendOrigin: backendOrigin || (typeof window !== "undefined" ? window.location.origin : ""),
   backendWsBase,
-  healthUrl: backendOrigin + "/health/",
-  simStateUrl: backendOrigin + "/sim/state/",
-  legacyDataUrl: backendOrigin + "/data/",
-  simStepUrl: backendOrigin + "/sim/step/",
-  simWsUrl: backendWsBase + "/sim/ws",
+  healthUrl: (backendOrigin || "") + "/health/",
+  simStateUrl: (backendOrigin || "") + "/sim/state/",
+  legacyDataUrl: (backendOrigin || "") + "/data/",
+  simStepUrl: (backendOrigin || "") + "/sim/step/",
+  simWsUrl: backendWsBase ? (backendWsBase + "/sim/ws") : "/sim/ws",
 };
 
 export function makePageAccessUrl(hostIp) {
