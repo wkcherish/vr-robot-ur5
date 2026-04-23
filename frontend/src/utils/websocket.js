@@ -3,6 +3,8 @@
  * 提供全局 WebSocket 连接管理和消息发送功能
  */
 
+import { runtimeConfig } from "./runtimeConfig";
+
 class WebSocketManager {
   constructor() {
     this.websocket = null;
@@ -20,7 +22,7 @@ class WebSocketManager {
   }
 
   // 连接到 WebSocket 服务器
-  connect(url = 'ws://localhost:8000/sim/ws') {
+  connect(url = runtimeConfig.simWsUrl) {
     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
       console.log('WebSocket 已经连接');
       return;
@@ -82,7 +84,9 @@ class WebSocketManager {
   sendControlCommand(targetPositions, options = {}) {
     const payload = {
       target_positions: targetPositions,
-      n_steps: options.n_steps || 10,
+      n_steps: Number.isFinite(Number(options.n_steps))
+        ? Math.max(1, Math.floor(Number(options.n_steps)))
+        : 2,
       kp: options.kp,
       kd: options.kd,
       control_mode: options.control_mode || 'position'
@@ -97,6 +101,22 @@ class WebSocketManager {
 
     if (typeof options.source === 'string' && options.source.length > 0) {
       payload.source = options.source;
+    }
+
+    if (typeof options.input_source === 'string' && options.input_source.length > 0) {
+      payload.input_source = options.input_source;
+    }
+
+    if (typeof options.selected_joint_group === 'string' && options.selected_joint_group.length > 0) {
+      payload.selected_joint_group = options.selected_joint_group;
+    }
+
+    if (options.raw_input && typeof options.raw_input === 'object') {
+      payload.raw_input = options.raw_input;
+    }
+
+    if (options.normalized_input && typeof options.normalized_input === 'object') {
+      payload.normalized_input = options.normalized_input;
     }
 
     const message = {
@@ -120,6 +140,14 @@ class WebSocketManager {
     return this.sendMessage({
       type: 'stop_task',
       timestamp: Date.now()
+    });
+  }
+
+  sendVrStateUpdate(payload = {}) {
+    return this.sendMessage({
+      type: "vr_state",
+      data: payload,
+      timestamp: Date.now(),
     });
   }
 
@@ -245,6 +273,10 @@ class WebSocketManager {
 
       case 'task_result':
         this.emit('taskResult', data);
+        break;
+
+      case 'vr_state_result':
+        this.emit('vrStateResult', data);
         break;
 
       case 'error':

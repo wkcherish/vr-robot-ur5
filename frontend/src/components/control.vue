@@ -505,6 +505,7 @@ const grabTool = () => {
       mode: "open_close",
       value: 1.0,
     },
+    source: "desktop_manual",
   });
 
   if (!success) {
@@ -546,6 +547,7 @@ const moveToPosition = (position) => {
       mode: "open_close",
       value: 1.0,
     },
+    source: "desktop_manual",
   });
 
   if (!success) {
@@ -579,6 +581,7 @@ const placeTool = () => {
       mode: "open_close",
       value: 0.0,
     },
+    source: "desktop_manual",
   });
 
   if (!success) {

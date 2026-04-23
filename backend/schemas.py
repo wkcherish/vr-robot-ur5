@@ -4,7 +4,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ControlSource = Literal["manual", "task", "policy"]
+ControlSource = Literal[
+    "manual",
+    "desktop_manual",
+    "quest3_controller",
+    "quest3_hand",
+    "task",
+    "policy",
+]
+VRMode = Literal[
+    "vr_disabled",
+    "vr_ready",
+    "vr_controller_mode",
+    "vr_hand_mode",
+    "vr_error",
+]
 
 
 class WSMessage(BaseModel):
@@ -32,6 +46,10 @@ class StepRequest(BaseModel):
     kd: float | None = None
     gripper_command: GripperCommand | None = None
     source: ControlSource = "manual"
+    input_source: str | None = None
+    selected_joint_group: str | None = None
+    raw_input: dict[str, Any] | None = None
+    normalized_input: dict[str, Any] | None = None
 
     class Config:
         extra = "ignore"
@@ -106,6 +124,7 @@ class SimState(BaseModel):
     camera_capture_ok: bool = False
     task_state: TaskState
     source: ControlSource
+    vr: dict[str, Any]
     stats: dict[str, float | int]
 
 
@@ -121,6 +140,7 @@ class HealthResponse(BaseModel):
     timestamp: float
     model_backend: str
     scene_manifest: str
+    host_ip: str | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -128,3 +148,18 @@ class ErrorResponse(BaseModel):
     message: str
     detail: str | None = None
     timestamp: float
+
+
+class VRStateUpdateRequest(BaseModel):
+    mode: VRMode | None = None
+    controller_available: bool | None = None
+    hand_tracking_available: bool | None = None
+    selected_joint_group: str | None = None
+    recording_ready: bool | None = None
+    last_quest_input_ts: float | None = None
+    active_policy_path: str | None = None
+    error_message: str | None = None
+    source: ControlSource | None = None
+
+    class Config:
+        extra = "ignore"
