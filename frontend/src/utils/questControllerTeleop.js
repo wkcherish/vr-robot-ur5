@@ -13,59 +13,57 @@ const GROUP_LABEL = {
 };
 
 const JOINT_LIMITS_RAD = [
+  [-2 * Math.PI, 2 * Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
   [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
 ];
 
 function clamp(value, min, max) {
   return Math.min(Math.max(Number(value) || 0, min), max);
 }
 
-function normalizeAxis(raw, deadzone) {
-  const x = clamp(raw, -1, 1);
-  const dz = clamp(deadzone, 0, 0.5);
-  if (Math.abs(x) <= dz) return 0;
-  const sign = x >= 0 ? 1 : -1;
-  return sign * ((Math.abs(x) - dz) / (1 - dz));
+function lowPass(previous, next, alpha) {
+  const a = clamp(alpha, 0, 1);
+  return previous + (next - previous) * a;
 }
 
-function nextGroupFromButtons(controls, fallbackGroup) {
-  if (!controls || typeof controls !== "object") return fallbackGroup;
-  if ((controls.select_upper_arm || 0) > 0.6) return "upper_arm";
-  if ((controls.select_forearm || 0) > 0.6) return "forearm";
-  if ((controls.select_wrist || 0) > 0.6) return "wrist";
-  return fallbackGroup;
+function applyDeadzone(value, deadzone) {
+  const x = clamp(value, -1, 1);
+  const dz = clamp(deadzone, 0, 0.5);
+  const magnitude = Math.abs(x);
+  if (magnitude <= dz) return 0;
+  const normalized = (magnitude - dz) / (1 - dz);
+  return Math.sign(x) * normalized;
+}
+
+function resolvePressedGroup(controls) {
+  if (!controls || typeof controls !== "object") return null;
+  if (clamp(controls.select_wrist, 0, 1) > 0.5) return "wrist";
+  if (clamp(controls.select_forearm, 0, 1) > 0.5) return "forearm";
+  if (clamp(controls.select_upper_arm, 0, 1) > 0.5) return "upper_arm";
+  return null;
 }
 
 export function createQuestControllerTeleop(options = {}) {
   const cfg = {
-    deadzone: Number.isFinite(Number(options.deadzone)) ? Number(options.deadzone) : 0.14,
-    sensitivity: Number.isFinite(Number(options.sensitivity)) ? Number(options.sensitivity) : 1.0,
-    filter_alpha: Number.isFinite(Number(options.filter_alpha)) ? Number(options.filter_alpha) : 0.36,
-    max_joint_speed_rad_s: Number.isFinite(Number(options.max_joint_speed_rad_s))
-      ? Number(options.max_joint_speed_rad_s)
-      : 1.2,
-    max_delta_rad_per_tick: Number.isFinite(Number(options.max_delta_rad_per_tick))
-      ? Number(options.max_delta_rad_per_tick)
-      : 0.045,
-    max_gripper_delta_per_tick: Number.isFinite(Number(options.max_gripper_delta_per_tick))
-      ? Number(options.max_gripper_delta_per_tick)
-      : 0.04,
+    deadzone: Number.isFinite(Number(options.deadzone)) ? Number(options.deadzone) : 0.1,
+    joint_step: Number.isFinite(Number(options.joint_step)) ? Number(options.joint_step) : 0.07,
+    precision_scale: Number.isFinite(Number(options.precision_scale)) ? Number(options.precision_scale) : 0.4,
+    stick_smoothing: Number.isFinite(Number(options.stick_smoothing)) ? Number(options.stick_smoothing) : 0.25,
+    gripper_smoothing: Number.isFinite(Number(options.gripper_smoothing))
+      ? Number(options.gripper_smoothing)
+      : 0.16,
+    gripper_min: 0,
+    gripper_max: 0.9,
   };
 
   let selectedGroup = "upper_arm";
-  let lastAxisX = 0;
-  let lastAxisY = 0;
-  let lastTrigger = 0;
-
-  function smooth(current, previous) {
-    const alpha = clamp(cfg.filter_alpha, 0.01, 1);
-    return previous + (current - previous) * alpha;
-  }
+  let lastStickX = 0;
+  let lastStickY = 0;
+  let lastGripper = 0.8;
 
   function getState() {
     return {
@@ -75,52 +73,55 @@ export function createQuestControllerTeleop(options = {}) {
     };
   }
 
-  function applySnapshot(snapshot, currentArmRadians, currentGripperOpening, dtSec = 1 / 30) {
+  function applySnapshot(snapshot, currentArmRadians, currentGripperOpening) {
     const arm = Array.isArray(currentArmRadians) ? currentArmRadians.slice(0, 6) : null;
     if (!arm || arm.length < 6) {
       return { has_command: false, reason: "invalid_arm_state", ...getState() };
     }
 
     if (!snapshot?.available || !snapshot?.controls) {
+      lastStickX = lowPass(lastStickX, 0, cfg.stick_smoothing);
+      lastStickY = lowPass(lastStickY, 0, cfg.stick_smoothing);
+      lastGripper = lowPass(lastGripper, clamp(currentGripperOpening, 0, 1), cfg.gripper_smoothing);
       return { has_command: false, reason: "controller_unavailable", ...getState() };
     }
 
+    const pressedGroup = resolvePressedGroup(snapshot.controls);
     const previousGroup = selectedGroup;
-    selectedGroup = nextGroupFromButtons(snapshot.controls, selectedGroup);
+    if (pressedGroup) {
+      selectedGroup = pressedGroup;
+    }
 
-    const normX = normalizeAxis(snapshot.controls.stick_x, cfg.deadzone);
-    const normY = normalizeAxis(snapshot.controls.stick_y, cfg.deadzone);
+    const rawStickX = applyDeadzone(snapshot.controls.stick_x, cfg.deadzone);
+    const rawStickY = applyDeadzone(snapshot.controls.stick_y, cfg.deadzone);
     const triggerRaw = clamp(snapshot.controls.trigger, 0, 1);
+    const precisionMode = clamp(snapshot.controls.precision, 0, 1) > 0.1;
 
-    const filteredX = smooth(normX, lastAxisX);
-    const filteredY = smooth(normY, lastAxisY);
-    const filteredTrigger = smooth(triggerRaw, lastTrigger);
+    const smoothStickX = lowPass(lastStickX, rawStickX, cfg.stick_smoothing);
+    const smoothStickY = lowPass(lastStickY, rawStickY, cfg.stick_smoothing);
+    lastStickX = smoothStickX;
+    lastStickY = smoothStickY;
 
-    lastAxisX = filteredX;
-    lastAxisY = filteredY;
-    lastTrigger = filteredTrigger;
+    const speedScale = cfg.joint_step * (precisionMode ? cfg.precision_scale : 1);
+    let deltaA = 0;
+    let deltaB = 0;
+    if (pressedGroup) {
+      const pair = GROUP_JOINT_INDEX[selectedGroup] || GROUP_JOINT_INDEX.upper_arm;
+      const [indexA, indexB] = pair;
+      deltaA = smoothStickY * speedScale;
+      deltaB = smoothStickX * speedScale;
+      arm[indexA] = clamp(arm[indexA] + deltaA, JOINT_LIMITS_RAD[indexA][0], JOINT_LIMITS_RAD[indexA][1]);
+      arm[indexB] = clamp(arm[indexB] + deltaB, JOINT_LIMITS_RAD[indexB][0], JOINT_LIMITS_RAD[indexB][1]);
+    }
 
-    const dt = clamp(dtSec, 1 / 120, 1 / 10);
-    const speed = clamp(cfg.max_joint_speed_rad_s * cfg.sensitivity, 0.1, 3.0);
-    const rawDeltaA = clamp(-filteredY * speed * dt, -cfg.max_delta_rad_per_tick, cfg.max_delta_rad_per_tick);
-    const rawDeltaB = clamp(filteredX * speed * dt, -cfg.max_delta_rad_per_tick, cfg.max_delta_rad_per_tick);
+    const mappedGripper = cfg.gripper_min + triggerRaw * (cfg.gripper_max - cfg.gripper_min);
+    lastGripper = lowPass(lastGripper, mappedGripper, cfg.gripper_smoothing);
+    const nextGripper = clamp(lastGripper, cfg.gripper_min, cfg.gripper_max);
 
-    const groupPair = GROUP_JOINT_INDEX[selectedGroup] || GROUP_JOINT_INDEX.upper_arm;
-    const [indexA, indexB] = groupPair;
-    arm[indexA] = clamp(arm[indexA] + rawDeltaA, JOINT_LIMITS_RAD[indexA][0], JOINT_LIMITS_RAD[indexA][1]);
-    arm[indexB] = clamp(arm[indexB] + rawDeltaB, JOINT_LIMITS_RAD[indexB][0], JOINT_LIMITS_RAD[indexB][1]);
-
-    const currentGrip = clamp(currentGripperOpening, 0, 1);
-    const gripDelta = clamp(
-      filteredTrigger - currentGrip,
-      -cfg.max_gripper_delta_per_tick,
-      cfg.max_gripper_delta_per_tick
-    );
-    const nextGripper = clamp(currentGrip + gripDelta, 0, 1);
-
-    const activity = Math.abs(rawDeltaA) + Math.abs(rawDeltaB) + Math.abs(gripDelta);
     const changedGroup = previousGroup !== selectedGroup;
-    const hasCommand = changedGroup || activity > 1e-4;
+    const hasJointActivity = Boolean(pressedGroup) && Math.abs(deltaA) + Math.abs(deltaB) > 1e-4;
+    const hasGripperActivity = Math.abs(nextGripper - clamp(currentGripperOpening, 0, 1)) > 0.004;
+    const hasCommand = hasJointActivity || hasGripperActivity;
 
     return {
       has_command: hasCommand,
@@ -132,9 +133,10 @@ export function createQuestControllerTeleop(options = {}) {
       selected_joint_group_label: GROUP_LABEL[selectedGroup] || selectedGroup,
       changed_joint_group: changedGroup,
       normalized_input: {
-        stick_x: filteredX,
-        stick_y: filteredY,
-        trigger: filteredTrigger,
+        stick_x: smoothStickX,
+        stick_y: smoothStickY,
+        trigger: triggerRaw,
+        precision: precisionMode ? 1 : 0,
         select_upper_arm: clamp(snapshot.controls.select_upper_arm, 0, 1),
         select_forearm: clamp(snapshot.controls.select_forearm, 0, 1),
         select_wrist: clamp(snapshot.controls.select_wrist, 0, 1),

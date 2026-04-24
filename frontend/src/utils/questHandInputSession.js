@@ -1,4 +1,10 @@
 import { DEFAULT_SNAPSHOT } from "./questHandInputCore.js";
+import {
+  ensureQuestXRSession,
+  getQuestXRReferenceSpace,
+  getQuestXRSession,
+  getQuestXRStatus,
+} from "./questXRSession.js";
 
 export const state = {
   running: false,
@@ -8,39 +14,25 @@ export const state = {
   lastSnapshot: { ...DEFAULT_SNAPSHOT },
 };
 
-export async function createHandTrackingSession() {
-  if (typeof navigator === "undefined" || !navigator.xr || !navigator.xr.requestSession) {
-    state.status = { ready: false, reason: "webxr_unavailable" };
-    return false;
+export async function ensureSession() {
+  if (state.session && state.referenceSpace) {
+    state.status = { ready: true, reason: "ok" };
+    return;
   }
 
-  try {
-    state.session = await navigator.xr.requestSession("inline", {
-      optionalFeatures: ["hand-tracking", "local-floor"],
-    });
-  } catch (_) {
-    state.status = { ready: false, reason: "xr_session_failed" };
-    return false;
-  }
-
-  try {
-    state.referenceSpace = await state.session.requestReferenceSpace("local");
-  } catch (_) {
-    state.referenceSpace = await state.session.requestReferenceSpace("viewer");
-  }
-
-  state.session.addEventListener("end", () => {
-    state.session = null;
-    state.referenceSpace = null;
-    state.status = { ready: false, reason: "xr_session_ended" };
-    state.lastSnapshot = { ...DEFAULT_SNAPSHOT, reason: "xr_session_ended", timestamp_ms: Date.now() };
-  });
-
-  state.status = { ready: true, reason: "ok" };
-  return true;
+  const status = await ensureQuestXRSession();
+  state.session = getQuestXRSession();
+  state.referenceSpace = getQuestXRReferenceSpace();
+  state.status = {
+    ready: Boolean(status.ready && state.session && state.referenceSpace),
+    reason: status.reason,
+  };
 }
 
-export async function ensureSession() {
-  if (state.session) return;
-  await createHandTrackingSession();
+export async function closeSession() {
+  const status = getQuestXRStatus();
+  state.session = null;
+  state.referenceSpace = null;
+  state.status = { ready: false, reason: status.reason || "stopped" };
+  state.lastSnapshot = { ...DEFAULT_SNAPSHOT, reason: state.status.reason, timestamp_ms: Date.now() };
 }
