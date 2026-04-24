@@ -1,67 +1,73 @@
-﻿# 机械臂仿真项目
+﻿# ar-ur5-rl
 
 ## 项目简介
-这是一个基于 Vue 3 和 Three.js 的机械臂仿真项目，用于在网页中可视化展示机械臂模型，并进行关节角度控制与交互演示。
+
+`ar-ur5-rl` 是一个面向 Quest3 远程示教与仿真验证的 UR5 数字孪生项目，包含：
+
+- 前端：Vue 3 + Three.js 机械臂与场景可视化
+- 后端：FastAPI + MuJoCo 仿真状态与控制接口
+- VR 控制：Quest3 手柄模式与手势模式
 
 ## 技术栈
-- Vite
-- Vue 3
-- Three.js
-- Element Plus
-- Axios
+
+- 前端：Vite、Vue 3、Three.js、Element Plus、Axios
+- 后端：FastAPI、Pydantic、MuJoCo
 
 ## 目录结构
+
 ```text
-vue-robot/
+ar-ur5-rl/
 ├─ frontend/              # 前端工程（Vite + Vue）
-│  ├─ src/
-│  ├─ public/
-│  ├─ package.json
-│  └─ vite.config.js
-└─ backend/               # 预留目录（当前为空）
+├─ backend/               # 后端工程（FastAPI + MuJoCo）
+├─ shared/                # 场景与数据协议共享配置
+└─ docs/                  # 任务与实现文档
 ```
 
 ## 环境要求
-- Node.js 18 及以上（建议）
+
+- Node.js 18+
+- Python 3.10+
 - npm / pnpm / yarn 任一包管理器
 
-## 安装依赖
-在前端目录执行：
+## 前端启动
 
 ```bash
 cd frontend
 npm install
-# 或 pnpm install
-# 或 yarn install
-```
-
-## 启动开发环境
-在前端目录执行：
-
-```bash
-cd frontend
 npm run dev
-# 或 pnpm run dev
-# 或 yarn dev
 ```
 
-启动后访问：
-- 前端：`http://localhost:5173`
+默认访问：`http://localhost:5173`
 
-Quest3 建议使用 HTTPS 访问（例如 `https://<LAN_IP>:5173`），并确保后端也是 HTTPS/WSS。
-可通过环境变量启用前端 HTTPS 证书：
+Quest3 建议使用 HTTPS 访问（示例：`https://<LAN_IP>:5173`）。  
+可通过环境变量启用 HTTPS 证书：
 
 ```bash
 VITE_HTTPS_CERT=<path/to/cert.pem> VITE_HTTPS_KEY=<path/to/key.pem> npm run dev
 ```
 
-## 生产构建
+## 后端启动
+
 ```bash
-cd frontend
-npm run build
-npm run preview
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.api_app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## 备注
-- `backend/` 目录已保留，但当前没有后端代码。
-- 如需接入后端服务，可按你的技术栈（如 FastAPI）在 `backend/` 中自行扩展。
+Windows 可使用：
+
+```bash
+.venv\Scripts\activate
+```
+
+更多后端启动方式见：
+
+- [backend/README.md](backend/README.md)
+
+## VR 控制与性能修复记录（2026-04-24）
+
+本次针对“进入 VR 后选模式无法稳定控制机械臂”和“高负载卡顿”问题，已完成具体参数级修复。  
+详细见：
+
+- [docs/vr_control_and_performance_update_2026-04-24.md](docs/vr_control_and_performance_update_2026-04-24.md)

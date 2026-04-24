@@ -200,9 +200,10 @@
               <button
                 class="vr-menu-btn enter"
                 :class="{ active: isVrModeEntered }"
+                :disabled="vrEnterInProgress"
                 @click="enterVrMode"
               >
-                进入VR模式
+                {{ vrEnterInProgress ? "进入中..." : "进入VR模式" }}
               </button>
               <button
                 class="vr-menu-btn exit"
@@ -423,6 +424,11 @@ import {
   getQuestHandInputStatus,
 } from "./utils/questHandInput.js";
 import { createQuestHandTeleop } from "./utils/questHandTeleop.js";
+import {
+  ensureQuestXRSession,
+  getQuestXRSession,
+  stopQuestXRSession,
+} from "./utils/questXRSession.js";
 
 // 修改视角控制为下拉菜单
 const selectedView = ref("perspective"); // 默认选择透视视角
@@ -525,6 +531,9 @@ const MAX_RENDER_PIXEL_RATIO = 1.5;
 const QUEST_MAX_RENDER_PIXEL_RATIO = 1.0;
 const UI_SYNC_INTERVAL_MS = 66;
 const UI_POSE_SYNC_INTERVAL_MS = 100;
+const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
+const VR_COMMAND_MIN_INTERVAL_MS = 50;
+const VR_COMMAND_INFLIGHT_TIMEOUT_MS = 420;
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -559,6 +568,7 @@ const networkPrereqOk = ref(false);
 const vrModeState = ref("vr_disabled");
 const selectedVrInputMode = ref("");
 const vrErrorMessage = ref("");
+const vrEnterInProgress = ref(false);
 const vrSelectedJointGroup = ref("arm_full");
 const vrControlOwner = ref("desktop_manual");
 const lastLocalVrModeSetAt = ref(0);
@@ -572,6 +582,9 @@ const questControllerRawInput = ref(null);
 const questControllerLoopTimer = ref(null);
 const questControllerFallbackInFlight = ref(false);
 const lastQuestControllerTickAt = ref(0);
+const questControllerCommandInFlight = ref(false);
+const lastQuestControllerSentAt = ref(0);
+const questControllerInFlightTimeout = ref(null);
 const questHandAvailable = ref(false);
 const questHandStatusText = ref("未激活");
 const questHandSensitivity = ref(0.9);
@@ -584,6 +597,10 @@ const questHandRawInput = ref(null);
 const questHandLoopTimer = ref(null);
 const questHandFallbackInFlight = ref(false);
 const lastQuestHandTickAt = ref(0);
+const questHandCommandInFlight = ref(false);
+const lastQuestHandSentAt = ref(0);
+const questHandInFlightTimeout = ref(null);
+const lastVrStateSyncedAt = ref(0);
 
 const VR_MODE_LOCAL_LOCK_MS = 1200;
 const VR_ENTERED_MODES = new Set(["vr_ready", "vr_controller_mode", "vr_hand_mode"]);
@@ -600,6 +617,10 @@ let questHandTeleop = createQuestHandTeleop({
 });
 
 const isQuest3Device = computed(() => deviceCategory.value === "quest3");
+const isPageSecureContext = computed(() => {
+  if (typeof window === "undefined") return false;
+  return Boolean(window.isSecureContext);
+});
 const backendHttpOrigin = computed(() => runtimeConfig.backendOrigin);
 const backendWsAddress = computed(() => runtimeConfig.simWsUrl);
 const networkAccessHints = computed(() => {
@@ -609,6 +630,9 @@ const networkAccessHints = computed(() => {
   }
   if (isQuest3Device.value) {
     hints.push("当前为 Quest3 访问，请确认与主机处于同一局域网。");
+    if (!isPageSecureContext.value) {
+      hints.push("当前页面不是安全上下文，请改用 HTTPS 地址访问（需先信任证书）。");
+    }
   }
   return hints;
 });
@@ -908,6 +932,14 @@ function applyVrStateFromBackend(state) {
 }
 
 function syncVrStateToBackend(payload) {
+  const now = Date.now();
+  const elapsed = now - Number(lastVrStateSyncedAt.value || 0);
+  const forceSync = Boolean(payload?.mode === "vr_disabled" || payload?.mode === "vr_error");
+  if (!forceSync && elapsed < VR_STATE_SYNC_MIN_INTERVAL_MS) {
+    return;
+  }
+  lastVrStateSyncedAt.value = now;
+
   if (websocketManager.isConnected) {
     websocketManager.sendVrStateUpdate(payload);
     return;
@@ -931,6 +963,51 @@ function shouldIgnoreBackendVrMode(mode) {
     return true;
   }
   return false;
+}
+
+function buildHttpsAccessHint() {
+  const preferredHost = String(localHostIp.value || localHostname.value || "").trim();
+  const pagePort = Number(import.meta.env.VITE_PAGE_PORT || window.location.port || 5173);
+  const httpsUrl = preferredHost
+    ? `https://${preferredHost}:${pagePort}`
+    : (typeof window !== "undefined" && window.location
+        ? `${window.location.origin.replace(/^http:/, "https:")}`
+        : "https://<主机IP>:5173");
+  return `请改用 HTTPS 访问前端（示例：${httpsUrl}），并在 Quest3 浏览器中先信任该证书。`;
+}
+
+function describeVrEnterFailure(reason, detail) {
+  const detailText = String(detail || "").trim();
+  if (reason === "insecure_context") {
+    const suffix = buildHttpsAccessHint();
+    return `进入VR失败：当前页面不是安全上下文。${suffix}`;
+  }
+  if (reason === "webxr_unavailable") {
+    return "进入VR失败：浏览器未提供 WebXR 能力（请确认使用 Quest3 浏览器且系统已启用 XR）。";
+  }
+  if (reason === "immersive_vr_not_supported") {
+    return detailText
+      ? `进入VR失败：设备/浏览器不支持 immersive-vr（${detailText}）。`
+      : "进入VR失败：设备/浏览器不支持 immersive-vr。";
+  }
+  if (reason === "user_gesture_or_permission_denied") {
+    return detailText
+      ? `进入VR失败：未获得手势/权限授权（${detailText}）。`
+      : "进入VR失败：未获得手势/权限授权，请在 Quest3 中允许进入 VR。";
+  }
+  if (reason === "xr_runtime_invalid_state") {
+    return detailText
+      ? `进入VR失败：XR 运行时状态异常（${detailText}），请先退出已有 VR 会话后重试。`
+      : "进入VR失败：XR 运行时状态异常，请先退出已有 VR 会话后重试。";
+  }
+  if (reason === "xr_runtime_aborted") {
+    return detailText
+      ? `进入VR失败：XR 会话被中止（${detailText}）。`
+      : "进入VR失败：XR 会话被中止，请重试。";
+  }
+  return detailText
+    ? `进入VR失败：XR会话未就绪(${reason}) - ${detailText}`
+    : `进入VR失败：XR会话未就绪(${reason})`;
 }
 
 async function runQuest3AccessChecks() {
@@ -960,6 +1037,26 @@ async function runQuest3AccessChecks() {
     vrErrorMessage.value = "局域网接入前置检查未通过";
   } else if (networkPrereqOk.value && vrModeState.value !== "vr_error") {
     vrErrorMessage.value = "";
+  }
+
+  if (isQuest3Device.value) {
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      vrErrorMessage.value = `XR 不可用：当前页面不是安全上下文（需 HTTPS 或 localhost）。${buildHttpsAccessHint()}`;
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.xr || !navigator.xr.isSessionSupported) {
+      vrErrorMessage.value = "XR 不可用：浏览器不支持 WebXR。";
+      return;
+    }
+    let immersiveVrSupported = false;
+    try {
+      immersiveVrSupported = await navigator.xr.isSessionSupported("immersive-vr");
+    } catch (_) {
+      immersiveVrSupported = false;
+    }
+    if (!immersiveVrSupported) {
+      vrErrorMessage.value = "XR 不可用：设备/浏览器不支持 immersive-vr。";
+    }
   }
 }
 
@@ -1012,31 +1109,60 @@ function chooseVrInputMode(mode) {
 }
 
 async function enterVrMode() {
-  await runQuest3AccessChecks();
+  if (vrEnterInProgress.value) {
+    return;
+  }
   if (!isQuest3Device.value) {
     vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
     return;
   }
-  if (!networkPrereqOk.value) {
-    vrErrorMessage.value = "前置检查未通过，请先确认网络、WebSocket、D405和录制配置状态。";
-    return;
+
+  vrEnterInProgress.value = true;
+  try {
+    const prereqOkAtClick = Boolean(networkPrereqOk.value);
+    const xrStatus = await ensureQuestXRSession();
+    if (!xrStatus.ready) {
+      vrErrorMessage.value = describeVrEnterFailure(xrStatus.reason, xrStatus.detail);
+      return;
+    }
+
+    const xrSession = getQuestXRSession();
+    if (!xrSession || !renderer?.xr || typeof renderer.xr.setSession !== "function") {
+      vrErrorMessage.value = "进入VR失败：XR会话已创建，但渲染器XR通道未就绪。";
+      await stopQuestXRSession();
+      return;
+    }
+
+    try {
+      await renderer.xr.setSession(xrSession);
+    } catch (error) {
+      const detail = String(error?.message || "").trim();
+      vrErrorMessage.value = detail
+        ? `进入VR失败：XR渲染会话绑定失败（${detail}）。`
+        : "进入VR失败：XR渲染会话绑定失败。";
+      await stopQuestXRSession();
+      return;
+    }
+
+    stopQuestControllerLoop();
+    stopQuestHandLoop();
+    setVrModeLocally("vr_ready");
+    vrControlOwner.value = "desktop_manual";
+    vrErrorMessage.value = prereqOkAtClick ? "" : "VR已进入；前置检查未全部通过，请关注连接状态。";
+    syncVrStateToBackend({
+      mode: "vr_ready",
+      source: "desktop_manual",
+      selected_joint_group: vrSelectedJointGroup.value,
+      recording_ready: recordingCheckStatus.value === "ok",
+      error_message: "",
+    });
+
+    const autoMode = selectedVrInputMode.value === "hand" ? "hand" : "controller";
+    chooseVrInputMode(autoMode);
+    void runQuest3AccessChecks();
+  } finally {
+    vrEnterInProgress.value = false;
   }
-
-  stopQuestControllerLoop();
-  stopQuestHandLoop();
-  setVrModeLocally("vr_ready");
-  vrControlOwner.value = "desktop_manual";
-  vrErrorMessage.value = "";
-  syncVrStateToBackend({
-    mode: "vr_ready",
-    source: "desktop_manual",
-    selected_joint_group: vrSelectedJointGroup.value,
-    recording_ready: recordingCheckStatus.value === "ok",
-    error_message: "",
-  });
-
-  const autoMode = selectedVrInputMode.value === "hand" ? "hand" : "controller";
-  chooseVrInputMode(autoMode);
 }
 
 function ensureVrModeActive() {
@@ -1061,6 +1187,10 @@ function exitVrMode() {
     recording_ready: recordingCheckStatus.value === "ok",
     error_message: "",
   });
+  if (renderer?.xr) {
+    Promise.resolve(renderer.xr.setSession(null)).catch(() => {});
+  }
+  void stopQuestXRSession();
 }
 
 function handleQuestDisconnected() {
@@ -1069,12 +1199,12 @@ function handleQuestDisconnected() {
   if (vrControlOwner.value !== "quest3_controller" && vrControlOwner.value !== "quest3_hand") {
     return;
   }
+  setVrModeLocally("vr_ready");
   selectedVrInputMode.value = "";
-  setVrModeLocally("vr_error");
-  vrErrorMessage.value = "Quest3连接中断，已停止发送新的控制命令。";
+  vrErrorMessage.value = "连接中断，已停止控制；XR会话保留，可重连后继续。";
   vrControlOwner.value = "desktop_manual";
   syncVrStateToBackend({
-    mode: "vr_error",
+    mode: "vr_ready",
     source: "desktop_manual",
     selected_joint_group: vrSelectedJointGroup.value,
     recording_ready: recordingCheckStatus.value === "ok",
@@ -1127,13 +1257,13 @@ function isQuestHandModeActive() {
 function rebuildQuestControllerTeleop() {
   questControllerTeleop = createQuestControllerTeleop({
     deadzone: questControllerDeadzone.value,
-    sensitivity: questControllerSensitivity.value,
+    joint_step: 0.07 * clamp(questControllerSensitivity.value, 0.4, 1.8),
   });
 }
 
 function rebuildQuestHandTeleop() {
   questHandTeleop = createQuestHandTeleop({
-    sensitivity: questHandSensitivity.value,
+    sensitivity: clamp(questHandSensitivity.value, 0.4, 1.8),
   });
 }
 
@@ -1159,6 +1289,36 @@ function cleanupQuestHandGroupToast(nowMs = Date.now()) {
   if (nowMs - Number(questHandGroupToastAt.value) > 1400) {
     questHandGroupToast.value = "";
   }
+}
+
+function resetQuestControllerInFlightTimeout() {
+  if (questControllerInFlightTimeout.value) {
+    clearTimeout(questControllerInFlightTimeout.value);
+    questControllerInFlightTimeout.value = null;
+  }
+}
+
+function resetQuestHandInFlightTimeout() {
+  if (questHandInFlightTimeout.value) {
+    clearTimeout(questHandInFlightTimeout.value);
+    questHandInFlightTimeout.value = null;
+  }
+}
+
+function scheduleQuestControllerInFlightTimeout() {
+  resetQuestControllerInFlightTimeout();
+  questControllerInFlightTimeout.value = setTimeout(() => {
+    questControllerCommandInFlight.value = false;
+    questControllerInFlightTimeout.value = null;
+  }, VR_COMMAND_INFLIGHT_TIMEOUT_MS);
+}
+
+function scheduleQuestHandInFlightTimeout() {
+  resetQuestHandInFlightTimeout();
+  questHandInFlightTimeout.value = setTimeout(() => {
+    questHandCommandInFlight.value = false;
+    questHandInFlightTimeout.value = null;
+  }, VR_COMMAND_INFLIGHT_TIMEOUT_MS);
 }
 
 function buildQuestControlPayload(mapped) {
@@ -1235,15 +1395,28 @@ async function sendQuestControlByHttp(payload) {
 
 function sendQuestControlToBackend(mapped) {
   if (!mapped?.has_command) return;
-  const payload = buildQuestControlPayload(mapped);
-  applyQuestCommandLocally(mapped);
-
-  if (websocketManager.isConnected) {
-    const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
-    if (sent) return;
+  if (questControllerCommandInFlight.value) return;
+  const now = Date.now();
+  if (now - Number(lastQuestControllerSentAt.value || 0) < VR_COMMAND_MIN_INTERVAL_MS) {
+    return;
   }
 
-  sendQuestControlByHttp(payload);
+  const payload = buildQuestControlPayload(mapped);
+  applyQuestCommandLocally(mapped);
+  questControllerCommandInFlight.value = true;
+  lastQuestControllerSentAt.value = now;
+
+  if (websocketManager.isConnected) {
+    scheduleQuestControllerInFlightTimeout();
+    const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
+    if (sent) return;
+    resetQuestControllerInFlightTimeout();
+    questControllerCommandInFlight.value = false;
+  }
+
+  sendQuestControlByHttp(payload).finally(() => {
+    questControllerCommandInFlight.value = false;
+  });
 }
 
 function applyQuestSafetyHoldState() {
@@ -1279,14 +1452,27 @@ async function sendQuestHandControlByHttp(payload) {
 
 function sendQuestHandControlToBackend(mapped) {
   if (!mapped?.has_command) return;
+  if (questHandCommandInFlight.value) return;
+  const now = Date.now();
+  if (now - Number(lastQuestHandSentAt.value || 0) < VR_COMMAND_MIN_INTERVAL_MS) {
+    return;
+  }
+
   const payload = buildQuestHandControlPayload(mapped);
   applyQuestCommandLocally(mapped);
+  questHandCommandInFlight.value = true;
+  lastQuestHandSentAt.value = now;
 
   if (websocketManager.isConnected) {
+    scheduleQuestHandInFlightTimeout();
     const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
     if (sent) return;
+    resetQuestHandInFlightTimeout();
+    questHandCommandInFlight.value = false;
   }
-  sendQuestHandControlByHttp(payload);
+  sendQuestHandControlByHttp(payload).finally(() => {
+    questHandCommandInFlight.value = false;
+  });
 }
 
 function runQuestControllerTick() {
@@ -1302,26 +1488,25 @@ function runQuestControllerTick() {
   const dtSec = clamp((nowMs - prevTickAt) / 1000, 1 / 120, 1 / 10);
   lastQuestControllerTickAt.value = nowMs;
 
-  const snapshot = readQuestControllerSnapshot();
+  const snapshot = readQuestControllerSnapshot() || {
+    available: true,
+    has_device: false,
+    reason: "idle",
+    timestamp_ms: nowMs,
+    controls: {
+      select_upper_arm: 0,
+      select_forearm: 0,
+      select_wrist: 0,
+      precision: 0,
+      stick_x: 0,
+      stick_y: 0,
+      trigger: 0,
+    },
+    raw: null,
+  };
   questControllerRawInput.value = snapshot?.raw || null;
-
-  if (!snapshot?.available) {
-    questControllerAvailable.value = false;
-    questControllerStatusText.value = "未检测到手柄";
-    syncVrStateToBackend({
-      mode: "vr_controller_mode",
-      source: "quest3_controller",
-      controller_available: false,
-      selected_joint_group: vrSelectedJointGroup.value,
-      recording_ready: recordingCheckStatus.value === "ok",
-      last_quest_input_ts: nowMs / 1000,
-      error_message: "Quest3手柄未就绪",
-    });
-    return;
-  }
-
   questControllerAvailable.value = true;
-  questControllerStatusText.value = "采样中";
+  questControllerStatusText.value = snapshot?.has_device ? "采样中" : "运行中(等待输入)";
 
   const mapped = questControllerTeleop.applySnapshot(
     snapshot,
@@ -1340,7 +1525,7 @@ function runQuestControllerTick() {
   syncVrStateToBackend({
     mode: "vr_controller_mode",
     source: "quest3_controller",
-    controller_available: Boolean(snapshot.available),
+    controller_available: true,
     selected_joint_group: vrSelectedJointGroup.value,
     recording_ready: recordingCheckStatus.value === "ok",
     last_quest_input_ts: nowMs / 1000,
@@ -1429,14 +1614,11 @@ function runQuestHandTick() {
 }
 
 function handleQuestGamepadConnectionEvent(event) {
-  const gamepadId = String(event?.gamepad?.id || "").toLowerCase();
-  const isQuestPad = /(quest|oculus|meta|touch|xr-standard)/i.test(gamepadId);
-  if (!isQuestControllerModeActive() || !isQuestPad) return;
+  if (!isQuestControllerModeActive()) return;
   if (event?.type === "gamepadconnected") {
     questControllerStatusText.value = "手柄已连接";
   } else if (event?.type === "gamepaddisconnected") {
-    questControllerStatusText.value = "手柄已断开";
-    questControllerAvailable.value = false;
+    questControllerStatusText.value = "手柄已断开(可继续)";
   }
 }
 
@@ -1470,6 +1652,9 @@ function stopQuestControllerLoop() {
   questControllerAvailable.value = false;
   questControllerStatusText.value = "未激活";
   questControllerRawInput.value = null;
+  questControllerCommandInFlight.value = false;
+  lastQuestControllerSentAt.value = 0;
+  resetQuestControllerInFlightTimeout();
   questControllerGroupToast.value = "";
   questControllerGroupToastAt.value = 0;
   lastQuestControllerTickAt.value = 0;
@@ -1488,6 +1673,9 @@ function stopQuestHandLoop() {
   questHandTrackingStability.value = 0;
   questHandInputMode.value = "dual_hand";
   questHandRawInput.value = null;
+  questHandCommandInFlight.value = false;
+  lastQuestHandSentAt.value = 0;
+  resetQuestHandInFlightTimeout();
   questHandGroupToast.value = "";
   questHandGroupToastAt.value = 0;
   lastQuestHandTickAt.value = 0;
@@ -2562,6 +2750,7 @@ function initBase() {
   // 设置渲染器尺寸
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(getRenderPixelRatio());
+  renderer.xr.enabled = true;
 
   // 设置渲染器颜色
   renderer.setClearColor("#DCDCDC");
@@ -2599,9 +2788,9 @@ function render() {
   // Keep approaching latest backend state between WS ticks for visually smooth motion.
   applySmoothedBackendPose();
   renderer.render(scene, camera);
-  controls.update();
-
-  requestAnimationFrame(render);
+  if (controls && !(renderer?.xr && renderer.xr.isPresenting)) {
+    controls.update();
+  }
 }
 
 // 辅助线
@@ -2777,6 +2966,10 @@ const setupWebSocketStateSync = () => {
   websocketManager.on('controlResult', (data) => {
     console.log('Received controlResult:', data);
     sendCommandPending.value = false;
+    questControllerCommandInFlight.value = false;
+    questHandCommandInFlight.value = false;
+    resetQuestControllerInFlightTimeout();
+    resetQuestHandInFlightTimeout();
     if (isQuestControllerModeActive()) {
       const state = data?.state;
       if (state && typeof state === "object") {
@@ -2798,6 +2991,10 @@ const setupWebSocketStateSync = () => {
   // 错误处理
   websocketManager.on('error', (error) => {
     sendCommandPending.value = false;
+    questControllerCommandInFlight.value = false;
+    questHandCommandInFlight.value = false;
+    resetQuestControllerInFlightTimeout();
+    resetQuestHandInFlightTimeout();
     clearPendingManualTarget();
     if (websocketManager.isConnected) {
       websocketManager.requestState();
@@ -2817,6 +3014,10 @@ const setupWebSocketStateSync = () => {
   // 连接断开
   websocketManager.on('disconnected', () => {
     sendCommandPending.value = false;
+    questControllerCommandInFlight.value = false;
+    questHandCommandInFlight.value = false;
+    resetQuestControllerInFlightTimeout();
+    resetQuestHandInFlightTimeout();
     clearPendingManualTarget();
     lastRealtimeSliderSendAt.value = 0;
     resetStateSync();
@@ -3058,7 +3259,7 @@ onMounted(() => {
   // 保持原有的初始化逻辑
   fetchData(); // 作为后备
   document.getElementById("webgl").appendChild(renderer.domElement);
-  render();
+  renderer.setAnimationLoop(render);
 
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
@@ -3081,6 +3282,13 @@ watch(isVrModeEntered, (entered) => {
 onBeforeUnmount(() => {
   stopQuestControllerLoop();
   stopQuestHandLoop();
+  resetQuestControllerInFlightTimeout();
+  resetQuestHandInFlightTimeout();
+  if (renderer?.xr) {
+    Promise.resolve(renderer.xr.setSession(null)).catch(() => {});
+    renderer.setAnimationLoop(null);
+  }
+  void stopQuestXRSession();
   stopFetchingData();
   if (sliderSyncTimer.value) {
     clearTimeout(sliderSyncTimer.value);
@@ -3448,6 +3656,11 @@ onBeforeUnmount(() => {
 
 .vr-menu-btn:hover {
   background: rgba(44, 71, 95, 0.94);
+}
+
+.vr-menu-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .vr-menu-btn.active {

@@ -3,9 +3,10 @@ const LEFT_PAD_PATTERN = /(left|l-touch|left controller)/i;
 const RIGHT_PAD_PATTERN = /(right|r-touch|right controller)/i;
 
 const LEFT_BUTTON_INDEX = {
-  select_upper_arm: [3],
-  select_forearm: [4],
-  select_wrist: [1, 2],
+  precision: [0],
+  select_wrist: [1],
+  select_upper_arm: [4],
+  select_forearm: [5],
 };
 
 const RIGHT_BUTTON_INDEX = {
@@ -23,7 +24,11 @@ function scoreQuestPad(pad) {
   const id = String(pad?.id || "");
   let score = 0;
   if (QUEST_PAD_PATTERN.test(id)) score += 10;
+  const hand = String(pad?.hand || "").toLowerCase();
+  if (hand === "left" || hand === "right") score += 8;
   if (String(pad?.mapping || "") === "xr-standard") score += 5;
+  if (Array.isArray(pad?.axes) && pad.axes.length >= 2) score += 3;
+  if (Array.isArray(pad?.buttons) && pad.buttons.length >= 2) score += 2;
   return score;
 }
 
@@ -37,6 +42,12 @@ function pickLeftRightPads() {
   const all = asConnectedPads();
   if (all.length === 0) {
     return { leftPad: null, rightPad: null };
+  }
+
+  const leftByHand = all.find((pad) => String(pad?.hand || "").toLowerCase() === "left") || null;
+  const rightByHand = all.find((pad) => String(pad?.hand || "").toLowerCase() === "right") || null;
+  if (leftByHand && rightByHand && leftByHand !== rightByHand) {
+    return { leftPad: leftByHand, rightPad: rightByHand };
   }
 
   const ranked = [...all].sort((a, b) => scoreQuestPad(b) - scoreQuestPad(a));
@@ -104,9 +115,20 @@ export function readQuestControllerSnapshot() {
   const { leftPad, rightPad } = pickLeftRightPads();
   if (!leftPad || !rightPad) {
     return {
-      available: false,
-      reason: "missing_controller",
+      available: true,
+      has_device: false,
+      reason: "idle",
       timestamp_ms: Date.now(),
+      controls: {
+        select_upper_arm: 0,
+        select_forearm: 0,
+        select_wrist: 0,
+        precision: 0,
+        stick_x: 0,
+        stick_y: 0,
+        trigger: 0,
+      },
+      raw: null,
     };
   }
 
@@ -128,12 +150,14 @@ export function readQuestControllerSnapshot() {
 
   return {
     available: true,
+    has_device: true,
     reason: "ok",
     timestamp_ms: Date.now(),
     controls: {
       select_upper_arm: raw.left.select_upper_arm,
       select_forearm: raw.left.select_forearm,
       select_wrist: raw.left.select_wrist,
+      precision: readButtonValue(leftPad, LEFT_BUTTON_INDEX.precision),
       stick_x: raw.right.stick_x,
       stick_y: raw.right.stick_y,
       trigger: raw.right.trigger,

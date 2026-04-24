@@ -1442,9 +1442,9 @@ class SimulationCore:
             },
         }
 
-        self._camera_last_state = deepcopy(camera_state)
+        self._camera_last_state = camera_state
         self._camera_last_capture_ts = now
-        return deepcopy(camera_state)
+        return camera_state
 
     def _build_camera_frame_data_locked(self) -> dict[str, Any]:
         if np is None or self._camera_last_rgb_frame is None or self._camera_last_depth_frame is None:

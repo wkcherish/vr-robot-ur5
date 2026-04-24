@@ -42,7 +42,7 @@ function distance(a, b) {
 function pinchStrength(thumbPos, fingerPos) {
   const pinchDist = distance(thumbPos, fingerPos);
   if (!Number.isFinite(pinchDist)) return 0;
-  const pinchMin = 0.012;
+  const pinchMin = 0.018;
   const pinchMax = 0.055;
   if (pinchDist <= pinchMin) return 1;
   if (pinchDist >= pinchMax) return 0;
