@@ -87,6 +87,7 @@ DEFAULT_CAMERA_DEBUG_OBJECTS = ["camera_base", "camera"]
 class _QueuedCommand:
     request: StepRequest
     future: asyncio.Future[dict[str, Any]]
+    return_state: bool = True
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -105,6 +106,17 @@ def _compute_command_blend(n_steps: int, per_step_blend: float) -> float:
     if per_step >= 1.0:
         return 1.0
     return 1.0 - math.pow(1.0 - per_step, steps)
+
+
+def _resolve_command_blend(source: str, n_steps: int, per_step_blend: float) -> float:
+    """
+    VR teleop sources should follow the latest target immediately.
+    This avoids front-end incremental commands being damped again in backend.
+    """
+    normalized = str(source or "").strip().lower()
+    if normalized in {"quest3_controller", "quest3_hand"}:
+        return 1.0
+    return _compute_command_blend(n_steps, per_step_blend)
 
 
 def _rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> list[float]:
@@ -285,6 +297,7 @@ class SimulationCore:
             "camera_frames": 0,
             "camera_drops": 0,
         }
+        self._latest_realtime_seq_by_source: dict[str, int] = {}
 
         self._load_scene_manifest()
         self._load_model(None)
@@ -316,13 +329,19 @@ class SimulationCore:
         async with self._lock:
             self._close_mujoco_renderer()
 
-    async def enqueue_step(self, request: StepRequest) -> dict[str, Any]:
+    async def enqueue_step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        await self._command_queue.put(_QueuedCommand(request=request, future=future))
+        await self._command_queue.put(
+            _QueuedCommand(
+                request=request,
+                future=future,
+                return_state=bool(return_state),
+            )
+        )
         return await future
 
-    async def step(self, request: StepRequest) -> dict[str, Any]:
+    async def step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
         async with self._lock:
             started_at = perf_counter()
 
@@ -362,8 +381,8 @@ class SimulationCore:
                 if self._last_selected_joint_group:
                     self._vr_state["selected_joint_group"] = self._last_selected_joint_group
             n_steps = max(1, int(request.n_steps))
-            self._apply_arm_command(target_positions, n_steps)
-            self._apply_gripper_command(request.gripper_command, n_steps)
+            self._apply_arm_command(target_positions, n_steps, self._source)
+            self._apply_gripper_command(request.gripper_command, n_steps, self._source)
 
             forbidden_contacts: list[dict[str, Any]] = []
             if self._using_mujoco_model() and self._mj_model is not None and self._mj_data is not None and _mujoco is not None:
@@ -408,7 +427,22 @@ class SimulationCore:
             old_avg = float(self._stats["avg_step_ms"])
             self._stats["avg_step_ms"] = old_avg + ((elapsed_ms - old_avg) / command_count)
 
-            return self._build_state_locked()
+            if not return_state:
+                return {
+                    "timestamp": time.time(),
+                    "sim_time": self._sim_time,
+                    "source": self._source,
+                    "selected_joint_group": self._last_selected_joint_group,
+                    "input_source": self._last_input_source,
+                }
+
+            refresh_camera = request.source not in {
+                "manual",
+                "desktop_manual",
+                "quest3_controller",
+                "quest3_hand",
+            }
+            return self._build_state_locked(refresh_camera=refresh_camera)
 
     async def reset(self, model_path: str | None = None) -> dict[str, Any]:
         async with self._lock:
@@ -1076,6 +1110,7 @@ class SimulationCore:
         self._last_selected_joint_group = None
         self._last_raw_input = None
         self._last_normalized_input = None
+        self._latest_realtime_seq_by_source = {}
         self._sim_time = 0.0
         self._stats["steps"] = 0
         self._stats["commands"] = 0
@@ -1131,7 +1166,7 @@ class SimulationCore:
         if using_mujoco and model_changed and _mujoco is not None and self._mj_model is not None and self._mj_data is not None:
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
-    def _apply_arm_command(self, target_positions: list[float] | None, n_steps: int) -> None:
+    def _apply_arm_command(self, target_positions: list[float] | None, n_steps: int, source: str = "manual") -> None:
         if target_positions is None:
             self._arm_qvel = [0.0 for _ in self._arm_qvel]
             return
@@ -1144,7 +1179,7 @@ class SimulationCore:
                 current.append(float(self._mj_data.qpos[qpos_addr]) if qpos_addr is not None else 0.0)
 
         target = [float(v) for v in target_positions]
-        blend = _compute_command_blend(n_steps, ARM_COMMAND_BLEND_PER_STEP)
+        blend = _resolve_command_blend(source, n_steps, ARM_COMMAND_BLEND_PER_STEP)
         applied = [
             current[idx] + (target[idx] - current[idx]) * blend
             for idx in range(len(target))
@@ -1161,7 +1196,12 @@ class SimulationCore:
             if _mujoco is not None and self._mj_model is not None:
                 _mujoco.mj_forward(self._mj_model, self._mj_data)
 
-    def _apply_gripper_command(self, command: GripperCommand | None, n_steps: int) -> None:
+    def _apply_gripper_command(
+        self,
+        command: GripperCommand | None,
+        n_steps: int,
+        source: str = "manual",
+    ) -> None:
         if command is None:
             self._gripper_velocity = 0.0
             return
@@ -1176,7 +1216,7 @@ class SimulationCore:
                 current_opening = _clamp(float(self._mj_data.qpos[driver_addr]) / GRIPPER_DRIVER_LIMIT, 0.0, 1.0)
 
         desired_opening = _clamp(float(command.value), 0.0, 1.0)
-        blend = _compute_command_blend(n_steps, GRIPPER_COMMAND_BLEND_PER_STEP)
+        blend = _resolve_command_blend(source, n_steps, GRIPPER_COMMAND_BLEND_PER_STEP)
         target_opening = current_opening + (desired_opening - current_opening) * blend
         duration = max(self._dt, n_steps * self._dt)
         self._gripper_velocity = (target_opening - current_opening) / duration
@@ -1563,7 +1603,20 @@ class SimulationCore:
                 continue
 
             try:
-                state = await self.step(queued.request)
+                if self._is_stale_realtime_command(queued.request):
+                    if not queued.future.done():
+                        queued.future.set_result(
+                            {
+                                "timestamp": time.time(),
+                                "sim_time": self._sim_time,
+                                "source": queued.request.source,
+                                "selected_joint_group": self._last_selected_joint_group,
+                                "input_source": self._last_input_source,
+                                "status": "dropped_stale_seq",
+                            }
+                        )
+                    continue
+                state = await self.step(queued.request, return_state=queued.return_state)
                 if not queued.future.done():
                     queued.future.set_result(state)
             except Exception as exc:
@@ -1571,3 +1624,30 @@ class SimulationCore:
                     queued.future.set_exception(exc)
             finally:
                 self._command_queue.task_done()
+
+    def _is_stale_realtime_command(self, request: StepRequest) -> bool:
+        """
+        Realtime control anti-replay:
+        if request.normalized_input.control_seq is older than the latest seen for
+        the same source, drop it to avoid delayed rollback.
+        """
+        source = str(getattr(request, "source", "") or "").strip().lower()
+        if source not in {"quest3_controller", "quest3_hand"}:
+            return False
+
+        normalized = request.normalized_input
+        if not isinstance(normalized, dict):
+            return False
+
+        seq_raw = normalized.get("control_seq")
+        try:
+            seq = int(seq_raw)
+        except (TypeError, ValueError):
+            return False
+
+        latest = int(self._latest_realtime_seq_by_source.get(source, -1))
+        if seq < latest:
+            return True
+        if seq > latest:
+            self._latest_realtime_seq_by_source[source] = seq
+        return False

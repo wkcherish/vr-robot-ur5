@@ -2,6 +2,7 @@ const state = {
   session: null,
   referenceSpace: null,
   referenceSpaceType: "",
+  lastSessionInit: null,
   pendingSessionPromise: null,
   status: {
     ready: false,
@@ -15,23 +16,85 @@ function isSecureContextAvailable() {
   return Boolean(window.isSecureContext);
 }
 
-function getSessionInitCandidates() {
-  return [
-    {
-      requiredFeatures: ["local-floor"],
-      optionalFeatures: ["hand-tracking", "bounded-floor"],
-    },
-    {
-      optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"],
-    },
-    {
-      optionalFeatures: ["local-floor", "bounded-floor"],
-    },
-    {
-      optionalFeatures: ["hand-tracking"],
-    },
-    {},
-  ];
+function normalizeFeatureList(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map((item) => String(item).trim()).filter(Boolean))];
+}
+
+function normalizeSessionInit(init = {}) {
+  const normalized = {};
+  const requiredFeatures = normalizeFeatureList(init.requiredFeatures);
+  const optionalFeatures = normalizeFeatureList(init.optionalFeatures);
+  if (requiredFeatures.length > 0) {
+    normalized.requiredFeatures = requiredFeatures;
+  }
+  if (optionalFeatures.length > 0) {
+    normalized.optionalFeatures = optionalFeatures;
+  }
+  return normalized;
+}
+
+function buildSessionInitKey(init = {}) {
+  const normalized = normalizeSessionInit(init);
+  const required = Array.isArray(normalized.requiredFeatures)
+    ? [...normalized.requiredFeatures].sort()
+    : [];
+  const optional = Array.isArray(normalized.optionalFeatures)
+    ? [...normalized.optionalFeatures].sort()
+    : [];
+  return JSON.stringify({ requiredFeatures: required, optionalFeatures: optional });
+}
+
+function prependCachedCandidate(candidates) {
+  const cached = state.lastSessionInit;
+  if (!cached) return candidates;
+
+  const cachedKey = buildSessionInitKey(cached);
+  const deduped = [];
+  const seen = new Set([cachedKey]);
+  deduped.push(normalizeSessionInit(cached));
+  candidates.forEach((candidate) => {
+    const key = buildSessionInitKey(candidate);
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(normalizeSessionInit(candidate));
+  });
+  return deduped;
+}
+
+function getSessionInitCandidates(preferHandTracking = false) {
+  const candidates = preferHandTracking
+    ? [
+        {
+          optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"],
+        },
+        {
+          optionalFeatures: ["local-floor", "hand-tracking"],
+        },
+        {
+          optionalFeatures: ["hand-tracking"],
+        },
+        {
+          optionalFeatures: ["local-floor", "bounded-floor"],
+        },
+        {
+          optionalFeatures: ["local-floor"],
+        },
+        {},
+      ]
+    : [
+        {
+          optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"],
+        },
+        {
+          optionalFeatures: ["local-floor", "bounded-floor"],
+        },
+        {
+          optionalFeatures: ["local-floor"],
+        },
+        {},
+      ];
+  return prependCachedCandidate(candidates);
 }
 
 function normalizeSessionErrorMessage(error) {
@@ -46,12 +109,11 @@ function shouldTryNextCandidate(error) {
   return name === "NotSupportedError" || name === "TypeError";
 }
 
-async function requestImmersiveVrSession(xr) {
-  const initCandidates = getSessionInitCandidates();
+async function requestImmersiveVrSession(xr, initCandidates) {
   const errors = [];
 
   for (let index = 0; index < initCandidates.length; index += 1) {
-    const sessionInit = initCandidates[index] || {};
+    const sessionInit = normalizeSessionInit(initCandidates[index] || {});
     try {
       const session = await xr.requestSession("immersive-vr", sessionInit);
       return { session, sessionInit };
@@ -173,7 +235,8 @@ export function getQuestXRStatus() {
   };
 }
 
-export async function ensureQuestXRSession() {
+export async function ensureQuestXRSession(options = {}) {
+  const preferHandTracking = Boolean(options?.preferHandTracking);
   if (state.session && state.referenceSpace && state.referenceSpaceType) {
     state.status = { ready: true, reason: "ok", detail: "" };
     return getQuestXRStatus();
@@ -203,12 +266,14 @@ export async function ensureQuestXRSession() {
     }
 
     try {
-      const { session } = await requestImmersiveVrSession(xr);
+      const initCandidates = getSessionInitCandidates(preferHandTracking);
+      const { session, sessionInit } = await requestImmersiveVrSession(xr, initCandidates);
       const { referenceSpace, type } = await resolveReferenceSpace(session);
       session.addEventListener("end", handleSessionEnded, { once: true });
       state.session = session;
       state.referenceSpace = referenceSpace;
       state.referenceSpaceType = type;
+      state.lastSessionInit = normalizeSessionInit(sessionInit);
       state.status = { ready: true, reason: "ok", detail: "" };
       return getQuestXRStatus();
     } catch (error) {
