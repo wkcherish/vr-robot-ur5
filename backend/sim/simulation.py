@@ -1551,6 +1551,26 @@ class SimulationCore:
             self._arm_qpos = arm_qpos
             self._objects_state = self._collect_objects_state_locked()
 
+            # Keep exported gripper state aligned with current MuJoCo qpos
+            # (including external viewer/manual manipulations) without touching arm velocity caches.
+            gripper_joints: dict[str, float] = {}
+            for name in DEFAULT_GRIPPER_JOINT_NAMES:
+                qpos_addr = self._gripper_joint_qpos_addr.get(name)
+                if qpos_addr is None:
+                    continue
+                gripper_joints[name] = float(self._mj_data.qpos[qpos_addr])
+
+            if gripper_joints:
+                left_driver = gripper_joints.get(
+                    "left_driver_joint",
+                    float(self._gripper_joints.get("left_driver_joint", 0.0)),
+                )
+                self._gripper_opening = _clamp(left_driver / GRIPPER_DRIVER_LIMIT, 0.0, 1.0)
+                default_mapping = self._map_gripper_joints(self._gripper_opening)
+                for name, value in default_mapping.items():
+                    gripper_joints.setdefault(name, float(value))
+                self._gripper_joints = gripper_joints
+
         gripper_driver = float(self._gripper_joints["left_driver_joint"])
         qpos = list(self._arm_qpos) + [gripper_driver]
         qvel = list(self._arm_qvel) + [self._gripper_velocity]

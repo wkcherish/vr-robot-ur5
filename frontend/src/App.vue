@@ -29,8 +29,8 @@
               @click="isWebSocketConnected ? stopFetchingData() : startFetchingData()"
               class="control-button"
               :class="{
-                'connected-btn': isWebSocketConnected,
-                'disconnected-btn': !isWebSocketConnected,
+                'robot-connect-btn--connected': isWebSocketConnected,
+                'robot-connect-btn--disconnected': !isWebSocketConnected,
               }"
             >
               {{ isWebSocketConnected ? "断开连接" : "连接机器人" }}
@@ -547,6 +547,7 @@ const REALTIME_SLIDER_DEBOUNCE_MS = 16;
 const REALTIME_SLIDER_MIN_SEND_INTERVAL_MS = 33;
 const MANUAL_STATE_GUARD_MS = 700;
 const VR_MANUAL_STATE_GUARD_MS = 1200;
+const BACKEND_STATE_STALE_TOLERANCE_MS = 120;
 const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
 const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
 const MAX_RENDER_PIXEL_RATIO = 1.5;
@@ -1439,6 +1440,18 @@ function getCurrentArmRadians() {
 }
 
 function getCurrentGripperRadians() {
+  if (robot && robot.joints) {
+    const leftDriver = Number(robot.joints.left_driver_joint?.jointValue?.[0]);
+    if (Number.isFinite(leftDriver)) {
+      return clamp(leftDriver, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+    }
+
+    const rightDriver = Number(robot.joints.right_driver_joint?.jointValue?.[0]);
+    if (Number.isFinite(rightDriver)) {
+      return clamp(rightDriver, GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
+    }
+  }
+
   return clamp(toRadians(gripperAngleDeg.value), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD);
 }
 
@@ -2028,6 +2041,14 @@ function clearPendingManualTarget() {
   pendingManualTarget.value = null;
 }
 
+function getBackendStateTimestampMs(state) {
+  if (!state || typeof state !== "object") return null;
+  const raw = Number(state.timestamp);
+  if (!Number.isFinite(raw)) return null;
+  // Backend emits seconds; convert to ms.
+  return raw * 1000;
+}
+
 function isBackendStateAlignedWithPendingTarget(state) {
   const pending = pendingManualTarget.value;
   if (!pending || !Array.isArray(state?.qpos) || state.qpos.length < ARM_JOINT_COUNT) {
@@ -2067,10 +2088,20 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
   const pending = pendingManualTarget.value;
   if (!pending) return true;
 
+  const backendStateTimestampMs = getBackendStateTimestampMs(state);
+  if (
+    Number.isFinite(Number(backendStateTimestampMs)) &&
+    Number(backendStateTimestampMs) + BACKEND_STATE_STALE_TOLERANCE_MS < Number(pending.sentAt)
+  ) {
+    return false;
+  }
+
   if (
     typeof state?.source === "string" &&
     state.source.length > 0 &&
-    !LOCAL_MANUAL_SOURCES.has(state.source)
+    !LOCAL_MANUAL_SOURCES.has(state.source) &&
+    Number.isFinite(Number(backendStateTimestampMs)) &&
+    Number(backendStateTimestampMs) + BACKEND_STATE_STALE_TOLERANCE_MS >= Number(pending.sentAt)
   ) {
     clearPendingManualTarget();
     return true;
@@ -3295,6 +3326,10 @@ const setupWebSocketStateSync = () => {
     resetQuestHandQueuedFlushTimer();
     flushQueuedQuestControlCommand();
     flushQueuedQuestHandControlCommand();
+    if (Array.isArray(data?.state?.qpos)) {
+      applyBackendStateToScene(data.state);
+      clearPendingManualTarget();
+    }
     if (isQuestControllerModeActive()) {
       const state = data?.state;
       if (state && typeof state === "object") {
@@ -4129,21 +4164,21 @@ onBeforeUnmount(() => {
   transition: all 0.3s ease;
 }
 
-.disconnected-btn {
+.control-button.robot-connect-btn--disconnected {
   background-color: #409eff;
   color: white;
 }
 
-.connected-btn {
+.control-button.robot-connect-btn--connected {
   background-color: #f56c6c;
   color: white;
 }
 
-.disconnected-btn:hover {
+.control-button.robot-connect-btn--disconnected:hover {
   background-color: #66b1ff;
 }
 
-.connected-btn:hover {
+.control-button.robot-connect-btn--connected:hover {
   background-color: #f78989;
 }
 
