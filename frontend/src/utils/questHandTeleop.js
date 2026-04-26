@@ -10,154 +10,329 @@ const GROUP_LABEL = {
   forearm: "前臂组",
   wrist: "腕部组",
 };
+const BASE_STEP_DT_SEC = 1 / 25;
 
 const JOINT_LIMITS_RAD = [
+  [-2 * Math.PI, 2 * Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
   [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
-  [-Math.PI, Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
+  [-2 * Math.PI, 2 * Math.PI],
 ];
 
 function clamp(value, min, max) {
   return Math.min(Math.max(Number(value) || 0, min), max);
 }
 
-function smooth(current, previous, alpha) {
-  const a = clamp(alpha, 0.01, 1);
-  return previous + (current - previous) * a;
+function lowPass(previous, next, alpha) {
+  const a = clamp(alpha, 0, 1);
+  return previous + (next - previous) * a;
 }
 
-function normDelta(current, previous, scale) {
-  if (!Array.isArray(current) || !Array.isArray(previous)) return { x: 0, y: 0 };
-  const dx = clamp((Number(current[0]) - Number(previous[0])) * scale, -1, 1);
-  const dy = clamp((Number(current[1]) - Number(previous[1])) * scale, -1, 1);
-  return { x: dx, y: dy };
+function normalizeDtScale(dtSec) {
+  const dt = Number(dtSec);
+  if (!Number.isFinite(dt)) return 1;
+  const bounded = clamp(dt, 1 / 120, 1 / 10);
+  return bounded / BASE_STEP_DT_SEC;
+}
+
+function applyLinearDeadzone(value, deadzone) {
+  const magnitude = Math.abs(value);
+  if (magnitude <= deadzone) return 0;
+  return Math.sign(value) * (magnitude - deadzone);
+}
+
+function applyDeadzone(value, deadzone) {
+  const x = clamp(value, 0, 1);
+  if (x <= deadzone) return 0;
+  return (x - deadzone) / (1 - deadzone);
+}
+
+function resolveGroupFromLeftPinch(leftPinch, threshold) {
+  if (!leftPinch) return null;
+  const candidates = [
+    { group: "forearm", strength: clamp(leftPinch.middle, 0, 1) },
+    { group: "upper_arm", strength: clamp(leftPinch.ring, 0, 1) },
+    { group: "wrist", strength: clamp(leftPinch.index, 0, 1) },
+  ];
+  let selected = null;
+  let maxStrength = threshold;
+  for (const candidate of candidates) {
+    if (candidate.strength >= maxStrength) {
+      selected = candidate.group;
+      maxStrength = candidate.strength;
+    }
+  }
+  return selected;
+}
+
+function nextGroup(current) {
+  if (!current || current === "wrist") return "forearm";
+  if (current === "forearm") return "upper_arm";
+  return "wrist";
+}
+
+function mapReason(reason) {
+  if (reason === "invalid_arm_state") return "invalid_arm_state";
+  if (reason === "hand_unavailable") return "hand_unavailable";
+  return reason;
 }
 
 export function createQuestHandTeleop(options = {}) {
   const cfg = {
-    filter_alpha: Number.isFinite(Number(options.filter_alpha)) ? Number(options.filter_alpha) : 0.34,
-    sensitivity: Number.isFinite(Number(options.sensitivity)) ? Number(options.sensitivity) : 0.9,
-    max_joint_speed_rad_s: Number.isFinite(Number(options.max_joint_speed_rad_s))
-      ? Number(options.max_joint_speed_rad_s)
-      : 1.0,
-    max_delta_rad_per_tick: Number.isFinite(Number(options.max_delta_rad_per_tick))
-      ? Number(options.max_delta_rad_per_tick)
-      : 0.038,
-    max_gripper_delta_per_tick: Number.isFinite(Number(options.max_gripper_delta_per_tick))
-      ? Number(options.max_gripper_delta_per_tick)
+    movement_deadzone: Number.isFinite(Number(options.movement_deadzone))
+      ? Number(options.movement_deadzone)
+      : 0.0012,
+    movement_gain: Number.isFinite(Number(options.sensitivity))
+      ? Number(options.sensitivity) * 4.1
+      : 4.1,
+    max_frame_movement: Number.isFinite(Number(options.max_frame_movement))
+      ? Number(options.max_frame_movement)
       : 0.03,
-    pinch_switch_threshold: Number.isFinite(Number(options.pinch_switch_threshold))
-      ? Number(options.pinch_switch_threshold)
-      : 0.7,
-    pinch_hold_threshold: Number.isFinite(Number(options.pinch_hold_threshold))
-      ? Number(options.pinch_hold_threshold)
-      : 0.45,
+    movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
+      ? Number(options.movement_smoothing)
+      : 0.32,
+    move_pinch_engage_threshold: 0.38,
+    move_pinch_release_threshold: 0.2,
+    drag_engage_hold_ms: Number.isFinite(Number(options.drag_engage_hold_ms))
+      ? Number(options.drag_engage_hold_ms)
+      : 70,
+    drag_hold_ms: 180,
+    tracking_grace_ms: 280,
+    tracking_stable_enter_threshold: Number.isFinite(Number(options.tracking_stable_enter_threshold))
+      ? Number(options.tracking_stable_enter_threshold)
+      : 0.42,
+    tracking_stable_exit_threshold: Number.isFinite(Number(options.tracking_stable_exit_threshold))
+      ? Number(options.tracking_stable_exit_threshold)
+      : 0.30,
+    dual_hand_release_ms: Number.isFinite(Number(options.dual_hand_release_ms))
+      ? Number(options.dual_hand_release_ms)
+      : 180,
+    precision_scale: 0.42,
+    group_pinch_threshold: 0.56,
+    precision_pinch_threshold: 0.72,
+    gripper_pinch_engage_threshold: Number.isFinite(Number(options.gripper_pinch_engage_threshold))
+      ? Number(options.gripper_pinch_engage_threshold)
+      : 0.34,
+    gripper_pinch_release_threshold: Number.isFinite(Number(options.gripper_pinch_release_threshold))
+      ? Number(options.gripper_pinch_release_threshold)
+      : 0.2,
+    gripper_smoothing: 0.2,
+    gripper_min: 0,
+    gripper_max: 0.9,
+    joint_activity_epsilon: Number.isFinite(Number(options.joint_activity_epsilon))
+      ? Number(options.joint_activity_epsilon)
+      : 4e-4,
+    gripper_activity_epsilon: Number.isFinite(Number(options.gripper_activity_epsilon))
+      ? Number(options.gripper_activity_epsilon)
+      : 0.01,
   };
 
-  let selectedGroup = "upper_arm";
-  let prevRightPalm = null;
-  let lastAxisX = 0;
-  let lastAxisY = 0;
-  let lastGrip = 0;
-  let lastSwitchPressed = false;
+  let selectedGroup = "wrist";
+  let moveX = 0;
+  let moveY = 0;
+  let previousRightX = null;
+  let previousRightY = null;
+  let isDragging = false;
+  let dragEngageAt = null;
+  let dragReleaseAt = null;
+  let lastTrackedAt = 0;
+  let gripper = 0.8;
+  let gripperPinchLatched = false;
+  let groupCycleLatched = false;
   let lastInputMode = "dual_hand";
-  let trackingStable = false;
+  let trackingStableLatched = false;
+  let dualHandLatched = false;
+  let dualHandLastSeenAt = 0;
 
   function getState() {
     return {
       selected_joint_group: selectedGroup,
       selected_joint_group_label: GROUP_LABEL[selectedGroup] || selectedGroup,
       input_mode: lastInputMode,
-      tracking_stable: trackingStable,
+      tracking_stable: false,
       group_sequence: [...GROUP_SEQUENCE],
     };
   }
 
-  function nextGroup() {
-    const currentIndex = GROUP_SEQUENCE.indexOf(selectedGroup);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % GROUP_SEQUENCE.length : 0;
-    selectedGroup = GROUP_SEQUENCE[nextIndex];
-  }
-
-  function applySnapshot(snapshot, currentArmRadians, currentGripperOpening, dtSec = 1 / 30) {
+  function applySnapshot(snapshot, currentArmRadians, currentGripperOpening, dtSec = BASE_STEP_DT_SEC) {
     const arm = Array.isArray(currentArmRadians) ? currentArmRadians.slice(0, 6) : null;
     if (!arm || arm.length < 6) {
       return { has_command: false, reason: "invalid_arm_state", ...getState() };
     }
 
-    const leftTracked = Boolean(snapshot?.hands?.left?.tracked);
-    const rightTracked = Boolean(snapshot?.hands?.right?.tracked);
+    const now = Date.now();
+    const leftHand = snapshot?.hands?.left || {};
+    const rightHand = snapshot?.hands?.right || {};
+    const leftTracked = Boolean(leftHand.tracked || leftHand.recently_tracked);
+    const rightTracked = Boolean(rightHand.tracked || rightHand.recently_tracked);
+    const leftLiveTracked = Boolean(leftHand.tracked && !leftHand.predicted);
+    const dualCandidate = Boolean(leftLiveTracked && rightTracked);
+    if (dualCandidate) {
+      dualHandLastSeenAt = now;
+      dualHandLatched = true;
+    } else if (dualHandLatched && now - dualHandLastSeenAt > cfg.dual_hand_release_ms) {
+      dualHandLatched = false;
+    }
+    const hasDualHand = Boolean(dualHandLatched && rightTracked);
+    const primaryHand = rightTracked ? rightHand : leftTracked ? leftHand : null;
     const trackingStability = clamp(snapshot?.tracking_stability, 0, 1);
-    trackingStable = trackingStability >= 0.45 && (rightTracked || leftTracked);
+    const trackingPresent = Boolean(leftTracked || rightTracked);
+    let trackingStable = false;
+    if (trackingStableLatched) {
+      trackingStable =
+        trackingPresent &&
+        trackingStability >= clamp(cfg.tracking_stable_exit_threshold, 0.05, 0.95);
+    } else {
+      trackingStable =
+        trackingPresent &&
+        trackingStability >= clamp(cfg.tracking_stable_enter_threshold, 0.05, 0.95);
+    }
+    trackingStableLatched = trackingStable;
 
-    if (!snapshot?.available || !trackingStable) {
-      prevRightPalm = null;
+    if (!snapshot?.available || !trackingStable || !primaryHand) {
+      const recentlyTracked = lastTrackedAt > 0 && now - lastTrackedAt <= cfg.tracking_grace_ms;
+      moveX = lowPass(moveX, 0, cfg.movement_smoothing);
+      moveY = lowPass(moveY, 0, cfg.movement_smoothing);
+      if (!recentlyTracked) {
+        isDragging = false;
+        dragEngageAt = null;
+        dragReleaseAt = null;
+        previousRightX = null;
+        previousRightY = null;
+        gripperPinchLatched = false;
+        groupCycleLatched = false;
+      }
+      gripper = lowPass(gripper, clamp(currentGripperOpening, 0, 1), cfg.gripper_smoothing);
       return {
         has_command: false,
-        reason: "hand_unavailable",
+        reason: mapReason("hand_unavailable"),
+        target_positions: arm,
+        gripper_opening: clamp(gripper, cfg.gripper_min, cfg.gripper_max),
+        input_source: "quest3_hand",
+        selected_joint_group: selectedGroup,
+        selected_joint_group_label: GROUP_LABEL[selectedGroup] || selectedGroup,
+        changed_joint_group: false,
         tracking_stable: false,
         tracking_stability: trackingStability,
-        ...getState(),
+        hand_input_mode: hasDualHand ? "dual_hand" : "single_hand",
+        normalized_input: {
+          move_x: moveX,
+          move_y: moveY,
+          grip: gripper,
+          switch_pressed: 0,
+        },
+        raw_input: snapshot?.raw || null,
+        timestamp_ms: Number(snapshot?.timestamp_ms) || Date.now(),
       };
     }
 
-    lastInputMode = leftTracked && rightTracked ? "dual_hand" : "single_hand";
+    lastTrackedAt = now;
+    lastInputMode = hasDualHand ? "dual_hand" : "single_hand";
 
-    const leftPinch = snapshot?.hands?.left?.pinch || {};
-    const rightPinch = snapshot?.hands?.right?.pinch || {};
-    const rightPalm = snapshot?.hands?.right?.palm_position || null;
+    const leftPinch = leftHand.pinch || {};
+    const primaryPinch = primaryHand.pinch || {};
 
-    let switchPressed = false;
-    if (lastInputMode === "dual_hand") {
-      switchPressed = (leftPinch.index || 0) >= cfg.pinch_switch_threshold;
+    let changedGroup = false;
+    if (hasDualHand) {
+      const selected = resolveGroupFromLeftPinch(leftPinch, cfg.group_pinch_threshold);
+      if (selected && selected !== selectedGroup) {
+        selectedGroup = selected;
+        changedGroup = true;
+      }
+      groupCycleLatched = false;
     } else {
-      switchPressed = (rightPinch.ring || 0) >= cfg.pinch_switch_threshold;
+      const cyclePinch = clamp(primaryPinch.ring, 0, 1);
+      if (cyclePinch >= cfg.group_pinch_threshold && !groupCycleLatched) {
+        selectedGroup = nextGroup(selectedGroup);
+        changedGroup = true;
+        groupCycleLatched = true;
+      } else if (cyclePinch <= cfg.move_pinch_release_threshold) {
+        groupCycleLatched = false;
+      }
     }
-    if (switchPressed && !lastSwitchPressed) nextGroup();
-    lastSwitchPressed = switchPressed;
 
-    const holdGesture = (rightPinch.index || 0) >= cfg.pinch_hold_threshold;
-    let axisX = 0;
-    let axisY = 0;
-    if (holdGesture && rightPalm && Array.isArray(prevRightPalm)) {
-      const delta = normDelta(rightPalm, prevRightPalm, 11.0);
-      axisX = delta.x;
-      axisY = delta.y;
+    const dragPinch = clamp(primaryPinch.index, 0, 1);
+    const rightPalm = Array.isArray(primaryHand.palm_position) ? primaryHand.palm_position : null;
+    if (!isDragging) {
+      if (dragPinch >= cfg.move_pinch_engage_threshold && rightPalm) {
+        if (dragEngageAt === null) {
+          dragEngageAt = now;
+        } else if (now - dragEngageAt >= cfg.drag_engage_hold_ms) {
+          isDragging = true;
+          dragEngageAt = null;
+          dragReleaseAt = null;
+          previousRightX = Number(rightPalm[0]) || 0;
+          previousRightY = Number(rightPalm[1]) || 0;
+        }
+      } else {
+        dragEngageAt = null;
+      }
+    } else if (isDragging) {
+      if (dragPinch <= cfg.move_pinch_release_threshold) {
+        if (dragReleaseAt === null) {
+          dragReleaseAt = now;
+        } else if (now - dragReleaseAt >= cfg.drag_hold_ms) {
+          isDragging = false;
+          dragReleaseAt = null;
+          previousRightX = null;
+          previousRightY = null;
+        }
+      } else {
+        dragReleaseAt = null;
+      }
     }
-    prevRightPalm = Array.isArray(rightPalm) ? [...rightPalm] : prevRightPalm;
 
-    const filteredX = smooth(axisX, lastAxisX, cfg.filter_alpha);
-    const filteredY = smooth(axisY, lastAxisY, cfg.filter_alpha);
-    lastAxisX = filteredX;
-    lastAxisY = filteredY;
+    let rawMoveX = 0;
+    let rawMoveY = 0;
+    if (isDragging && rightPalm && previousRightX !== null && previousRightY !== null) {
+      rawMoveX = clamp(Number(rightPalm[0]) - previousRightX, -cfg.max_frame_movement, cfg.max_frame_movement);
+      rawMoveY = clamp(Number(rightPalm[1]) - previousRightY, -cfg.max_frame_movement, cfg.max_frame_movement);
+      previousRightX = Number(rightPalm[0]) || 0;
+      previousRightY = Number(rightPalm[1]) || 0;
+    } else if (!isDragging) {
+      previousRightX = null;
+      previousRightY = null;
+    }
 
-    const gripRaw = clamp(lastInputMode === "dual_hand" ? rightPinch.middle || 0 : rightPinch.middle || 0, 0, 1);
-    const gripFiltered = smooth(gripRaw, lastGrip, cfg.filter_alpha);
-    lastGrip = gripFiltered;
+    const filteredMoveX = applyLinearDeadzone(rawMoveX, cfg.movement_deadzone);
+    const filteredMoveY = applyLinearDeadzone(rawMoveY, cfg.movement_deadzone);
+    const targetMoveX = isDragging ? filteredMoveX : 0;
+    const targetMoveY = isDragging ? filteredMoveY : 0;
+    moveX = lowPass(moveX, targetMoveX, cfg.movement_smoothing);
+    moveY = lowPass(moveY, targetMoveY, cfg.movement_smoothing);
 
-    const dt = clamp(dtSec, 1 / 120, 1 / 10);
-    const speed = clamp(cfg.max_joint_speed_rad_s * cfg.sensitivity, 0.1, 3.0);
-    const deltaA = clamp(-filteredY * speed * dt, -cfg.max_delta_rad_per_tick, cfg.max_delta_rad_per_tick);
-    const deltaB = clamp(filteredX * speed * dt, -cfg.max_delta_rad_per_tick, cfg.max_delta_rad_per_tick);
+    const precisionMode = hasDualHand && clamp(primaryPinch.ring, 0, 1) >= cfg.precision_pinch_threshold;
+    const dtScale = normalizeDtScale(dtSec);
+    const speedScale = cfg.movement_gain * dtScale * (precisionMode ? cfg.precision_scale : 1);
+    const deltaA = moveY * speedScale;
+    const deltaB = moveX * speedScale;
 
-    const groupPair = GROUP_JOINT_INDEX[selectedGroup] || GROUP_JOINT_INDEX.upper_arm;
-    const [indexA, indexB] = groupPair;
-    arm[indexA] = clamp(arm[indexA] + deltaA, JOINT_LIMITS_RAD[indexA][0], JOINT_LIMITS_RAD[indexA][1]);
-    arm[indexB] = clamp(arm[indexB] + deltaB, JOINT_LIMITS_RAD[indexB][0], JOINT_LIMITS_RAD[indexB][1]);
+    const pair = GROUP_JOINT_INDEX[selectedGroup] || GROUP_JOINT_INDEX.upper_arm;
+    const [indexA, indexB] = pair;
+    const hasDragMove = isDragging && (Math.abs(deltaA) + Math.abs(deltaB) > cfg.joint_activity_epsilon);
+    if (hasDragMove) {
+      arm[indexA] = clamp(arm[indexA] + deltaA, JOINT_LIMITS_RAD[indexA][0], JOINT_LIMITS_RAD[indexA][1]);
+      arm[indexB] = clamp(arm[indexB] + deltaB, JOINT_LIMITS_RAD[indexB][0], JOINT_LIMITS_RAD[indexB][1]);
+    }
 
-    const currentGrip = clamp(currentGripperOpening, 0, 1);
-    const gripDelta = clamp(
-      gripFiltered - currentGrip,
-      -cfg.max_gripper_delta_per_tick,
-      cfg.max_gripper_delta_per_tick
-    );
-    const nextGripper = clamp(currentGrip + gripDelta, 0, 1);
+    const gripPinch = clamp(primaryPinch.middle, 0, 1);
+    if (!gripperPinchLatched && gripPinch >= cfg.gripper_pinch_engage_threshold) {
+      gripperPinchLatched = true;
+    } else if (gripperPinchLatched && gripPinch <= cfg.gripper_pinch_release_threshold) {
+      gripperPinchLatched = false;
+    }
+    const gripRaw = gripperPinchLatched
+      ? applyDeadzone(gripPinch, cfg.gripper_pinch_release_threshold)
+      : 0;
+    const mappedGripper = cfg.gripper_min + gripRaw * (cfg.gripper_max - cfg.gripper_min);
+    gripper = lowPass(gripper, mappedGripper, cfg.gripper_smoothing);
+    const nextGripper = clamp(gripper, cfg.gripper_min, cfg.gripper_max);
 
-    const activity = Math.abs(deltaA) + Math.abs(deltaB) + Math.abs(gripDelta);
-    const hasCommand = activity > 1e-4 || switchPressed;
+    const hasGripperActivity =
+      Math.abs(nextGripper - clamp(currentGripperOpening, 0, 1)) > cfg.gripper_activity_epsilon;
+    const hasCommand = changedGroup || hasDragMove || hasGripperActivity;
 
     return {
       has_command: hasCommand,
@@ -167,28 +342,39 @@ export function createQuestHandTeleop(options = {}) {
       input_source: "quest3_hand",
       selected_joint_group: selectedGroup,
       selected_joint_group_label: GROUP_LABEL[selectedGroup] || selectedGroup,
-      changed_joint_group: switchPressed,
+      changed_joint_group: changedGroup,
       tracking_stable: trackingStable,
       tracking_stability: trackingStability,
       hand_input_mode: lastInputMode,
       normalized_input: {
-        move_x: filteredX,
-        move_y: filteredY,
-        grip: gripFiltered,
-        switch_pressed: switchPressed ? 1 : 0,
+        move_x: moveX,
+        move_y: moveY,
+        grip: gripRaw,
+        grip_active: gripperPinchLatched ? 1 : 0,
+        switch_pressed: changedGroup ? 1 : 0,
       },
-      raw_input: snapshot.raw || null,
-      timestamp_ms: Number(snapshot.timestamp_ms) || Date.now(),
+      raw_input: snapshot?.raw || null,
+      timestamp_ms: Number(snapshot?.timestamp_ms) || Date.now(),
     };
   }
 
   function reset() {
-    prevRightPalm = null;
-    lastAxisX = 0;
-    lastAxisY = 0;
-    lastGrip = 0;
-    lastSwitchPressed = false;
-    trackingStable = false;
+    selectedGroup = "wrist";
+    moveX = 0;
+    moveY = 0;
+    previousRightX = null;
+    previousRightY = null;
+    isDragging = false;
+    dragEngageAt = null;
+    dragReleaseAt = null;
+    lastTrackedAt = 0;
+    gripper = 0.8;
+    gripperPinchLatched = false;
+    groupCycleLatched = false;
+    lastInputMode = "dual_hand";
+    trackingStableLatched = false;
+    dualHandLatched = false;
+    dualHandLastSeenAt = 0;
   }
 
   return {

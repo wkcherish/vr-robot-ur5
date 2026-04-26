@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -10,7 +11,6 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import mujoco
-import mujoco.viewer
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +48,9 @@ VIEWER_BRIDGE_GUARD_S = 0.35
 VIEWER_BRIDGE_MIN_PUSH_INTERVAL_S = 0.08
 VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD = 0.003
 VIEWER_BRIDGE_PENDING_TIMEOUT_S = 2.0
+# Keep viewer state polling tolerant to transient backend jitter.
+MIN_STATE_FETCH_TIMEOUT_S = 0.20
+MAX_STATE_FETCH_TIMEOUT_S = 1.00
 
 
 def _resolve_path(raw: str | None, default_path: Path) -> Path:
@@ -507,6 +510,18 @@ def _push_viewer_pose_to_backend(step_url: str, pose: dict[str, object], timeout
 
 
 def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str, step_url: str) -> None:
+    # On Wayland, prefer X11 backend when available to reduce libdecor warnings.
+    # Leave room for manual override by respecting existing env values.
+    if (
+        os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+        and os.environ.get("DISPLAY")
+        and not os.environ.get("PYGLFW_LIBRARY_VARIANT")
+    ):
+        os.environ["PYGLFW_LIBRARY_VARIANT"] = "x11"
+
+    # Defer viewer import so platform env tweaks above can take effect.
+    import mujoco.viewer  # local import by design
+
     model = mujoco.MjModel.from_xml_path(str(model_path))
     data = mujoco.MjData(model)
 
@@ -515,7 +530,7 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
 
     dt = max(1e-4, 1.0 / max(1.0, fps))
     state_poll_interval = max(0.005, 1.0 / min(max(fps, 1.0), 60.0))
-    state_fetch_timeout = min(0.5, dt)
+    state_fetch_timeout = max(MIN_STATE_FETCH_TIMEOUT_S, min(MAX_STATE_FETCH_TIMEOUT_S, 2.5 * dt))
     last_poll_at = 0.0
     last_state: dict[str, object] | None = None
     arm_actuator_ids, gripper_actuator_id = _resolve_actuator_ids(model)
@@ -709,6 +724,8 @@ def _wait_backend_ready(process: subprocess.Popen[bytes], host: str, port: int, 
 
 def _ask_yes_no(prompt: str) -> bool:
     raw = input(prompt).strip().lower()
+    # Keep subsequent backend logs on a clean line (avoid "yesINFO: ...").
+    print("", flush=True)
     return raw == "yes"
 
 

@@ -28,7 +28,7 @@ from backend.sim import SimulationCore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
 SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "50"))
+STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "30"))
 STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
 
 simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)
@@ -285,7 +285,10 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             request = StepRequest.model_validate(message_data)
             if not getattr(request, "source", None):
                 request.source = "desktop_manual"
-            state = await simulation.enqueue_step(request)
+            # Keep VR control lightweight, but return state for desktop/manual edits so
+            # frontend can lock-step update and avoid stale broadcast pull-back.
+            return_state = request.source not in {"quest3_controller", "quest3_hand"}
+            state = await simulation.enqueue_step(request, return_state=return_state)
             return {
                 "type": "control_result",
                 "data": {

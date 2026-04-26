@@ -269,20 +269,27 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 
 因此当前 UI 里虽然已经有“识别桌面工具 / 抓取工具 / 放置工具”的入口，但仍不能视为真实任务功能已经完成。
 
-#### 3.2.4 VR / Quest3 能力尚不存在
+#### 3.2.4 VR / Quest3 已完成基础控制，但尚未接入正式采集闭环
 
-当前仓库中尚未看到以下内容：
+根据 `2026-04-24` 的修复记录，当前仓库已经不能再按“VR / Quest3 能力尚不存在”来描述。  
+现阶段应修正为：Quest3 控制链路已经具备基础可用性，但还没有完成与正式数据集采集器、安全校验和回放筛选的闭环绑定。
 
-- Quest3 局域网接入专用流程
-- Quest3 端能力检测
-- `VR模式` 按钮
-- 手柄模式
-- 手势模式
-- Quest3 模式选择 HUD
-- 输入状态同步
-- WebXR / XR 输入桥接
+当前已完成或已具备基础的部分包括：
 
-也就是说，你提出的第 1、5、6 条需求目前都还是新的开发任务，不是已有能力。
+- Quest3 局域网访问与 `VR模式` 入口
+- 手柄模式与手势模式的基础控制链路
+- 关节组选取、夹爪连续控制与输入状态同步
+- VR 状态广播、节流、in-flight 控制和超时回收
+- 手柄/手势输入源写入控制消息的基础字段
+
+当前仍不能视为完成正式采集的原因是：
+
+- `recording_ready` 还需要由后端采集前置检查硬性驱动，而不能只由前端状态估计
+- Quest3 控制命令还需要和 `dataset_recorder` 的 step 级写盘严格对齐
+- VR 运动安全壳、reset 合法性、接触/抓取状态还需要进入状态广播和数据集日志
+- 还需要回放器、预览视频和 `validation_summary.json` 来筛选 episode
+
+因此，后续工作不是从零实现 VR 控制，而是在已有 VR 控制基础上补齐“安全采集闭环”。
 
 #### 3.2.5 数据集与训练基础设施尚不存在
 
@@ -300,20 +307,24 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 
 `backend/rl/` 当前仅是空目录初始化，不具备训练功能。
 
-#### 3.2.6 末端 RGB-D 相机链路尚不存在
+#### 3.2.6 末端 RGB-D 相机链路已完成基础定义，但尚未完成正式落盘验证
 
-当前仓库虽然保留了 `camera` 模型与前端 `camera.vue` 面板，但还不具备你现在真正需要的“末端 `D405 RGB-D` 观测链路”：
+当前仓库已经具备末端 `D405 RGB-D` 的基础定义和观测接口，不应再写成完全不存在：
 
-- 当前 `camera / camera_base` 不挂在机械臂末端
-- 当前没有按 `pic/camera.jpg` 对应的安装方式来定义末端相机位姿
-- 当前 MuJoCo 中没有真正导出末端 `RGB` 与 `Depth` 观测
-- 当前没有冻结 `D405` 的内参、外参、深度尺度和标定版本
-- 当前录制器设计还没有把 `RGB-D + 状态 + 动作 + 文本` 作为必需样本
+- 已有 `shared/camera_sensor_config.json` 冻结 `Intel RealSense D405`、安装名、相机内外参版本和 `RGB/Depth` 输出规格
+- 已有 `shared/dataset_schema.json` 将 `RGB-D + 状态 + 动作 + 文本` 定义为采集必需模态
+- MuJoCo 侧已有末端 D405 相机挂载与 `d405_rgb / d405_depth` 相机名
+- 后端已有 `/sim/observation/`、`/sim/camera/rgb/`、`/sim/camera/depth/` 等观测接口
 
-这意味着：
+但它距离“可以正式采集训练数据”仍差一步闭环验证：
 
-- 当前系统最多只能支撑“低维状态链路”讨论
-- 还不具备面向 `pi0.5` VLA 的完整视觉采集前提
+- 需要确认返回帧不是 stub / fallback 图像
+- 需要通过 smoke recording 验证 RGB、Depth、状态、动作、文本可以同步落盘
+- 需要保存逐帧文件、视觉索引和 MP4 预览视频
+- 需要 episode 结束后生成 `validation_summary.json`
+- 需要回放器能逐帧检查 RGB、Depth、状态、动作和接触/安全时间轴
+
+因此，当前视觉链路可以作为数据采集开发基础，但正式采集前必须先完成落盘、回放和完整性校验。
 
 #### 3.2.7 场景资产已切换为工具版本（已完成）
 
@@ -620,15 +631,30 @@ Quest 浏览器对手柄与手势输入的可用能力，很可能与 WebXR sess
 当前底部按钮中已有“状态同步”。根据你的新需求，应调整为：
 
 - 将 `状态同步` 入口升级或替换为 `VR模式`
+- 将数据集采集入口放在前端底部导航栏，与 `VR模式` 同级但职责分离
 - 点击 `VR模式` 后：
   - 桌面端显示：VR 连接状态、局域网说明、Quest3 接入提示
   - Quest3 端显示：VR 模式选择菜单
+- 点击 `采集` 或 `录制` 入口后：
+  - 显示采集前置检查结果
+  - 显示当前 session / episode / 目标工具 / 任务文本
+  - 只在 `recording_ready=true` 时允许进入正式录制
+  - 未通过检查时只能启动 `debug_trial`
 
 Quest3 端模式菜单必须包含：
 
 - 手柄模式
 - 手势模式
 - 退出 VR 模式
+
+采集入口建议采用底部导航栏中的一个独立按钮或按钮组：
+
+- `采集`：打开采集面板
+- `开始录制`：通过检查后开始 episode
+- `停止录制`：结束 episode 并触发保存与校验
+
+如果底部空间不足，建议底部只保留一个 `采集` 主按钮，点击后在右侧窄面板或底部轻量抽屉里展示 `开始录制 / 停止录制 / debug_trial / 当前状态`。  
+这样既符合“采集是主流程入口”的重要性，也不会让底部导航栏塞满高风险按钮。
 
 ### 5.5 菜单布局要求
 
@@ -638,18 +664,99 @@ Quest3 端模式菜单必须包含：
 - 非全屏
 - 不遮挡场景中心区域
 - 不阻断现有底部控制栏的主要可视性
+- 不让 `开始录制` 与普通控制按钮视觉混淆
+- 录制中必须持续显示明显但不遮挡操作的状态，例如 `REC`、episode ID 和当前目标工具
 
 推荐形式：
 
 - 右上角浮层
 - 右侧窄抽屉
 - 底部悬浮卡片
+- 底部导航栏保留入口，详细采集控制放入二级面板
 
 不推荐形式：
 
 - 全屏弹窗
 - 整屏遮罩
 - 覆盖整个 WebGL 画布中心的对话框
+- 把 `开始录制`、`停止录制`、`重置`、`VR模式` 全部平铺成同等视觉权重，导致 Quest3 中误触
+
+### 5.6 底部采集入口的推荐状态机
+
+底部导航栏中的 `采集` 入口建议只承担两个职责：
+
+1. 提醒用户当前是否可以采集。
+2. 打开二级采集面板。
+
+真正的 `开始录制`、`停止录制`、`保存结果` 和 `人工剔除` 操作，建议放到二级采集面板里。  
+这样做的好处是：底部导航栏保持稳定，Quest3 中不容易误触，同时采集流程仍然足够显眼。
+
+建议前端维护以下采集 UI 状态：
+
+| 状态 | 底部入口表现 | 面板允许操作 | 说明 |
+| --- | --- | --- | --- |
+| `idle` | `采集` | 打开面板、刷新检查 | 未创建 episode |
+| `checking` | `检查中` | 暂停开始按钮 | 正在执行采集前置检查 |
+| `ready` | `可录制` | `开始正式录制`、`开始 debug_trial` | 所有 P0 检查通过 |
+| `debug_only` | `仅调试` | `开始 debug_trial` | 相机、reset 或安全壳未通过 |
+| `recording` | `REC` | `停止录制`、查看状态 | 正在写入 episode |
+| `finalizing` | `保存中` | 禁止重复点击 | 正在写入结果、校验和预览 |
+| `completed` | `已保存` | 查看摘要、打开回放 | episode 已结束 |
+| `error` | `采集异常` | 查看错误、重试检查 | 录制或保存失败 |
+
+底部入口不要只显示布尔值，建议至少显示：
+
+- 当前状态：`可录制 / 仅调试 / REC / 保存中 / 异常`
+- 当前 episode ID
+- 当前目标工具
+- 简短错误原因，例如 `camera_missing`、`reset_invalid`、`safe_hold`
+
+### 5.7 采集面板最小功能
+
+第一版采集面板不需要做复杂的数据管理系统，但必须包含以下最小功能：
+
+| 区域 | 必需内容 |
+| --- | --- |
+| 采集前置检查 | 后端、WebSocket、MuJoCo、D405 RGB、D405 Depth、状态流、reset 合法性、安全壳 |
+| episode 配置 | 目标工具、目标槽位、任务文本、采集等级、输入模式 |
+| 录制控制 | 刷新检查、开始正式录制、开始 debug_trial、停止录制 |
+| 实时状态 | RGB/Depth 帧号、状态样本数、动作样本数、写盘状态、碰撞拦截次数 |
+| 结束摘要 | 是否保存成功、是否通过校验、是否可成为 `train_candidate`、剔除原因 |
+| 快速查看 | 打开 RGB 预览视频、查看 Depth 伪彩、查看时间轴 |
+
+面板中的按钮启用规则应严格一些：
+
+- `开始正式录制`：仅当 `recording_ready=true` 且 `safety_status=normal` 时启用
+- `开始 debug_trial`：允许在检查不完整时启用，但必须写入 `recording_tier=debug_trial`
+- `停止录制`：仅在 `recording` 状态启用
+- `reset`：录制中禁用，避免 episode 初始条件被破坏
+- `VR模式切换`：录制中如果切换输入源，必须写入异常标记或自动结束 episode
+
+### 5.8 采集入口位置是否可行
+
+将采集按钮放在前端下面导航栏是可行的，而且适合本项目。
+
+理由如下：
+
+1. 数据采集是主流程，不应该藏在调试菜单里。
+2. 底部导航栏已经承载 `VR模式` 等运行入口，采集入口与它同级符合操作顺序。
+3. Quest3 中视线和手柄指向操作更容易稳定点击底部固定入口。
+4. 采集状态需要持续可见，底部 `REC / episode / target tool` 很适合做常驻提示。
+
+但有两个约束必须遵守：
+
+- 底部只放 `采集` 主入口和录制状态，不把所有危险操作平铺出来。
+- `开始录制` 必须由二级面板承载，并受采集前置检查控制。
+
+因此推荐布局是：
+
+```text
+底部导航栏：
+[连接/状态] [VR模式] [采集: 可录制/REC] [任务/策略] [设置]
+
+采集面板：
+前置检查 -> episode 配置 -> 开始/停止 -> 实时计数 -> 结束摘要 -> 回放入口
+```
 
 ---
 
@@ -828,6 +935,106 @@ Quest3 控制链必须有明确的退出规则：
 - 手柄或手势追踪丢失时，进入保持或安全停状态
 - 切换到脚本任务或策略任务前，Quest3 手动控制应显式释放控制权
 
+### 6.4.8 VR 控制下的接触与穿模问题定位
+
+当前已经实现 Quest3 对机械臂的控制后，需要特别注意一个容易被误解的问题：  
+“机械臂能被 VR 控制移动”不等于“机械臂已经具备真实可靠的接触动力学抓取能力”。
+
+在当前阶段，VR 输入通常会被转换为关节目标、关节增量或夹爪开合目标。  
+如果后端主要是把这些目标写入 MuJoCo 状态或位置伺服，而不是完整依赖接触力、摩擦、重力和电机动力学来推动世界，那么接触工具、桌面和工具箱时就可能出现以下现象：
+
+- 机械臂或夹爪看起来穿过桌面、工具箱或工具
+- 工具被夹爪碰到但不会像真实物体一样滑动、滚动或被推开
+- 夹爪闭合后视觉上夹住了工具，但工具不会稳定跟随机械臂移动
+- 碰撞被系统硬性拦截，表现为卡住、跳变或控制不连续
+- 工具、桌面或工具箱的碰撞体与可视模型不一致，导致“看起来没碰到/看起来穿了”的错觉
+
+因此后续文档和实现应把当前控制阶段称为：
+
+```text
+VR teleop + joint target control + contact safety check
+```
+
+而不能直接称为：
+
+```text
+fully physics-based grasping teleoperation
+```
+
+这不是坏事。对当前项目而言，最重要的是先建立可控、可重复、可记录的数据采集链路，而不是一开始就追求完全真实的物理抓取手感。
+
+### 6.4.9 采集前必须增加的 VR 运动安全壳
+
+正式采集数据前，建议在 Quest3 控制链路中加入一层“运动安全壳”。  
+这层安全壳的目标不是让所有接触都完美真实，而是防止明显错误数据进入训练集。
+
+建议规则如下：
+
+1. 每次接收 Quest3 控制命令后，先保留上一帧安全状态。
+2. 对候选关节目标做单步最大增量限制、速度限制和关节范围限制。
+3. 在 MuJoCo 中试探性前向计算候选状态。
+4. 检查是否出现禁止接触或明显穿透。
+5. 如果出现非法穿透，则拒绝该动作、缩小步长或进入 safe hold。
+6. 将本次拦截原因写入状态广播和录制日志。
+
+这里需要区分“允许接触”和“禁止接触”：
+
+| 接触类型 | 是否允许 | 说明 |
+| --- | --- | --- |
+| 夹爪指尖接触目标工具 | 允许 | 这是抓取任务的一部分 |
+| 夹爪轻微接触工具箱边缘 | 视情况允许或警告 | 需要记录，避免放置阶段穿箱 |
+| 机械臂连杆穿桌 | 禁止 | 应立即拦截或回退 |
+| 夹爪穿过工具实体 | 禁止 | 正式采集数据中不应出现 |
+| 工具初始状态与桌面/工具箱穿透 | 禁止 | reset 阶段应重采样 |
+| 非目标工具被大幅碰撞 | 默认禁止或标记异常 | 第一版任务应尽量简化场景干扰 |
+
+建议状态广播和数据集记录中增加以下语义字段：
+
+- `safety_status`: `normal / limited / collision_blocked / safe_hold`
+- `collision_blocked`: 当前动作是否被碰撞保护拦截
+- `collision_objects`: 发生拦截的对象对
+- `max_penetration_depth_m`: 最大穿透深度
+- `contact_state`: 夹爪、工具、桌面和工具箱的接触摘要
+- `grasp_state`: `none / candidate / attached / released / failed`
+
+这些字段不只是调试用，也会直接影响后续数据筛选。  
+例如包含连续 `collision_blocked`、明显穿桌或 `safe_hold` 的 episode，默认不应进入训练集。
+
+### 6.4.10 工具抓取建议先采用半物理方案
+
+完全依赖 MuJoCo 接触、摩擦和夹爪力来真实夹住细长工具，调参成本较高。  
+对第一版数据采集来说，更稳妥的方案是：
+
+```text
+物理接触检测 + 抓取规则判定 + 临时附着 + 释放判定
+```
+
+建议第一版抓取状态机如下：
+
+1. `none`：未接触工具。
+2. `candidate`：目标工具进入夹爪工作区域，且夹爪正在闭合。
+3. `attached`：距离、接触和夹爪闭合阈值满足条件，工具临时附着到夹爪或末端。
+4. `released`：夹爪打开并解除附着。
+5. `failed`：发生滑落、误抓、穿模、碰撞或超时。
+
+第一版抓取成功判定可以包括：
+
+- 目标工具是当前语言指令中指定的工具
+- 目标工具中心或推荐抓取区域位于两指之间
+- 夹爪闭合量超过阈值
+- 左右指尖与工具距离或接触状态满足阈值
+- 抓取后工具随末端移动一小段距离仍保持稳定
+
+第一版释放成功判定可以包括：
+
+- 已解除附着
+- 工具位于工具箱有效空间或目标槽位附近
+- 工具没有明显穿透工具箱、桌面或夹爪
+- 工具姿态没有严重违反常识，例如竖直插起、悬空或倒扣
+
+这类半物理方案比纯物理夹取更容易稳定，也更适合先完成 Quest3 示教数据采集。  
+后续如果时间允许，再逐步增加更真实的动力学、摩擦和接触随机化。
+
 ### 6.5 建议增加的控制消息字段
 
 为了让局域网控制、数据采集和训练验证都能统一，后续控制消息建议在兼容现有字段的基础上扩展。
@@ -899,6 +1106,197 @@ Quest3 控制链必须有明确的退出规则：
 
 ## 7. 数据采集与存储设计
 
+### 7.0 正式采集前置闸门
+
+在进入正式批量采集前，建议把采集分成三个等级：
+
+| 等级 | 用途 | 是否进入训练集 |
+| --- | --- | --- |
+| `debug_trial` | 调试相机、VR 控制、reset、接触安全壳和写盘链路 | 否 |
+| `pilot` | 小规模试采，用于检查数据完整性和标注流程 | 默认否，人工确认后可选 |
+| `train_candidate` | 通过自动校验和人工抽查的正式候选数据 | 可以 |
+
+当前阶段不建议一上来直接批量采集。  
+原因是数据集一旦混入相机缺帧、stub 图像、穿桌、工具竖立、工具箱倒扣、语言标签缺失等问题，后续训练会很难定位问题来源。
+
+正式 episode 开始前，至少应通过以下检查：
+
+- 后端在线，WebSocket 在线，MuJoCo backend 可用
+- 末端 `D405` 的 `RGB` 与 `Depth` 接口均可返回观测
+- `camera_capture_ok=true`
+- 当前视觉帧不是 stub / fallback 图像
+- `qpos`、`qvel`、`ee_pose`、`gripper_opening`、`objects` 均能持续更新
+- Quest3 输入模式、输入源、关节组和原始输入值可以记录
+- 当前目标工具、目标槽位和 `instruction_text` 已绑定
+- reset 后工具位姿、工具箱位姿、碰撞状态和工作区可达性均合法
+- `safety_status=normal`
+- 短时 smoke recording 能同时写入 RGB、Depth、状态和动作
+
+如果任一检查失败，本次只能作为 `debug_trial`，不能标记为正式训练候选数据。
+
+### 7.0.1 录制生命周期
+
+数据集采集建议按一个明确的 episode 生命周期实现：
+
+```text
+idle
+  -> precheck
+  -> episode_created
+  -> recording
+  -> stopping
+  -> finalizing
+  -> completed / rejected / aborted
+```
+
+各阶段语义如下：
+
+| 阶段 | 触发条件 | 主要动作 | 允许进入训练集 |
+| --- | --- | --- | --- |
+| `idle` | 无活动 episode | 等待用户打开采集面板 | 否 |
+| `precheck` | 用户点击刷新检查或开始录制 | 检查相机、状态、reset、安全壳、磁盘、语言标签 | 否 |
+| `episode_created` | 预检查通过或允许 debug_trial | 生成 session / episode ID，冻结 metadata | 否 |
+| `recording` | 用户确认开始 | 持续写入 RGB、Depth、状态、动作、文本和索引 | 取决于最终校验 |
+| `stopping` | 用户点击停止或触发终止条件 | 停止接收新样本，刷写缓冲队列 | 否 |
+| `finalizing` | 样本写入完成 | 写入 result、validation_summary、MP4 预览和统计 | 否 |
+| `completed` | 校验通过并保存成功 | 标记成功或失败结果，允许人工查看 | 可选 |
+| `rejected` | 自动或人工剔除 | 写入剔除原因 | 否 |
+| `aborted` | 异常中断、掉线或用户强制终止 | 保留目录和部分日志 | 否 |
+
+正式训练候选数据必须满足：
+
+- 生命周期到达 `completed`
+- `recording_tier=train_candidate`
+- `validation_summary.can_be_train_candidate=true`
+- 人工抽查没有剔除
+
+### 7.0.2 建议新增的采集接口
+
+为避免前端直接拼凑录制逻辑，建议后端提供一组清晰的采集 API。  
+接口名可以在实现时调整，但语义建议保持稳定。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/dataset/status/` | 获取当前采集状态、活动 session、活动 episode、写盘状态 |
+| `POST` | `/dataset/precheck/` | 执行采集前置检查，返回 `recording_ready` 和失败原因 |
+| `POST` | `/dataset/session/start/` | 创建或恢复采集 session |
+| `POST` | `/dataset/episode/start/` | 创建 episode 并开始录制 |
+| `POST` | `/dataset/episode/stop/` | 停止录制并进入保存/校验 |
+| `POST` | `/dataset/episode/abort/` | 异常中止，保留 `aborted` 目录 |
+| `GET` | `/dataset/episode/{episode_id}/summary/` | 读取结果和 `validation_summary` |
+| `GET` | `/dataset/episode/{episode_id}/preview/` | 获取 RGB 预览视频或关键帧 |
+| `POST` | `/dataset/episode/{episode_id}/mark/` | 人工标记是否纳入训练集和剔除原因 |
+
+WebSocket 状态广播建议补充：
+
+- `recording_status`
+- `recording_tier`
+- `recording_ready`
+- `active_session_id`
+- `active_episode_id`
+- `target_tool_id`
+- `target_tool_class`
+- `instruction_text`
+- `num_rgb_frames`
+- `num_depth_frames`
+- `num_state_samples`
+- `num_action_samples`
+- `last_record_error`
+- `writer_queue_size`
+
+前端底部导航栏只订阅这些摘要字段；完整细节由采集面板读取。
+
+### 7.0.3 采集前置检查返回结构
+
+`/dataset/precheck/` 建议返回结构化结果，而不是只返回一句文本：
+
+```json
+{
+  "recording_ready": true,
+  "allowed_tier": "train_candidate",
+  "checks": {
+    "backend_online": true,
+    "websocket_online": true,
+    "mujoco_backend_ok": true,
+    "rgb_ok": true,
+    "depth_ok": true,
+    "camera_capture_ok": true,
+    "stub_frame_used": false,
+    "state_stream_ok": true,
+    "quest_input_ok": true,
+    "instruction_bound": true,
+    "reset_valid": true,
+    "safety_status_ok": true,
+    "disk_space_ok": true
+  },
+  "reject_reasons": [],
+  "warnings": []
+}
+```
+
+如果不通过，`recording_ready=false`，但可以返回：
+
+```json
+{
+  "recording_ready": false,
+  "allowed_tier": "debug_trial",
+  "reject_reasons": ["camera_capture_stub", "reset_invalid"],
+  "warnings": ["正式训练数据禁止使用当前相机帧"]
+}
+```
+
+这样前端可以明确禁用正式录制按钮，同时允许用户做调试试采。
+
+### 7.0.4 异常与中断处理
+
+正式录制时必须明确处理以下异常：
+
+| 异常 | 处理方式 |
+| --- | --- |
+| Quest3 掉线 | 停止接收新动作，episode 标记 `operator_or_device_disconnect` |
+| WebSocket 断开 | 后端继续刷写缓冲，前端重连后读取 status |
+| 相机缺帧 | 写入 `rgb_missing/depth_missing`，超过阈值则 `camera_failure` |
+| 出现 stub 图像 | 正式 episode 自动降级或标记不可训练 |
+| reset 非法 | 禁止开始正式录制，只允许 debug_trial |
+| safe hold | 写入 `safe_hold_triggered`，必要时自动停止 episode |
+| 磁盘不足 | 禁止开始或立即安全停止，保留错误摘要 |
+| 用户误触停止 | 正常停止，但 result 中记录 `operator_abort` |
+
+异常中断的 episode 不应删除。  
+保留 `aborted` 目录和 `partial_summary.json`，后续可以用于调试，但默认不进入训练集。
+
+### 7.0.5 可训练视觉数据硬性约束
+
+这一节需要写成硬性要求，而不是建议。  
+否则后续确实无法稳定训练 `pi0.5` 或其他 VLA / imitation learning 模型。
+
+正式训练候选 episode 的视觉数据必须满足：
+
+1. 视觉源必须是 MuJoCo 中挂在 UR5 末端的 `D405` 相机，也就是 `d405_rgb / d405_depth` 对应的 eye-in-hand 视角。
+2. 不能把 Quest3 头显看到的页面画面当作训练视觉输入。
+3. 不能把前端 Three.js 观察相机画面当作训练视觉输入。
+4. 不能把 `camera / camera_base` 调试对象或外部观察相机当作主采集相机。
+5. 不能只保存 MP4 视频后再反解训练数据；MP4 只能作为预览和论文展示。
+6. 训练主数据必须是逐帧 `RGB` 文件、逐帧 `Depth` 文件和 `visuals.jsonl` 索引。
+7. 每条动作样本必须能追溯到最近有效视觉帧 `paired_frame_id`。
+8. 每条状态样本必须包含同一时刻附近的 `qpos/qvel/ee_pose/gripper/objects/camera_capture_ok`。
+9. 每条 episode 必须有具体 `instruction_text`，明确当前抓取的工具类别。
+10. `Depth` 必须使用 `png16`、`npy` 或等价无损格式，不能使用 JPG 或有损视频编码作为深度主数据。
+
+正式训练候选 episode 的硬性拒绝条件：
+
+| 条件 | 结果 |
+| --- | --- |
+| `camera_capture_ok=false` | 不得进入训练集 |
+| `stub_frame_used=true` 或 `stub_frame_count > 0` | 不得进入训练集 |
+| 缺少 `rgb_path` 或 `depth_path` | 不得进入训练集 |
+| RGB 与 Depth 时间对齐超过阈值 | 不得进入训练集，除非明确标为调试数据 |
+| 任一动作缺少 `paired_frame_id` | 不得进入训练集 |
+| 只有 MP4，没有逐帧 RGB/Depth | 不得进入训练集 |
+| 任务文本缺失或只写 `pick up the tool` | 不得进入训练集 |
+| 视觉源不是末端 D405 | 不得进入训练集 |
+
+换句话说，MP4 是人看的，`rgb/ + depth/ + visuals.jsonl + states.jsonl + actions.jsonl + language.json` 才是模型训练真正读取的数据。
+
 ### 7.1 采集责任边界
 
 这一点现在需要明确冻结：
@@ -926,9 +1324,9 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 - 后端状态广播负责“机器人与环境状态”
 - 录制器负责把这三类信息按时间对齐后落盘
 
-### 7.3 每条 episode 建议保存的内容
+### 7.3 每条 episode 必须保存的内容
 
-建议每个 episode 至少包含以下信息：
+正式采集的每个 episode 至少必须包含以下信息；缺任一主字段都不能标记为 `train_candidate`。
 
 #### 7.3.1 元数据
 
@@ -958,6 +1356,14 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 | `camera_intrinsics_version` | `string` | `d405_intr_20260412_a` | 相机内参版本 |
 | `camera_extrinsics_version` | `string` | `d405_ext_20260412_a` | 相机相对末端的外参版本 |
 | `visual_recording_required` | `boolean` | `true` | 该轨迹是否要求视觉完整录制；面向 `pi0.5` 应为 `true` |
+| `recording_tier` | `string` | `train_candidate` | `debug_trial / pilot / train_candidate` |
+| `schema_version` | `string` | `quest3_tool_sorting_v1_s5` | 当前数据格式版本 |
+| `code_version` | `string` | `git commit hash` | 采集时对应代码版本 |
+| `config_versions` | `object` | `{"scene_manifest":"v2.1.0"}` | 场景、工具、相机和数据 schema 版本 |
+| `reset_seed` | `integer` | `42` | 当前 episode 的 reset 随机种子 |
+| `reset_valid` | `boolean` | `true` | reset 后初始状态是否合法 |
+| `reset_resample_count` | `integer` | `2` | reset 非法后重采样次数 |
+| `safety_gate_passed` | `boolean` | `true` | 是否通过 VR 运动安全壳采集前检查 |
 
 #### 7.3.2 视觉观测序列
 
@@ -981,6 +1387,10 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 | `rgb_missing` | `boolean` | `false` | 当前步 RGB 是否缺帧 |
 | `depth_missing` | `boolean` | `false` | 当前步 Depth 是否缺帧 |
 | `visual_valid` | `boolean` | `true` | 当前视觉观测是否可用于训练 |
+| `stub_frame_used` | `boolean` | `false` | 是否使用了 fallback/stub 图像；正式训练应为 `false` |
+| `rgb_file_size_bytes` | `integer` | `38291` | RGB 文件大小，便于完整性检查 |
+| `depth_file_size_bytes` | `integer` | `614400` | Depth 文件大小，便于完整性检查 |
+| `depth_invalid_ratio` | `number` | `0.02` | 深度无效像素占比，可用于筛选 |
 
 #### 7.3.3 状态序列
 
@@ -1004,6 +1414,12 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 | `task_goal` | `string` | `tool_sorting_to_toolbox` | 当前任务目标，统一表示工具入库 |
 | `camera_capture_ok` | `boolean` | `true` | 当前步是否成功关联到完整的 `RGB-D` 观测 |
 | `instruction_text` | `string` | `pick up the wrench and place it into the toolbox` | 当前步对应的任务文本，便于训练时直接读取 |
+| `safety_status` | `string` | `normal` | `normal / limited / collision_blocked / safe_hold` |
+| `collision_blocked` | `boolean` | `false` | 当前步是否被碰撞保护拦截 |
+| `collision_objects` | `string[]` | `["left_pad","wrench_01"]` | 当前相关接触或拦截对象 |
+| `max_penetration_depth_m` | `number` | `0.0` | 最大穿透深度，正式数据应低于阈值 |
+| `grasp_state` | `string` | `attached` | `none / candidate / attached / released / failed` |
+| `reset_valid` | `boolean` | `true` | 当前 episode 初始 reset 是否通过合法性检查 |
 
 #### 7.3.4 动作序列
 
@@ -1022,6 +1438,10 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 | `input_confidence` | `number` | `0.92` | 当前手势或输入可信度，可选 |
 | `paired_frame_id` | `string` | `frame_000123` | 与当前动作对应的视觉帧 ID |
 | `instruction_text` | `string` | `pick up the wrench and place it into the toolbox` | 当前动作对应的任务文本 |
+| `safety_status_before` | `string` | `normal` | 执行动作前安全状态 |
+| `safety_status_after` | `string` | `normal` | 执行动作后安全状态 |
+| `action_accepted` | `boolean` | `true` | 动作是否被后端接受执行 |
+| `action_reject_reason` | `string` | `` | 被拒绝时的原因，例如碰撞、限幅或 stale command |
 
 #### 7.3.5 结果标签
 
@@ -1038,10 +1458,43 @@ Quest3 采集的不应只是“最终关节角度”。为了后续训练和论�
 | `manually_rejected` | `boolean` | `false` | 是否被人工剔除 |
 | `failure_reason` | `string` | `` | 失败原因说明 |
 | `notes` | `string` | `controller mode was stable` | 备注信息 |
+| `camera_failure` | `boolean` | `false` | 是否因 RGB-D 缺失、错帧或 stub 图像失败 |
+| `reset_invalid` | `boolean` | `false` | 是否因 reset 位姿非法失败 |
+| `operator_abort` | `boolean` | `false` | 是否人工中止 |
+| `safe_hold_triggered` | `boolean` | `false` | 是否触发安全保持 |
+| `collision_block_count` | `integer` | `0` | episode 中碰撞拦截次数 |
+| `stub_frame_count` | `integer` | `0` | episode 中 fallback/stub 图像帧数 |
+| `validation_passed` | `boolean` | `true` | 自动校验是否通过 |
 
-### 7.4 数据目录建议
+#### 7.3.6 采集校验摘要
 
-建议后续代码和实验统一使用如下目录：
+每条 episode 结束时建议生成 `validation_summary.json`，至少包含：
+
+| 字段名 | 类型 | 示例 | 说明 |
+| --- | --- | --- | --- |
+| `episode_id` | `string` | `episode_0007` | 当前 episode |
+| `duration_s` | `number` | `18.6` | 轨迹时长 |
+| `num_rgb_frames` | `integer` | `558` | RGB 帧数 |
+| `num_depth_frames` | `integer` | `558` | Depth 帧数 |
+| `num_state_samples` | `integer` | `558` | 状态样本数 |
+| `num_action_samples` | `integer` | `372` | 动作样本数 |
+| `missing_rgb_count` | `integer` | `0` | RGB 缺帧数 |
+| `missing_depth_count` | `integer` | `0` | Depth 缺帧数 |
+| `misaligned_frame_count` | `integer` | `0` | RGB/Depth 未对齐帧数 |
+| `stub_frame_count` | `integer` | `0` | fallback/stub 图像帧数 |
+| `collision_block_count` | `integer` | `1` | 碰撞保护拦截次数 |
+| `max_penetration_depth_m` | `number` | `0.0002` | 最大穿透深度 |
+| `reset_valid` | `boolean` | `true` | 初始 reset 是否有效 |
+| `instruction_text_present` | `boolean` | `true` | 是否存在任务文本 |
+| `can_be_train_candidate` | `boolean` | `true` | 是否允许作为训练候选 |
+| `reject_reasons` | `string[]` | `[]` | 自动剔除原因 |
+
+`validation_summary` 不是论文装饰项，而是采集质量控制的硬闸门。  
+如果 `stub_frame_count > 0`、关键字段缺失、RGB-D 未对齐严重、reset 非法或发生明显穿模，该 episode 默认不能进入训练集。
+
+### 7.4 数据目录规范
+
+后续代码和实验应统一使用如下目录：
 
 ```text
 data/
@@ -1054,11 +1507,13 @@ data/
             episode_0001/
               metadata.json
               language.json
+              visuals.jsonl
               rgb/
               depth/
               states.jsonl
               actions.jsonl
               result.json
+              validation_summary.json
           videos/
           logs/
       processed/
@@ -1096,22 +1551,23 @@ experiments/
     notes/
 ```
 
-### 7.5 数据格式建议
+### 7.5 数据格式规范
 
-推荐统一使用：
+正式训练数据统一使用：
 
 - 元数据：JSON
 - 时序数据：JSONL 或 Parquet
 - RGB 图像：JPG 或 PNG
 - Depth 图像：PNG16、NPY 或其他无损格式，不建议使用 JPG
-- 视频：MP4
+- 视频：MP4，仅作为预览和展示，不作为训练主数据
 - 训练划分：manifest JSON
 - 任务文本：JSON 或直接写入 `metadata.json`
 
-如果第一版想减少工程复杂度，可以先落地为：
+第一版最小可训练落盘结构必须包含：
 
 - `metadata.json`
 - `language.json`
+- `visuals.jsonl`
 - `rgb/frame_xxxxxx.jpg`
 - `depth/frame_xxxxxx.png`
 - `states.jsonl`
@@ -1129,209 +1585,866 @@ experiments/
 4. 由于数据集由你本人手动采集，所以 session、episode、输入模式、失败原因等人工示教上下文都必须被完整记录。
 5. 对 `pi0.5` 而言，视觉和任务文本不是锦上添花，而是决定数据集是否可直接训练的核心字段。
 6. `Depth` 一旦用错格式，后续训练和回放会直接失真，因此必须先把深度存储规范写死。
+7. 如果接触安全壳不稳定，模型会学到“穿过桌子/工具/工具箱”的错误动作先验，后续 RL 或 sim2real 会更难补救。
+8. 如果 reset 姿态不符合现实，例如工具竖直立起或工具箱开口不朝上，数据分布会偏离真实任务。
+
+### 7.7 试采到正式采集的推荐流程
+
+建议按下面顺序推进：
+
+1. `debug_trial`：只验证链路，不进入训练集。
+2. `pilot`：每类工具至少采少量成功和失败轨迹，检查标签、回放和筛选是否可用。
+3. 人工抽查：查看 RGB、Depth、状态、动作、reset 初始状态、接触状态和结果标签。
+4. 自动校验：生成 `validation_summary.json` 并给出是否可成为 `train_candidate`。
+5. 正式采集：固定 schema、相机标定版本、reset 随机化范围和语言模板后再批量采。
+6. 数据冻结：每次采集 session 结束后冻结配置版本、代码版本、采集统计和剔除原因。
+
+第一版正式采集建议保守一些：
+
+- 优先使用手柄模式作为主采集方式
+- 手势模式先作为对比或增强数据，不要一开始混入主训练集
+- 每条 episode 只指定一个目标工具
+- 工具箱位置先固定，工具位置有限随机
+- 工具姿态只做平面 yaw 随机或小范围扰动
+- 每类工具先采少量高质量轨迹，再决定是否扩大规模
+
+### 7.8 语言描述规则
+
+面向 `pi0.5` 或 VLA 训练，任务文本必须明确“抓什么”。  
+不建议只写泛化文本 `pick up the tool` 作为唯一描述。
+
+第一版建议采用稳定模板：
+
+| 工具类别 | 英文模板 | 中文备注 |
+| --- | --- | --- |
+| `wrench` | `pick up the wrench and place it into the toolbox` | 抓取扳手并放入工具箱 |
+| `screwdriver` | `pick up the screwdriver and place it into the toolbox` | 抓取螺丝刀并放入工具箱 |
+| `pliers` | `pick up the pliers and place them into the toolbox` | 抓取钳子并放入工具箱 |
+
+每条 episode 的 `metadata.json`、`language.json`、`states.jsonl` 和 `actions.jsonl` 都应能追溯到同一条任务文本。  
+如果后续要扩充自然语言多样性，可以在 `language.json` 中增加 `instruction_variants`，但第一版训练建议先使用固定模板，减少无关变量。
 
 ---
 
 ## 8. 模型训练路线
 
-### 8.1 建议原则：每个训练阶段产出的模型都应支持可选 MuJoCo 验证
+### 8.1 总体原则：先形成可验证的 IL 闭环，再做 RL 微调
 
-这一条现在需要按你的最新意思修正：
+本项目的训练路线建议明确拆成四层，而不是把“采集完数据直接训 pi0.5、再直接 RL”写成一个模糊阶段：
 
-- 不是说每个阶段都必须验证
-- 而是说每个阶段产出的模型，都应该具备“可以加载回 MuJoCo 进行仿真验证”的能力
+```text
+raw Quest3 episode 数据
+  -> 数据清洗与质量筛选
+  -> LeRobot / OpenPI 可训练数据集
+  -> pi0.5 模仿学习初训
+  -> MuJoCo 策略验证
+  -> RL residual / warm-start 微调
+  -> RL 模型入库与 MuJoCo 再验证
+```
 
-本项目推荐保留如下闭环能力：
+这里有一个必须写死的判断：
 
-1. 先完成末端 `D405 RGB-D` 相机在仿真中的挂载定义、观测输出和录制协议
-2. 再由你用 Quest3 手动示教采集带有 `RGB-D + 状态 + 文本 + 动作` 的数据
-3. 你先完成 `pi0.5` 初步训练
-4. 初训模型放入模型目录
-5. 如果需要，可以将初训模型加载到 MuJoCo 中做仿真验证
-6. 在此基础上，或在入库后稍后，再由系统侧搭好的 RL 环境进行强化学习微调
-7. 强化学习后的模型再次放入模型目录
-8. 如果需要，也可以把强化学习后的模型再加载到 MuJoCo 中做仿真验证
+- `raw/` 目录下的 `metadata.json + visuals.jsonl + states.jsonl + actions.jsonl + rgb/ + depth/` 是本项目自己的高保真原始采集格式。
+- `pi0.5` 训练不应直接读取这些原始 JSONL，而应先转换为 `LeRobot / OpenPI` 兼容的数据集格式。
+- 第一版 `pi0.5` 初训应优先验证“数据转换、训练、推理、MuJoCo 执行”闭环，不追求一开始就达到强随机泛化。
+- 第一版 RL 不建议直接端到端微调整个 `pi0.5` 大模型，而建议先做 `pi0.5 frozen + residual policy` 或 `pi0.5 warm-start policy`，降低训练成本和不稳定性。
 
-也就是说：
+官方路线也支持这个拆法：OpenPI 的自有数据 fine-tuning 流程分为“转换为 LeRobot dataset、定义训练 config、计算 norm stats、训练、启动 policy server 做推理”；LeRobot 的 `pi05` 策略训练也要求 dataset、policy config、pretrained path、normalization mapping 等配置明确。
 
-- 初训模型可以验证
-- RL 微调后的模型也可以验证
-- 任何训练得到并存入模型目录的模型，都应当支持被加载到 MuJoCo 中查看和验证
-
-### 8.2 角色分工
-
-结合你的要求，训练链条中的责任边界建议写成：
+### 8.2 训练阶段的责任边界
 
 #### 8.2.1 你负责
 
-- 使用 Quest3 完成示教采集
-- 根据采集结果筛选可用数据
-- 对 `pi0.5` 做第一轮初步训练
-- 将训练完成的模型放入约定模型目录
-- 查看 MuJoCo 中的验证结果并判断是否进入下一阶段
+- 使用 Quest3 完成手动示教采集。
+- 根据 `validation_summary.json` 和人工回放筛选可训练 episode。
+- 确认每轮训练使用的数据集版本、工具类别比例、语言模板和采集模式。
+- 启动或参与启动 `pi0.5` 第一轮初训。
+- 查看初训模型和 RL 模型在 MuJoCo 中的验证结果。
 
 #### 8.2.2 系统与代码侧负责
 
-- 提供数据格式、模型目录和模型注册规范
-- 提供初训模型加载回 MuJoCo 的验证入口
-- 提供强化学习环境
-- 提供强化学习微调脚本和评估脚本
-- 提供强化学习后模型再次加载回 MuJoCo 的验证入口
+- 实现 raw episode 到 LeRobot / OpenPI 数据集的转换工具。
+- 实现数据集校验、统计、划分和转换报告。
+- 提供 `pi0.5` 训练配置、训练脚本包装、日志和模型入库规范。
+- 提供统一策略加载器，让初训模型和 RL 模型都能接入 MuJoCo。
+- 提供 RL 环境、奖励、随机化、训练脚本和评估脚本。
+- 记录所有模型的来源数据集、训练配置、动作空间、控制频率和验证结果。
 
-### 8.3 推荐顺序
+### 8.3 推荐开发顺序
 
-建议把完整实验顺序明确冻结为“主链路 + 可选验证点”的形式：
+建议把训练链条冻结为以下可执行顺序：
 
-1. 完成末端 `D405` 安装方案冻结和仿真挂载定义
-2. 完成 `RGB-D` 输出接口、相机标定版本和录制字段冻结
-3. Quest3 手动示教采集数据
-4. 数据清洗与预处理
-5. `pi0.5` 初步训练
-6. 初训模型入库
-7. 如有需要，初训模型加载到 MuJoCo 做仿真验证
-8. 基于初训模型进入强化学习微调
-9. 强化学习模型入库
-10. 如有需要，强化学习模型加载到 MuJoCo 做仿真验证
-11. 比较初训模型与强化学习模型的性能差异
-12. 选择最终模型供前端任务入口调用
+1. 完成 S5 数据采集闭环，确保 episode 能落盘、回放和自动校验。
+2. 完成 S6 抓取附着、释放、成功判定和脚本化任务，确保 reward 与结果标签可信。
+3. 运行 `debug_trial` 和 `pilot`，每类工具先采少量可回放 episode。
+4. 将通过筛选的 raw episode 标记为 `train_candidate`。
+5. 运行 raw -> LeRobot / OpenPI 转换脚本，生成 `processed/pi05_lerobot/`。
+6. 生成 train / val / test split，按 episode 划分，不按帧随机打散。
+7. 计算 state / action normalization stats，并固化到数据集和训练 run 配置中。
+8. 进行 `pi0.5` 初训，默认先使用 `RGB + robot_state + instruction_text -> action`。
+9. 将初训模型写入 `models/pi05/initial_runs/<run_id>/`。
+10. 使用统一策略加载器把初训模型加载回 MuJoCo 做固定场景和随机场景验证。
+11. 基于初训模型进入 RL 微调，第一版优先采用 residual policy。
+12. 将 RL 模型写入 `models/rl/finetune_runs/<run_id>/`。
+13. 再次通过 MuJoCo 验证，比较 `scripted / pi0.5 IL / pi0.5 + RL` 三组结果。
+14. 将通过验证的最终模型写入 `models/registry/active_policy.json`。
 
-补充说明：
+### 8.4 raw 数据到 pi0.5 数据集的转换
 
-- 第 5 步和第 8 步是推荐预留的验证节点，不是每次实验都必须执行。
-- 即使当轮实验暂不做 MuJoCo 验证，模型目录结构、加载接口和验证脚本入口也要先设计好。
+#### 8.4.1 为什么必须有转换层
 
-### 8.4 第一步：pi0.5 初训
+本项目 raw episode 追求的是“可回放、可审计、可写论文”，字段丰富且保留大量工程上下文。`pi0.5` 训练则需要稳定、规则、张量化、可批量加载的数据结构。
 
-本文档暂把 `pi0.5` 视为你计划使用的策略模型名称。  
-第一阶段目标不是直接追求最强性能，而是让模型先学会“能完成基本抓取与放置轨迹”。
+因此必须新增一个转换层：
 
-这里的训练数据来源应明确写为：
+```text
+raw episode 格式
+  metadata.json
+  language.json
+  visuals.jsonl
+  states.jsonl
+  actions.jsonl
+  rgb/*.jpg
+  depth/*.png
 
-- 由你使用 Quest3 手柄模式或手势模式完成的专家示教轨迹
-- 系统自动记录得到的 `RGB-D + 状态 + 文本 + 动作` 序列
+转换为：
 
-#### 8.4.1 输入建议
+LeRobot / OpenPI 格式
+  meta/info.json
+  meta/stats.json
+  meta/tasks.jsonl 或 tasks.parquet
+  meta/episodes/...
+  data/chunk-xxx/file-xxx.parquet
+  videos/observation.images.d405_rgb/chunk-xxx/file-xxx.mp4
+```
 
-- 末端 `RGB` 图像
-- 末端 `Depth` 图像
-- 机器人状态
-- 工具状态
-- 目标槽位
-- 当前任务文本
-- 当前任务上下文
+转换层不只是改文件格式，还要完成以下工作：
 
-#### 8.4.2 输出建议
+- 筛选 `validation_summary.can_be_train_candidate=true` 的 episode。
+- 检查 `camera_capture_ok=true`、`stub_frame_count=0`、`paired_frame_id` 完整。
+- 将不规则的控制时间戳重采样到统一 `policy_fps`。
+- 将动作统一成训练用 action 向量。
+- 将 `instruction_text` 映射为 task / prompt。
+- 生成训练、验证、测试划分。
+- 计算 normalization stats。
+- 输出转换报告，方便定位训练问题。
 
-- 6 轴关节目标或关节增量
-- 夹爪开合命令
+#### 8.4.2 建议新增转换脚本
 
-#### 8.4.3 初训模型产物要求
+建议新增：
 
-每次初训完成后，建议至少产出：
+```text
+scripts/datasets/convert_quest3_to_lerobot.py
+scripts/datasets/validate_pi05_dataset.py
+scripts/datasets/split_quest3_dataset.py
+scripts/datasets/inspect_pi05_sample.py
+```
 
-- 训练配置文件
-- checkpoint
-- 最优权重
-- 可部署导出文件
-- 训练日志
-- 可选的 MuJoCo 验证结果目录
+第一版命令建议设计为：
 
-#### 8.4.4 第一阶段成功标准
+```bash
+python scripts/datasets/convert_quest3_to_lerobot.py \
+  --raw-root data/datasets/quest3_tool_sorting_v1/raw \
+  --output-root data/datasets/quest3_tool_sorting_v1/processed/pi05_lerobot_v1 \
+  --split-file data/datasets/quest3_tool_sorting_v1/splits/pi05_v1.json \
+  --policy-fps 10 \
+  --image-key observation.images.d405_rgb \
+  --state-mode qpos_gripper \
+  --action-mode joint_delta_gripper_abs \
+  --require-train-candidate true
+```
 
-- 能在固定场景下复现基本抓取轨迹
-- 不要求一开始就具备很强随机化泛化能力
-- 优先验证数据闭环、训练闭环、推理闭环全部可跑通
+转换完成后建议生成：
 
-### 8.5 初训模型入库与 MuJoCo 验证
+```text
+data/datasets/quest3_tool_sorting_v1/processed/pi05_lerobot_v1/
+  meta/
+    info.json
+    stats.json
+    tasks.jsonl 或 tasks.parquet
+    episodes/
+  data/
+    chunk-000/
+      file-000.parquet
+  videos/
+    observation.images.d405_rgb/
+      chunk-000/
+        file-000.mp4
+  conversion_report.json
+  feature_mapping.json
+  rejected_episodes.jsonl
+```
 
-初训模型训练完成后，不应只保留一个权重文件，而建议执行“入库为主、验证可选”的流程：
+#### 8.4.3 pi0.5 第一版 feature mapping
 
-1. 将模型放入 `models/pi05/initial_runs/<run_id>/`
-2. 记录该模型对应的数据集版本、训练配置和导出格式
-3. 如需要，在 MuJoCo 中加载该模型
-4. 如需要，运行固定验证场景
-5. 如需要，保存验证日志、指标、截图和视频
+第一版不要把所有 raw 字段都塞进模型。为了减少 sim-only 依赖、提高后续实机迁移可能性，建议 `pi0.5` 训练输入先使用以下特征：
 
-如果你希望在这一阶段做 MuJoCo 验证，建议至少验证：
+| 训练字段 | 来源 | 形状建议 | 是否 P0 | 说明 |
+| --- | --- | --- | --- | --- |
+| `observation.images.d405_rgb` | `rgb/frame_xxxxxx.jpg` | `3 x H x W` | 是 | 第一版主视觉输入，建议转换时另存训练视频或训练图像索引 |
+| `observation.state` | `qpos[0:6] + gripper_opening` | `7` | 是 | 只用实机可直接获得的关节和夹爪状态 |
+| `task` / `prompt` | `instruction_text` | string / task id | 是 | 例如 `pick up the wrench and place it into the toolbox` |
+| `action` | `actions.jsonl + states.jsonl` | `7` | 是 | 默认 `6 轴关节增量 + 夹爪目标开合量` |
+| `timestamp` | 对齐后的采样时间 | scalar | 是 | 用于调试和回放，不一定进入模型 |
+| `episode_index` / `frame_index` | 转换器生成 | scalar | 是 | 用于 LeRobot 索引 |
+| `observation.images.d405_depth` | `depth/frame_xxxxxx.png` | 可选 | 否 | 第一版保留但不默认接入 pi0.5 主干 |
+| `objects` / `toolbox` 位姿 | `states.jsonl` | object | 否 | 用于筛选、评估和 RL reward，不作为第一版 pi0.5 输入 |
 
-- 固定工具位置下能否完成抓取
-- 固定工具位置下能否完成放置
-- 机械臂轨迹是否稳定
-- 是否存在明显抖动、掉落和碰撞
-- 前端回放与 MuJoCo 中的行为是否一致
+第一版建议：
 
-### 8.6 第二步：强化学习微调
+```text
+pi0.5 input:
+  observation.images.d405_rgb
+  observation.state = [q1, q2, q3, q4, q5, q6, gripper_opening]
+  prompt = instruction_text
 
-强化学习部分的重点不是替代初训，而是建立在初训结果之上继续优化。
+pi0.5 target:
+  action = [delta_q1, delta_q2, delta_q3, delta_q4, delta_q5, delta_q6, gripper_target]
+```
 
-RL 微调的目标是补齐模仿学习的不足，尤其是：
+不建议第一版直接把 MuJoCo ground-truth `objects` 位姿作为 `pi0.5` 输入。原因是实机迁移时这些字段需要额外感知或标定才能获得；它们可以作为 reward、评估和失败分析字段，但不应成为第一版 VLA 模型的核心观测。
 
-- 抓取细节不稳定
-- 轨迹抖动
-- 工具姿态随机化后成功率下降
-- 放入工具箱时末端精度不足
+#### 8.4.4 动作定义
 
-这里还需要明确一条：
+为保证初训和 RL 共用动作语义，建议统一动作向量为 7 维：
 
-- 强化学习环境由系统与代码侧负责搭建
-- 强化学习应能够加载初训模型作为 warm start、行为先验或对比基线
+```text
+action[0:6] = joint_delta_rad
+              = target_positions[0:6] - state.qpos[0:6]
 
-RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署脱节。
+action[6]   = gripper_target_opening
+              in [0.0, 1.0]
+```
 
-### 8.7 强化学习模型入库与 MuJoCo 验证
+执行时由 runtime 转换为：
 
-强化学习微调完成后，也建议执行与初训模型类似的“入库为主、验证可选”流程：
+```text
+next_target_positions = current_qpos[0:6] + clipped_joint_delta
+next_gripper_command  = action[6]
+```
 
-1. 将 RL 模型放入 `models/rl/finetune_runs/<run_id>/`
-2. 记录其对应的初训模型来源
-3. 记录奖励配置、随机化配置和训练轮次
-4. 如需要，在 MuJoCo 中加载 RL 模型
-5. 如需要，保存验证结果到 `mujoco_validation/`
+建议第一版限幅：
 
-如果你希望在这一阶段做 MuJoCo 验证，建议验证：
-
-- 随机工具位置下的抓取成功率
-- 放入工具箱的成功率
-- 相比初训模型的提升幅度
-- 失败案例分布
-- 策略执行稳定性
-
-### 8.8 奖励设计建议
-
-奖励项建议包含：
-
-- 接近目标工具奖励
-- 抓取姿态对齐奖励
-- 成功闭合夹爪并稳定持有奖励
-- 抬升成功奖励
-- 接近工具箱奖励
-- 正确放置奖励
-- 碰撞惩罚
-- 掉落惩罚
-- 超时惩罚
-
-### 8.9 随机化建议
-
-建议逐步增加随机化难度：
-
-1. 先固定工具位置与目标槽位
-2. 再随机化工具位置
-3. 再随机化工具姿态
-4. 再引入工具箱位置的小范围扰动
-5. 最后加入观测噪声和初始关节扰动
-
-### 8.10 面向 Sim2Real 的训练补充要求
-
-为了保证最终强化学习得到的权重后续有机会迁移到真实 UR5，这里建议把训练阶段额外补充为以下约束：
-
-| 维度 | 建议做法 | 作用 |
+| 项 | 建议值 | 说明 |
 | --- | --- | --- |
-| 观测选择 | 优先使用实机后续也能稳定获取的末端 `RGB-D`、关节、夹爪、工具/工具箱位姿、任务上下文 | 降低仿真特有字段带来的迁移断层 |
-| 动作空间 | 初训和 RL 共用统一动作语义 | 避免初训模型能跑、RL 模型却无法部署 |
-| 随机化 | 在 RL 中逐步加入延迟、噪声、摩擦、质量、接触误差以及深度缺测/视觉噪声随机化 | 提前缩小仿真与实机差距 |
-| 日志记录 | 保存训练配置、随机化配置、控制频率、模型导出格式、相机内外参版本 | 方便后续分析是哪类设置影响迁移效果 |
-| 模型导出 | 初训模型和 RL 模型都输出统一部署格式 | 让 MuJoCo 验证和实机部署共享加载器 |
-| 失败分析 | 单独统计抖动、掉落、超调、夹爪闭合不稳定、深度丢帧和视觉误对齐等问题 | 这些往往也是 sim2real 时最先暴露的问题 |
+| `max_abs_joint_delta_per_step` | `0.03 rad` | 可根据控制频率调整 |
+| `max_abs_joint_delta_eval` | `0.05 rad` | 仅用于离线或慢速验证 |
+| `gripper_range` | `[0.0, 1.0]` | 与现有 `gripper_opening` 语义一致 |
+| `policy_fps` | `10 Hz` | 第一版保守，降低抖动和写盘压力 |
+| `action_chunk_size` | 与 pi0.5 config 对齐 | 如果使用默认 chunk，应在 config 中记录 |
+
+如果后续使用 LeRobot 的 relative actions，建议保持“关节为相对动作、夹爪为绝对开合”的语义，即 gripper 不参与 relative action 变换。
+
+#### 8.4.5 时间对齐与重采样
+
+raw 数据中视觉、状态和动作可能不是完全同频。转换器应生成统一训练采样点：
+
+```text
+policy_t = episode_start + k / policy_fps
+```
+
+每个 `policy_t` 按以下规则匹配：
+
+1. 选择最近的有效状态样本，要求时间差小于 `state_max_delta_ms`。
+2. 选择最近且不晚于该动作时间太多的有效视觉帧，要求 `camera_capture_ok=true`。
+3. 选择该时刻之后一个控制周期内的人类动作目标，或根据连续 target 计算 joint_delta。
+4. 若任一字段缺失，则该 step 标记为 rejected，不进入训练样本。
+5. 若某个 episode 有效样本比例低于阈值，则整个 episode 从训练候选中剔除。
+
+建议第一版阈值：
+
+| 项 | 建议值 |
+| --- | --- |
+| `state_max_delta_ms` | `50` |
+| `visual_max_delta_ms` | `80` |
+| `action_max_delta_ms` | `100` |
+| `min_valid_step_ratio` | `0.95` |
+| `max_stub_frame_count` | `0` |
+| `max_rgb_depth_delta_ms` | 沿用 `shared/dataset_schema.json` 中的 `5 ms` |
+
+#### 8.4.6 split 规则
+
+训练划分必须按 episode 级别做，不能按帧随机打散。否则同一条轨迹的相邻帧会同时进入 train 和 val，验证指标会虚高。
+
+建议第一版比例：
+
+```text
+train: 80%
+val:   10%
+test:  10%
+```
+
+划分规则：
+
+- 同一个 `reset_seed` 不要同时出现在 train 和 test。
+- 同一工具类别在三个 split 中都要覆盖。
+- 如果某类工具 episode 很少，先保证 val/test 至少各有 1 条成功 episode。
+- `debug_trial` 默认不进入任何训练 split。
+- `pilot` 默认不进入训练，除非人工标记 `included_in_train=true`。
+- `train_candidate` 仍需通过自动校验和人工抽查。
+
+#### 8.4.7 转换报告
+
+每次转换必须生成 `conversion_report.json`，至少包含：
+
+| 字段 | 说明 |
+| --- | --- |
+| `raw_root` | 输入 raw 数据目录 |
+| `output_root` | 输出 LeRobot / OpenPI 数据目录 |
+| `converter_version` | 转换脚本版本 |
+| `dataset_schema_version` | raw schema 版本 |
+| `camera_config_version` | D405 配置版本 |
+| `policy_fps` | 重采样频率 |
+| `state_mode` | 状态向量定义 |
+| `action_mode` | 动作向量定义 |
+| `num_raw_episodes` | 原始 episode 数 |
+| `num_included_episodes` | 纳入训练候选的 episode 数 |
+| `num_rejected_episodes` | 剔除 episode 数 |
+| `reject_reason_counts` | 各类剔除原因统计 |
+| `num_frames` | 转换后样本数 |
+| `split_counts` | train / val / test 数量 |
+| `tool_class_counts` | 各工具类别数量 |
+| `input_feature_shapes` | 输入特征 shape |
+| `action_dim` | 动作维度 |
+| `normalization_stats_path` | stats 文件路径 |
+
+### 8.5 pi0.5 初训开发规格
+
+#### 8.5.1 训练目标
+
+第一阶段目标不是让模型马上在大随机场景中高成功率，而是达成以下闭环：
+
+```text
+转换后的 LeRobot / OpenPI 数据集
+  -> pi0.5 fine-tune
+  -> checkpoint / exported policy
+  -> MuJoCo policy runtime
+  -> 固定场景能复现基本抓取放置行为
+```
+
+第一版成功标准：
+
+- 模型能读取 `observation.images.d405_rgb + observation.state + prompt`。
+- 模型输出 7 维动作并能被 runtime 转成 `/sim/step/` 命令。
+- 固定工具位置下能完成或接近完成抓取-放置轨迹。
+- 推理轨迹没有明显高频抖动、关节跳变或夹爪乱开合。
+- 训练 run 可复现，能追溯到数据集版本、split、config 和 checkpoint。
+
+#### 8.5.2 建议新增文件
+
+```text
+configs/pi05/
+  quest3_tool_sorting_v1_pi05.yaml
+  quest3_tool_sorting_v1_pi05_debug.yaml
+
+scripts/training/
+  train_pi05.py
+  export_pi05_policy.py
+  evaluate_pi05_offline.py
+  evaluate_pi05_mujoco.py
+
+backend/policies/
+  __init__.py
+  policy_loader.py
+  pi05_policy_adapter.py
+  action_postprocess.py
+```
+
+其中：
+
+- `train_pi05.py` 可以是 LeRobot/OpenPI CLI 的项目包装器，负责读取本项目 config、创建 run 目录、写入元数据。
+- `evaluate_pi05_offline.py` 负责在 val/test 上统计 action loss、轨迹误差、夹爪动作误差。
+- `evaluate_pi05_mujoco.py` 负责把模型加载回 MuJoCo 执行 episode。
+- `pi05_policy_adapter.py` 负责把当前后端状态转换为 pi0.5 inference 输入，并把 action chunk 转成 `/sim/step/`。
+
+#### 8.5.3 训练配置必须记录的字段
+
+每次训练 run 的 `config.json` 或 YAML 必须记录：
+
+| 字段 | 说明 |
+| --- | --- |
+| `run_id` | 训练运行 ID |
+| `base_model` | 例如 `pi05_base` 或 LeRobot pi05 base checkpoint |
+| `dataset_root` | 转换后的 LeRobot / OpenPI 数据集路径 |
+| `raw_dataset_root` | 原始数据集路径 |
+| `split_file` | train / val / test 划分文件 |
+| `feature_mapping_path` | feature mapping 文件 |
+| `normalization_stats_path` | stats 文件 |
+| `image_key` | 默认 `observation.images.d405_rgb` |
+| `state_key` | 默认 `observation.state` |
+| `prompt_key` | 默认 `task` / `prompt` |
+| `action_key` | 默认 `action` |
+| `state_dim` | 默认 `7` |
+| `action_dim` | 默认 `7` |
+| `policy_fps` | 默认 `10` |
+| `action_mode` | 默认 `joint_delta_gripper_abs` |
+| `camera_intrinsics_version` | D405 内参版本 |
+| `camera_extrinsics_version` | D405 外参版本 |
+| `training_mode` | `expert_only / lora / full_finetune` 等 |
+| `batch_size` | 按显存调整 |
+| `steps` | 训练步数 |
+| `seed` | 随机种子 |
+| `git_commit` | 代码版本 |
+
+#### 8.5.4 第一版训练策略
+
+建议第一版采用保守配置：
+
+- 优先使用 `train_expert_only=true`、LoRA 或等效低成本微调方式。
+- 如果显存不足，冻结 vision encoder，先训练 action expert / projection。
+- 第一版先使用 RGB，不默认把 Depth 接入 pi0.5 主干。
+- 不使用 ground-truth object pose 作为模型输入。
+- 使用 action/state mean-std normalization；如果所用 LeRobot 版本要求 quantile stats，则在训练前生成 quantile stats。
+- 若使用 relative actions，应保证 `chunk_size`、stats 和训练 config 一致，并让 gripper 保持绝对开合量。
+
+第一版可接受的训练命令包装形式：
+
+```bash
+python scripts/training/train_pi05.py \
+  --config configs/pi05/quest3_tool_sorting_v1_pi05.yaml \
+  --dataset-root data/datasets/quest3_tool_sorting_v1/processed/pi05_lerobot_v1 \
+  --run-id run_YYYYMMDD_HHMM_pi05_v1
+```
+
+内部可以调用 OpenPI 或 LeRobot 官方训练入口，但项目侧必须统一输出到：
+
+```text
+models/pi05/initial_runs/<run_id>/
+  config.json
+  feature_mapping.json
+  dataset_snapshot.json
+  normalization_stats.json
+  checkpoints/
+  exported/
+  logs/
+  offline_eval/
+  mujoco_validation/
+```
+
+#### 8.5.5 离线评估
+
+离线评估不代表任务成功，但可以快速发现数据和训练问题。建议至少输出：
+
+| 指标 | 说明 |
+| --- | --- |
+| `val_action_mse` | 归一化或反归一化动作误差 |
+| `joint_delta_mse` | 6 轴关节增量误差 |
+| `gripper_mae` | 夹爪动作误差 |
+| `action_smoothness` | 预测动作变化率 |
+| `language_condition_check` | 不同 prompt 是否输出不同动作分布 |
+| `tool_class_breakdown` | 按工具类别统计误差 |
+| `failure_case_samples` | 保存若干误差最大样本 |
+
+离线评估需要生成：
+
+```text
+models/pi05/initial_runs/<run_id>/offline_eval/
+  metrics.json
+  per_tool_metrics.json
+  worst_samples.jsonl
+  action_plot_episode_0001.png
+```
+
+#### 8.5.6 MuJoCo 策略验证
+
+初训模型入库后，应支持可选 MuJoCo 验证。验证入口建议为：
+
+```bash
+python scripts/training/evaluate_pi05_mujoco.py \
+  --model-run models/pi05/initial_runs/<run_id> \
+  --num-episodes 30 \
+  --eval-split fixed_and_random \
+  --save-video true
+```
+
+验证运行时：
+
+1. reset 场景。
+2. 绑定目标工具和 prompt。
+3. 从 `/sim/observation/` 或内部 policy adapter 构造模型输入。
+4. 调用 pi0.5，得到 action chunk。
+5. 通过 `action_postprocess.py` 做限幅、平滑、安全检查。
+6. 调用 `/sim/step/` 或 `SimulationCore.enqueue_step()` 执行动作。
+7. 记录抓取、抬升、放置、碰撞、超时等指标。
+
+建议验证指标：
+
+| 指标 | 说明 |
+| --- | --- |
+| `grasp_success_rate` | 成功抓取比例 |
+| `place_success_rate` | 成功放入工具箱比例 |
+| `tool_putaway_success_rate` | 完整任务成功率 |
+| `mean_duration_s` | 平均耗时 |
+| `drop_failure_rate` | 掉落失败比例 |
+| `collision_block_rate` | 碰撞拦截比例 |
+| `mean_action_norm` | 动作幅值 |
+| `jitter_score` | 高频抖动评分 |
+| `per_tool_success` | 按 wrench / screwdriver / pliers 统计 |
+
+验证结果写入：
+
+```text
+models/pi05/initial_runs/<run_id>/mujoco_validation/
+  eval_config.json
+  metrics.json
+  episodes.jsonl
+  videos/
+  snapshots/
+```
+
+### 8.6 强化学习微调开发规格
+
+#### 8.6.1 RL 阶段定位
+
+RL 微调不是替代 pi0.5，也不建议第一版直接对整个 VLA 做在线 RL。当前更可行的定义是：
+
+```text
+pi0.5 提供模仿学习动作先验
+RL 学习低维 residual / correction
+最终执行动作 = pi0.5_action + rl_residual
+```
+
+这样做有几个好处：
+
+- RL 动作空间小，训练更稳定。
+- 不需要频繁反向更新 4B 级 VLA 大模型。
+- 可以保留 pi0.5 的视觉语言能力，让 RL 只修正抓取精度、放置精度和稳定性。
+- 后续如果要实机迁移，residual 层更容易加安全限制。
+
+第一版 RL 的目标建议写成：
+
+```text
+在随机工具位置和小范围姿态扰动下，提升 pi0.5 初训模型的抓取稳定性、放置成功率和轨迹平滑性。
+```
+
+#### 8.6.2 RL 前置条件
+
+进入 RL 前必须满足：
+
+- S6 已实现抓取成功判定、放置成功判定、附着和释放机制。
+- `grasp_state` 能稳定区分 `none / candidate / attached / released / failed`。
+- `tool_putaway_success` 可由程序判定，而不是只靠人工观察。
+- `collision_blocked`、`max_penetration_depth_m`、`drop_failure` 能进入日志。
+- 初训 `pi0.5` 模型已入库，并能通过 policy adapter 在 MuJoCo 中执行。
+- 至少有一个脚本化 baseline 和一个 pi0.5 IL baseline 可比较。
+
+如果这些条件不满足，只能做 RL env smoke test，不应开始正式 RL 训练。
+
+#### 8.6.3 RL 环境接口
+
+建议新增：
+
+```text
+backend/rl/envs/tool_sorting_env.py
+backend/rl/rewards/tool_sorting_reward.py
+backend/rl/curriculum/tool_sorting_curriculum.py
+backend/rl/policies/residual_policy.py
+scripts/training/finetune_rl.py
+scripts/training/evaluate_policy.py
+```
+
+环境接口建议采用 Gymnasium 风格：
+
+```python
+obs, info = env.reset(seed=seed, options={"tool_class": "wrench"})
+obs, reward, terminated, truncated, info = env.step(action)
+```
+
+`info` 至少包含：
+
+```text
+sim_time
+target_tool_id
+target_tool_class
+grasp_state
+attached_to_gripper
+grip_success
+place_success
+tool_putaway_success
+collision_blocked
+collision_objects
+max_penetration_depth_m
+drop_failure
+timeout
+reward_terms
+```
+
+#### 8.6.4 RL observation 设计
+
+第一版 RL observation 建议分为两类：
+
+| 类型 | 是否给 RL policy | 说明 |
+| --- | --- | --- |
+| `policy_observation` | 是 | 未来实机可用字段 |
+| `privileged_info` | 否，只用于 reward / logging | MuJoCo 内部真值 |
+
+`policy_observation` 建议包含：
+
+```text
+qpos[0:6]
+gripper_opening
+ee_pose
+pi0.5_action_current
+pi0.5_action_chunk_phase
+target_tool_class_onehot
+optional: compact visual embedding 或最近 D405 RGB 特征
+```
+
+第一版 residual RL 可以先不直接训练视觉网络，而是使用 pi0.5 已经输出的动作作为视觉语言先验。这样 RL 更像“动作修正器”。
+
+`privileged_info` 可包含：
+
+```text
+target_tool_pose
+toolbox_slot_pose
+distance_ee_to_tool
+distance_tool_to_slot
+tool_height
+contact_state
+inside_toolbox_flag
+```
+
+注意：`privileged_info` 可以用于 reward，但不要输入给最终部署策略，否则 sim2real 会断。
+
+#### 8.6.5 RL action 设计
+
+第一版推荐 residual action：
+
+```text
+rl_action[0:6] = residual_joint_delta_rad
+rl_action[6]   = residual_gripper_delta 或 gripper_override
+
+final_joint_delta = clip(pi0.5_joint_delta + residual_joint_delta)
+final_gripper     = clip(pi0.5_gripper_target + residual_gripper_delta, 0, 1)
+```
+
+建议限幅：
+
+| 项 | 建议值 |
+| --- | --- |
+| `residual_joint_delta_limit` | `0.01 ~ 0.02 rad` |
+| `final_joint_delta_limit` | `0.03 rad` |
+| `residual_gripper_limit` | `0.10` |
+| `action_smoothing_alpha` | `0.3 ~ 0.6` |
+
+这样即使 RL 初期策略不稳定，也不会彻底破坏 pi0.5 的动作先验。
+
+#### 8.6.6 奖励函数第一版
+
+建议第一版 reward 明确拆项，并在每一步写入 `reward_terms`：
+
+```text
+reward =
+  w_reach      * r_reach_tool
++ w_align      * r_pregrasp_align
++ w_grasp      * r_grasp_success
++ w_lift       * r_lift
++ w_transport  * r_transport_to_toolbox
++ w_place      * r_place_success
++ w_success    * r_task_success
+- w_collision  * p_collision
+- w_drop       * p_drop
+- w_timeout    * p_timeout
+- w_action     * p_action_magnitude
+- w_jitter     * p_action_jitter
+```
+
+建议第一版权重：
+
+| 项 | 建议权重 | 说明 |
+| --- | --- | --- |
+| `w_reach` | `1.0` | 末端接近目标工具 |
+| `w_align` | `0.3` | 抓取姿态对齐，第一版可弱化 |
+| `w_grasp` | `3.0` | 成功附着或稳定夹持 |
+| `w_lift` | `2.0` | 工具离开桌面达到高度阈值 |
+| `w_transport` | `1.0` | 工具接近工具箱目标区域 |
+| `w_place` | `4.0` | 工具释放且位于工具箱内 |
+| `w_success` | `10.0` | 完整任务成功终止奖励 |
+| `w_collision` | `2.0` | 禁止碰撞或穿透惩罚 |
+| `w_drop` | `4.0` | 中途掉落惩罚 |
+| `w_timeout` | `2.0` | 超时惩罚 |
+| `w_action` | `0.01` | 动作幅值正则 |
+| `w_jitter` | `0.05` | 抖动惩罚 |
+
+各项定义建议：
+
+```text
+r_reach_tool = exp(-distance(ee, target_tool_grasp_pose) / 0.10)
+r_lift = clamp((tool_z - table_z) / 0.10, 0, 1)
+r_transport_to_toolbox = exp(-distance(tool, target_slot) / 0.15)
+r_grasp_success = 1 if grasp_state == attached else 0
+r_place_success = 1 if released and inside_toolbox else 0
+r_task_success = 1 if tool_putaway_success else 0
+```
+
+第一版不要把 reward 设计得过于复杂。先保证每一项都能解释、能记录、能画曲线。
+
+#### 8.6.7 curriculum 与随机化
+
+RL 难度建议分阶段增加：
+
+| 阶段 | 随机化范围 | 目标 |
+| --- | --- | --- |
+| `rl_debug_fixed` | 固定工具、固定工具箱 | 检查 env / reward / action 是否工作 |
+| `rl_easy_position` | 工具 XY 小范围随机，yaw 固定 | 学会修正接近和抓取误差 |
+| `rl_medium_pose` | 工具 XY + yaw 随机 | 提升抓取姿态适应性 |
+| `rl_place_random` | 工具箱目标区域小范围扰动 | 提升放置鲁棒性 |
+| `rl_sim2real_noise` | 加入视觉噪声、状态噪声、延迟、摩擦扰动 | 为实机迁移做准备 |
+
+每个阶段必须记录：
+
+```text
+randomization_config.json
+reward_config.json
+success_rate_by_seed.json
+failure_breakdown.json
+```
+
+#### 8.6.8 RL 算法建议
+
+第一版可选两条路线：
+
+| 路线 | 建议优先级 | 说明 |
+| --- | --- | --- |
+| `PPO residual policy` | P0 | 实现简单，适合连续小动作修正和并行环境 |
+| `SAC residual policy` | P1 | 样本效率可能更好，但调参复杂 |
+
+P0 建议先实现 `PPO residual policy`。原因是本项目第一阶段更需要稳定工程闭环，而不是最大化样本效率。
+
+训练命令建议：
+
+```bash
+python scripts/training/finetune_rl.py \
+  --base-policy models/pi05/initial_runs/<pi05_run_id> \
+  --config configs/rl/tool_sorting_residual_ppo.yaml \
+  --run-id run_YYYYMMDD_HHMM_rl_residual_v1 \
+  --num-envs 8 \
+  --total-steps 500000
+```
+
+输出目录：
+
+```text
+models/rl/finetune_runs/<run_id>/
+  config.json
+  reward_config.json
+  randomization_config.json
+  base_policy_ref.json
+  checkpoints/
+  exported/
+  logs/
+  eval/
+  mujoco_validation/
+```
+
+#### 8.6.9 RL 评估与成功标准
+
+RL 评估必须和 pi0.5 初训模型做同种 seed、同种随机化范围对比。
+
+建议至少评估：
+
+```text
+scripted baseline
+pi0.5 IL baseline
+pi0.5 + RL residual
+```
+
+每组至少：
+
+- `fixed` 场景 20 episodes。
+- `easy_random` 场景 50 episodes。
+- `medium_random` 场景 100 episodes，如果时间允许。
+
+核心指标：
+
+| 指标 | 预期 |
+| --- | --- |
+| `tool_putaway_success_rate` | RL 相比 pi0.5 IL 有提升 |
+| `grasp_success_rate` | 不低于 IL，最好提升 |
+| `place_success_rate` | 明显提升或更稳定 |
+| `collision_failure_rate` | 不高于 IL |
+| `drop_failure_rate` | 不高于 IL |
+| `mean_duration_s` | 不显著变差 |
+| `jitter_score` | 不显著变差 |
+
+第一版可接受目标：
+
+- 固定场景：`pi0.5 + RL` 不低于 `pi0.5 IL`。
+- 随机场景：`pi0.5 + RL` 在成功率或失败率上有可测提升。
+- 如果 RL 只提升训练 seed、不提升 held-out seed，则不能作为最终模型，只能作为调试结果。
+
+### 8.7 统一模型注册与部署接口
+
+所有进入模型目录的模型都应能通过统一接口被加载：
+
+```text
+models/registry/active_policy.json
+```
+
+建议格式：
+
+```json
+{
+  "active_policy_id": "rl_residual_run_YYYYMMDD_HHMM",
+  "policy_stage": "pi05_rl_residual",
+  "runtime_target": "sim",
+  "base_pi05_run_id": "run_YYYYMMDD_HHMM_pi05_v1",
+  "model_path": "models/rl/finetune_runs/run_YYYYMMDD_HHMM_rl_residual_v1/exported/policy.pt",
+  "adapter": "backend.policies.pi05_residual_adapter",
+  "action_mode": "joint_delta_gripper_abs",
+  "state_mode": "qpos_gripper",
+  "policy_fps": 10,
+  "camera_device": "intel_realsense_d405",
+  "camera_mount_name": "wrist_d405_v1",
+  "camera_intrinsics_version": "d405_intr_20260412_a",
+  "camera_extrinsics_version": "d405_ext_20260412_a",
+  "validated_in_mujoco": true,
+  "mujoco_validation_path": "models/rl/finetune_runs/run_YYYYMMDD_HHMM_rl_residual_v1/mujoco_validation/metrics.json"
+}
+```
+
+前端或后端任务入口不应硬编码模型路径，而应通过 registry 激活策略。
+
+### 8.8 训练阶段验收标准
+
+#### 8.8.1 数据转换验收
+
+- raw episode 能转换为 LeRobot / OpenPI 可读数据集。
+- 转换后样本包含 `observation.images.d405_rgb`、`observation.state`、`action`、`task/prompt`。
+- `conversion_report.json` 能说明纳入和剔除 episode 的原因。
+- train / val / test 按 episode 划分。
+- normalization stats 已生成并与训练 config 绑定。
+
+#### 8.8.2 pi0.5 初训验收
+
+- 能基于转换后的数据集启动训练。
+- 能生成 checkpoint、best model、exported policy。
+- 能写入 `models/pi05/initial_runs/<run_id>/`。
+- 离线评估能输出动作误差和按工具类别的指标。
+- 初训模型能通过 policy adapter 在 MuJoCo 中跑通基础推理。
+
+#### 8.8.3 RL 微调验收
+
+- `tool_sorting_env.py` 能 reset、step、返回 reward 和 info。
+- RL env 能加载 pi0.5 初训模型作为 base policy。
+- residual policy 能训练并保存 checkpoint。
+- RL 模型能写入 `models/rl/finetune_runs/<run_id>/`。
+- RL 模型能和 scripted / pi0.5 IL 做同 seed 对比。
+- 若 RL 成功率没有提升，也必须输出失败分析，而不是只保留 checkpoint。
+
+#### 8.8.4 Sim2Real 约束
+
+为了保证最终模型有机会迁移到真实 UR5，训练阶段继续遵守：
+
+| 维度 | 约束 |
+| --- | --- |
+| 观测 | 第一版 pi0.5 输入只使用未来实机可直接获得或可稳定估计的字段 |
+| 动作 | 初训和 RL 共用 `joint_delta + gripper_target` 语义 |
+| 相机 | 训练输入固定为末端 D405 主视角，不使用 Quest3 页面画面 |
+| 标定 | 训练 run 记录内参、外参、mount 版本 |
+| 安全 | 策略输出必须经过限幅、平滑、碰撞检查和 watchdog |
+| 随机化 | RL 后期逐步加入视觉噪声、状态噪声、延迟、摩擦和质量扰动 |
+| 日志 | 每次训练和验证都保存 config、seed、数据集版本、模型版本和失败案例 |
 
 ---
 
@@ -1342,17 +2455,35 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
 - `tools + toolbox` 场景替换已完成，后续重点是任务执行与采集训练闭环
 - 优先把末端 `D405` 的模型、挂载姿态和 `RGB-D` 预览能力接入前端
 - 底部按钮将 `状态同步` 改为 `VR模式`
+- 在底部导航栏新增 `采集` 入口，作为数据集录制的主入口；详细的开始、停止、模式选择和校验信息放入二级面板，避免误触
 - 新增 Quest3 模式菜单，不覆盖现有界面
 - 新增采集状态显示：
   - 当前 session
   - 当前 episode
   - 当前输入模式
   - 是否正在录制
+  - 当前采集等级：`debug_trial / pilot / train_candidate`
+  - 当前目标工具与 `instruction_text`
 - 新增视觉采集状态显示：
   - 当前相机设备 `D405`
   - `RGB` / `Depth` 是否在线
   - 最近一帧时间戳
   - 当前标定版本
+- 新增采集前置检查状态显示：
+  - 相机是否真实可用，不能只是 stub 图像
+  - reset 初始状态是否合法
+  - VR 运动安全壳是否通过
+  - 当前是否允许正式录制
+- 新增接触与安全状态显示：
+  - `safety_status`
+  - 碰撞拦截原因
+  - 当前 `grasp_state`
+  - 当前 episode 是否只属于 `debug_trial`
+- 新增回放与人工筛选入口：
+  - 快速查看 RGB 预览视频
+  - 查看 Depth 原始图或伪彩深度图
+  - 查看状态/动作/接触时间轴
+  - 标记是否纳入训练集
 - 继续增强多工具对象状态同步稳定性与插值质量
 - 根据 Quest3 能力决定展示桌面端 UI 还是 Quest3 精简 UI
 
@@ -1362,6 +2493,17 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
 - 新增末端 `D405 RGB-D` 观测导出链路
 - 新增 Quest3 输入桥接层或 VR 输入状态模型
 - 新增数据集记录器
+- 新增采集前置检查器：
+  - 检查相机、状态、动作、reset、语言标签和安全壳
+  - 输出 `recording_ready`
+  - 阻止不合格 episode 进入正式录制
+- 新增 episode 校验器：
+  - 生成 `validation_summary.json`
+  - 检查缺帧、错帧、stub 图像、未对齐、穿模、reset 非法和语言缺失
+- 新增回放与预览导出：
+  - RGB/Depth 单帧读取
+  - MP4 预览视频
+  - 状态/动作/接触时间轴
 - 新增模型加载器与模型注册器
 - 新增 MuJoCo 模型验证运行器
 - 新增任务运行时：
@@ -1369,7 +2511,13 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
   - 初训模型推理
   - 强化学习模型推理
 - 新增抓取判定与附着逻辑
-- 新增工具随机生成与 reset 逻辑
+- 新增工具随机生成与 reset 合法性检查逻辑
+- 新增 VR 控制安全壳：
+  - 关节目标限幅
+  - 候选动作碰撞前向检查
+  - 非法穿透拒绝或缩步
+  - safe hold
+  - 碰撞与接触日志
 
 ### 9.3 共享配置需要改的核心点
 
@@ -1379,6 +2527,8 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
 - `shared/camera_sensor_config.json`
 - `shared/vr_mode_config.json`
 - `shared/dataset_schema.json`
+- `shared/contact_safety_config.json`
+- `shared/reset_randomization_config.json`
 
 其中：
 
@@ -1387,6 +2537,8 @@ RL 阶段建议沿用与模仿学习一致的动作空间，避免训练部署�
 - `camera_sensor_config` 负责 `D405` 的挂载位姿、分辨率、深度尺度、内外参版本和导出字段
 - `vr_mode_config` 负责输入模式、关节组、按钮映射
 - `dataset_schema` 负责采集字段定义
+- `contact_safety_config` 负责允许接触、禁止接触、穿透阈值和 safe hold 策略
+- `reset_randomization_config` 负责工具/工具箱采样区域、姿态限制、重采样上限和合法性检查
 
 ### 9.4 面向 Sim2Real 的接口改造重点
 
@@ -1499,14 +2651,28 @@ experiments/
 - 完成手势模式
 - 完成 Quest3 模式切换与输入状态同步
 
+### 阶段 S2.5：VR 接触稳定与采集安全壳
+
+目标：
+
+- 明确 VR 控制目前不是完整真实力控抓取
+- 建立关节目标限幅、候选动作碰撞检查和 safe hold
+- 让机械臂/夹爪不再明显穿桌、穿箱或穿过工具
+- 让 reset 后工具与工具箱姿态符合真实桌面任务
+- 建立第一版抓取判定与临时附着语义
+- 将 `safety_status`、`contact_state`、`grasp_state` 写入状态和数据集
+
 ### 阶段 S3：数据集采集闭环
 
 目标：
 
+- 完成正式采集前置检查
 - 完成 session / episode 管理
 - 完成录制开始、停止、保存
 - 完成数据回放
 - 完成 Quest3 操作元数据记录
+- 完成 `debug_trial -> pilot -> train_candidate` 的数据分级
+- 完成 `validation_summary.json` 自动生成与训练候选筛选
 
 ### 阶段 S4：pi0.5 初训
 
@@ -1592,10 +2758,12 @@ experiments/
 2. 场景切换（`battery_pack` -> `tools + toolbox`）已经完成，下一步应聚焦任务闭环、数据采集与训练链路。
 3. 在开始 VR 任务之前，必须先把末端 `D405 RGB-D` 相机的安装定义、仿真对应与采集字段冻结下来，否则后续数据无法直接用于 `pi0.5`。
 4. Quest3 采集链路必须尽早设计好 `RGB-D + 状态 + 动作 + 文本` 数据格式，否则后面训练和论文都会返工。
-5. `execute_task`、抓取附着、数据记录、模型加载、MuJoCo 验证入口、RL 环境目前都没有真正落地，这是后续主工作量。
-6. 训练链条必须明确是“你采集和初训，系统搭 RL 环境与验证入口”，不能混成一个模糊阶段。
-7. VR 需求里最需要尽早澄清的是“非沉浸式体验”与“Quest 输入 API 可用性”的技术边界；本文档已按“体验非沉浸、实现允许轻量 XR”处理。
-8. 由于最终权重希望具备实机可用性，所以动作接口、观测字段、模型加载方式和安全状态从现在起就要按 sim2real 方向设计，尤其是末端 `D405` 的模态、标定和时序一致性。
+5. VR 已经能控制机械臂后，下一步不能直接默认开始批量采集；必须先解决明显穿模、reset 姿态非法和接触状态不可追溯的问题。
+6. 第一版不建议死磕完全真实物理夹取，应优先采用“接触检查 + 抓取判定 + 临时附着 + 释放校验”的半物理方案，保证数据可重复。
+7. `execute_task`、抓取附着、数据记录、模型加载、MuJoCo 验证入口、RL 环境目前都没有真正落地，这是后续主工作量。
+8. 训练链条必须明确是“你采集和初训，系统搭 RL 环境与验证入口”，不能混成一个模糊阶段。
+9. VR 需求里最需要尽早澄清的是“非沉浸式体验”与“Quest 输入 API 可用性”的技术边界；本文档已按“体验非沉浸、实现允许轻量 XR”处理。
+10. 由于最终权重希望具备实机可用性，所以动作接口、观测字段、模型加载方式和安全状态从现在起就要按 sim2real 方向设计，尤其是末端 `D405` 的模态、标定和时序一致性。
 
 ---
 
@@ -1604,21 +2772,25 @@ experiments/
 建议严格按下面顺序推进：
 
 1. 在已完成工具场景冻结的基础上，先完成末端 `D405` 的挂载定义、安装参考确认和 `RGB-D` 输出设计
-2. 再建立面向 `RGB-D + 状态 + 动作 + 文本` 的数据集目录、格式和录制协议
-3. 再完成 Quest3 `VR模式` 交互和输入状态设计
-4. 再做 Quest3 局域网控制链与录制器闭环
-5. 再做脚本化工具抓取任务
-6. 再进入 `pi0.5` 初训，完成模型入库，并预留 MuJoCo 验证入口
-7. 最后进入 RL 微调，完成 RL 模型入库，并同样预留 MuJoCo 验证入口
-8. 在 RL 主链路稳定后，补齐 `runtime_target`、标定、watchdog 和部署接口，为真实 UR5 接入做准备
+2. 再建立 VR 运动安全壳，阻止明显穿桌、穿箱、穿工具，并把安全状态写入广播和日志
+3. 再完成 reset 合法性检查，确保工具平躺、工具箱开口朝上、对象不穿透且位于工作范围内
+4. 再建立面向 `RGB-D + 状态 + 动作 + 文本 + 接触/安全状态` 的数据集目录、格式和录制协议
+5. 再完成 Quest3 `VR模式` 交互和输入状态设计
+6. 再做 Quest3 局域网控制链与录制器闭环
+7. 再进行 `debug_trial` 和 `pilot` 试采，确认回放、校验和筛选可用
+8. 再做脚本化工具抓取任务和第一版半物理抓取附着机制
+9. 再进入 `pi0.5` 初训，完成模型入库，并预留 MuJoCo 验证入口
+10. 最后进入 RL 微调，完成 RL 模型入库，并同样预留 MuJoCo 验证入口
+11. 在 RL 主链路稳定后，补齐 `runtime_target`、标定、watchdog 和部署接口，为真实 UR5 接入做准备
 
 这条顺序的核心原因是：
 
 - 场景不稳定，数据集就不稳定
 - 主相机方案不稳定，视觉数据集就不稳定
+- 接触安全壳不稳定，示教动作会包含穿模或不可复现接触
+- reset 不稳定，数据分布会偏离真实桌面工具抓取任务
 - 数据格式不稳定，训练脚本就会反复返工
 - Quest3 控制链和录制器没稳定，人工采集质量就无法保证
 - 脚本化任务没跑通，RL 很难高效收敛
 - 如果完全不预留 MuJoCo 验证入口，后续就很难定位问题到底出在数据、模型还是环境
 - 没有实验记录规范，后续论文会非常被动
-

@@ -1,5 +1,5 @@
 import { buildSnapshot, DEFAULT_SNAPSHOT } from "./questHandInputCore.js";
-import { ensureSession, state } from "./questHandInputSession.js";
+import { closeSession, ensureSession, state } from "./questHandInputSession.js";
 
 function frameLoop(timestamp, frame) {
   if (!state.running || !state.session || !frame || frame.session !== state.session) return;
@@ -18,16 +18,7 @@ export async function startQuestHandInput() {
 
 export async function stopQuestHandInput() {
   state.running = false;
-  const activeSession = state.session;
-  state.session = null;
-  state.referenceSpace = null;
-  state.status = { ready: false, reason: "stopped" };
-  state.lastSnapshot = { ...DEFAULT_SNAPSHOT, reason: "stopped", timestamp_ms: Date.now() };
-  if (activeSession) {
-    try {
-      await activeSession.end();
-    } catch (_) {}
-  }
+  await closeSession();
 }
 
 export function readQuestHandSnapshot() {
