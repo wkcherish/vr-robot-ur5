@@ -1,67 +1,119 @@
-﻿# 机械臂仿真项目
+# ar-ur5-rl
 
-## 项目简介
-这是一个基于 Vue 3 和 Three.js 的机械臂仿真项目，用于在网页中可视化展示机械臂模型，并进行关节角度控制与交互演示。
+基于 MuJoCo + FastAPI + Vue 3 + WebXR 的 UR5 数字孪生与 Quest3 VR 控制项目。支持桌面端调试与 Quest3 局域网访问，进入 VR 后可通过手柄或手势连续控制机械臂与夹爪。
 
-## 技术栈
-- Vite
-- Vue 3
-- Three.js
-- Element Plus
-- Axios
+## 项目结构
 
-## 目录结构
 ```text
-vue-robot/
-├─ frontend/              # 前端工程（Vite + Vue）
-│  ├─ src/
-│  ├─ public/
-│  ├─ package.json
-│  └─ vite.config.js
-└─ backend/               # 预留目录（当前为空）
+ar-ur5-rl/
+├── backend/               # FastAPI + MuJoCo 仿真与接口
+├── frontend/              # Vue + Three.js + WebXR 前端
+├── shared/                # 场景与协议共享配置
+├── docs/                  # 设计/修复文档
+├── pic/                   # 截图素材
+└── README.md
 ```
 
 ## 环境要求
-- Node.js 18 及以上（建议）
-- npm / pnpm / yarn 任一包管理器
 
-## 安装依赖
-在前端目录执行：
+- Python 3.10+
+- Anaconda / Miniconda
+- Node.js 18+（建议 20 LTS）
+- npm 9+
+- Quest3（与开发机同一局域网，建议 5GHz Wi-Fi）
+
+## 快速开始
+
+### 1. 使用 Conda 创建后端环境
+
+在仓库根目录执行：
+
+```bash
+conda create -n ar-ur5-rl python=3.10 -y
+conda activate ar-ur5-rl
+pip install -r backend/requirements.txt
+```
+
+### 2. 启动后端（按当前约定）
+
+```bash
+cd backend
+python ./main.py
+```
+
+默认监听 `0.0.0.0:8000`，并启动 FastAPI 服务。
+
+### 3. 启动前端（按当前约定）
+
+新开终端，回到项目目录后执行：
 
 ```bash
 cd frontend
 npm install
-# 或 pnpm install
-# 或 yarn install
-```
-
-## 启动开发环境
-在前端目录执行：
-
-```bash
-cd frontend
 npm run dev
-# 或 pnpm run dev
-# 或 yarn dev
 ```
 
-启动后访问：
-- 前端：`http://localhost:5173`
+前端开发服务默认在 `https://0.0.0.0:5173`（Vite 输出为准）。
 
-Quest3 建议使用 HTTPS 访问（例如 `https://<LAN_IP>:5173`），并确保后端也是 HTTPS/WSS。
-可通过环境变量启用前端 HTTPS 证书：
+### 4. Quest3 访问
 
-```bash
-VITE_HTTPS_CERT=<path/to/cert.pem> VITE_HTTPS_KEY=<path/to/key.pem> npm run dev
-```
+1. 在终端查看前端局域网地址（示例：`https://192.168.x.x:5173`）
+2. 在 Quest3 浏览器打开该地址并信任证书
+3. 页面内确认网络检查通过后点击“进入VR模式”
 
-## 生产构建
-```bash
-cd frontend
-npm run build
-npm run preview
-```
+## 控制方式学习
 
-## 备注
-- `backend/` 目录已保留，但当前没有后端代码。
-- 如需接入后端服务，可按你的技术栈（如 FastAPI）在 `backend/` 中自行扩展。
+### 手柄模式（Controller）
+
+1. 在 VR 顶部切换到“手柄模式”。
+2. 用左手柄选择关节组：
+   - `Grip`：腕部组（`wrist_2` / `wrist_3`）
+   - `Y`：前臂组（`elbow` / `wrist_1`）
+   - `X`：大臂组（`shoulder_pan` / `shoulder_lift`）
+3. 用右手摇杆控制当前关节组：
+   - 摇杆上下：控制组内第一个关节
+   - 摇杆左右：控制组内第二个关节
+4. 用右手 `Trigger` 连续控制夹爪开合（按得越深开合越大）。
+
+### 手势模式（Hand Tracking）
+
+1. 在 VR 顶部切换到“手势模式”，等待 HUD 显示 `输入源: hand`，并确认能看到手部模型。
+2. 双手操作（推荐）：
+   - 左手食指捏合：腕部组（`wrist_2` / `wrist_3`）
+   - 左手中指捏合：前臂组（`elbow` / `wrist_1`）
+   - 左手无名指捏合：大臂组（`shoulder_pan` / `shoulder_lift`）
+   - 右手食指捏合并拖动：控制当前组两个关节（上下/左右对应两个关节）
+3. 右手中指捏合控制夹爪，右手无名指捏合可进入精细模式（低速微调）。
+4. 单手兜底（只有一只手被追踪时）：
+   - 无名指轻捏：循环切换关节组（腕部 -> 前臂 -> 大臂）
+   - 食指捏合并拖动：控制当前组
+   - 中指捏合：控制夹爪
+5. 若出现“看不到手”或追踪不稳定：
+   - 保持双手在视野内，避免贴近摄像头或快速甩手
+   - 保证环境光线充足
+   - 在 Quest 设置中确认已启用 Hand Tracking
+
+## 常见问题
+
+### 1. 无法进入 VR
+
+- 确认在 Quest3 上使用 `https://` 地址访问前端
+- 确认浏览器支持并启用了 WebXR
+- 确认前端与后端网络连通
+
+### 2. VR 已进入但无法控制
+
+- 先确认已连接 WebSocket
+- 检查是否已在 VR 菜单中选择“手柄模式”或“手势模式”
+- 手势模式下确认手部追踪稳定
+
+### 3. 感觉有卡顿或指令滞后
+
+- 优先检查局域网质量
+- 确保前后端版本一致
+- 避免同时用桌面滑条和 VR 输入源抢控制权
+
+## 相关文档
+
+- [backend/README.md](backend/README.md)
+- [docs/vr_control_and_performance_update_2026-04-24.md](docs/vr_control_and_performance_update_2026-04-24.md)

@@ -68,39 +68,51 @@
                   <geom pos="0 0 0.004" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="base_coupling"/>
                   <geom pos="0 0 0.0108" quat="1 0 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="c-a01-85-open"/>
                   <body name="left_driver_link" pos="-0.0306011 0.00475 0.0657045" quat="0.707107 -0.707107 0 0">
-                    <inertial pos="-0.0191837 0.0115217 0.00836471" quat="0.512236 -0.243929 -0.335886 0.75186" mass="0.023093" diaginertia="1.19933e-05 9.08259e-06 4.7089e-06"/>
+                    <inertial pos="-0.0175297 0.00165308 -0.00469625" quat="-0.469642 0.469642 -0.528617 0.528617" mass="0.00899563" diaginertia="1.72352e-06 1.60906e-06 3.22006e-07"/>
                     <joint name="left_driver_joint" pos="0 0 0" axis="0 0 1" range="0 0.9" actuatorfrcrange="-10 10" damping="0.1"/>
                     <geom pos="0.0306011 0.0549045 -0.0047" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="driver"/>
-                    <geom pos="-0.0934509 -0.0458401 -0.0047" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="coupler"/>
+                    <body name="left_coupler_link" pos="-0.0314249 0.00453223 -0.0102" quat="0 0 0 1">
+                      <inertial pos="0.00367747 0.01986 0.0055" quat="0.701447 -0.701447 0.0892884 -0.0892884" mass="0.0140974" diaginertia="4.16206e-06 3.52216e-06 8.88131e-07"/>
+                      <geom pos="-0.062026 -0.0503723 0.0055" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="coupler"/>
+                    </body>
                   </body>
                   <body name="left_spring_link" pos="-0.0127 -0.012 0.07222" quat="0.707107 -0.707107 0 0">
-                    <inertial pos="0 0.0181624 0.0212658" mass="0.0221642" diaginertia="8.96853e-06 6.71733e-06 2.63931e-06"/>
+                    <inertial pos="-0.0183 -0.0205732 0.01205" quat="0.660941 0.660941 -0.251309 -0.251309" mass="0.0221642" diaginertia="8.96853e-06 6.71733e-06 2.63931e-06"/>
                     <joint name="left_spring_link_joint" pos="0 0 0" axis="0 0 1" range="-0.296706 0.9" actuatorfrcrange="-10 10" damping="0.01"/>
                     <geom pos="0.0127 0.06142 0.01205" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="spring_link"/>
-                    <body name="left_follower_link" pos="-0.0382079 -0.0425003 0.00295" quat="0 1 0 0">
-                      <inertial pos="0.000753095 -0.0238361 0.0273243" quat="0.941472 0.336116 0.0114751 0.0229154" mass="0.0145222" diaginertia="3.77386e-05 3.67538e-05 1.46985e-06"/>
+                    <body name="left_follower_link" pos="-0.0382079 -0.0425003 0.00295" quat="0 -1 -1.90231e-05 0">
+                      <inertial pos="-0.00852976 -0.0014822 -0.00910001" quat="0.359439 0.359439 0.608937 0.608937" mass="0.0125222" diaginertia="2.67415e-06 2.4559e-06 6.02031e-07"/>
                       <joint name="left_follower_joint" pos="0 0 0" axis="0 0 1" range="-0.872664 0.9" actuatorfrcrange="-10 10" damping="0.01"/>
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="follower"/>
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="tongue"/>
-                      <geom pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.88 0.88 0.88 1" mesh="pad"/>
+                      <body name="left_pad_link" pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0">
+                        <geom name="left_pad1" mass="1e-6" type="box" pos="0.043258 0 0.12" size="0.002 0.011 0.009375" friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1"/>
+                        <geom name="left_pad2" mass="1e-6" type="box" pos="0.043258 0 0.13875" size="0.002 0.011 0.009375" friction="0.6" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.45 0.45 0.45 1"/>
+                      </body>
                     </body>
                   </body>
                   <body name="right_driver_link" pos="0.0306011 -0.00475 0.0657045" quat="0 0 -0.707107 0.707107">
-                    <inertial pos="-0.0191837 0.0115217 0.00836471" quat="0.512236 -0.243929 -0.335886 0.75186" mass="0.023093" diaginertia="1.19933e-05 9.08259e-06 4.7089e-06"/>
+                    <inertial pos="-0.0175297 0.00165308 -0.00469625" quat="-0.469642 0.469642 -0.528617 0.528617" mass="0.00899563" diaginertia="1.72352e-06 1.60906e-06 3.22006e-07"/>
                     <joint name="right_driver_joint" pos="0 0 0" axis="0 0 1" range="0 0.9" actuatorfrcrange="-10 10" damping="0.1"/>
                     <geom pos="0.0306011 0.0549045 -0.0047" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="driver"/>
-                    <geom pos="-0.0934509 -0.0458401 -0.0047" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="coupler"/>
+                    <body name="right_coupler_link" pos="-0.0314249 0.00453223 -0.0102" quat="0 0 0 1">
+                      <inertial pos="0.00367747 0.01986 0.0055" quat="0.701447 -0.701447 0.0892884 -0.0892884" mass="0.0140974" diaginertia="4.16206e-06 3.52216e-06 8.88131e-07"/>
+                      <geom pos="-0.062026 -0.0503723 0.0055" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="coupler"/>
+                    </body>
                   </body>
                   <body name="right_spring_link" pos="0.0127 0.012 0.07222" quat="0 0 -0.707107 0.707107">
-                    <inertial pos="0 0.0181624 0.0212658" mass="0.0221642" diaginertia="8.96853e-06 6.71733e-06 2.63931e-06"/>
+                    <inertial pos="-0.0183 -0.0205732 0.01205" quat="0.660941 0.660941 -0.251309 -0.251309" mass="0.0221642" diaginertia="8.96853e-06 6.71733e-06 2.63931e-06"/>
                     <joint name="right_spring_link_joint" pos="0 0 0" axis="0 0 1" range="-0.296706 0.9" actuatorfrcrange="-10 10" damping="0.01"/>
                     <geom pos="0.0127 0.06142 0.01205" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="spring_link"/>
-                    <body name="right_follower_link" pos="-0.0382079 -0.0425003 0.00295" quat="0 1 0 0">
-                      <inertial pos="0.000753095 -0.0238361 0.0273243" quat="0.941472 0.336116 0.0114751 0.0229154" mass="0.0145222" diaginertia="3.77386e-05 3.67538e-05 1.46985e-06"/>
+                    <body name="right_follower_link" pos="-0.0382079 -0.0425003 0.00295" quat="0 -1 0 0">
+                      <inertial pos="-0.00852976 -0.0014822 -0.00910001" quat="0.359439 0.359439 0.608937 0.608937" mass="0.0125222" diaginertia="2.67415e-06 2.4559e-06 6.02031e-07"/>
                       <joint name="right_follower_joint" pos="0 0 0" axis="0 0 1" range="-0.872664 0.9" actuatorfrcrange="-10 10" damping="0.01"/>
-                      <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="follower"/>
                       <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.58 0.58 0.58 1" mesh="tongue"/>
-                      <geom pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.88 0.88 0.88 1" mesh="pad"/>
+                      <geom pos="0.0509079 -0.10392 -0.0091" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="follower"/>
+                      <body name="right_pad_link" pos="-0.0377897 -0.103916 -0.0091" quat="0.707107 -0.707107 0 0">
+                        <geom name="right_pad1" mass="1e-6" type="box" pos="0.043258 0 0.12" size="0.002 0.011 0.009375" friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1"/>
+                        <geom name="right_pad2" mass="1e-6" type="box" pos="0.043258 0 0.13875" size="0.002 0.011 0.009375" friction="0.6" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.45 0.45 0.45 1"/>
+                      </body>
                     </body>
                   </body>
                   <body name="wrist_d405_mount" pos="-0.035392 -0.089332 0.032" quat="0 -0.707107 -0.707107 0">
@@ -142,12 +154,18 @@
       </body>
     </body>
   </worldbody>
+  <contact>
+    <exclude body1="wrist_3_link" body2="left_driver_link"/>
+    <exclude body1="wrist_3_link" body2="right_driver_link"/>
+    <exclude body1="wrist_3_link" body2="left_spring_link"/>
+    <exclude body1="wrist_3_link" body2="right_spring_link"/>
+    <exclude body1="right_coupler_link" body2="right_follower_link"/>
+    <exclude body1="left_coupler_link" body2="left_follower_link"/>
+  </contact>
   <equality>
-    <joint joint1="right_driver_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
-    <joint joint1="left_spring_link_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
-    <joint joint1="right_spring_link_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
-    <joint joint1="left_follower_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
-    <joint joint1="right_follower_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0"/>
+    <connect anchor="-0.0179014 -0.00651468 0.0044" body1="right_follower_link" body2="right_coupler_link" solimp="0.95 0.99 0.001" solref="0.005 1"/>
+    <connect anchor="-0.0179014 -0.00651468 0.0044" body1="left_follower_link" body2="left_coupler_link" solimp="0.95 0.99 0.001" solref="0.005 1"/>
+    <joint joint1="right_driver_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1"/>
   </equality>
   <actuator>
     <position name="act_shoulder_pan" joint="shoulder_pan_joint" kp="200"/>

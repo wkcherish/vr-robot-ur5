@@ -94,6 +94,11 @@ python backend/main.py --open-viewer ask --model backend/mujoco_models/environme
 python backend/main.py --open-viewer no --no-reload
 ```
 
+Wayland 环境提示：
+
+- 若系统为 Wayland 且同时可用 X11（`DISPLAY` 存在），`backend/main.py` 会默认将 viewer 切到 X11 GLFW 后端，减少 `libdecor-gtk` 相关警告。
+- 若你需要强制 Wayland，可手动设置 `PYGLFW_LIBRARY_VARIANT=wayland` 后再启动。
+
 ## WebSocket 协议（首版）
 
 - 客户端 -> 服务端：

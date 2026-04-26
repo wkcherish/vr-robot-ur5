@@ -419,7 +419,7 @@
   <link name="left_driver_link">
     <inertial>
       <mass value="0.00899563"/>
-      <origin rpy="0 0 0" xyz="0 0.0177547 0.00107314"/>
+      <origin rpy="-1.5707963267948966 0 -1.6888148609579907" xyz="-0.0175297 0.00165308 -0.00469625"/>
       <inertia ixx="0.00000172352" ixy="0.0" ixz="0.0" iyy="0.00000160906" iyz="0.0" izz="0.000000322006"/>
     </inertial>
     <visual>
@@ -465,11 +465,11 @@
   <link name="left_coupler_link">
     <inertial>
       <mass value="0.0140974"/>
-      <origin rpy="0 0 0" xyz="0 0.00301209 0.0232175"/>
+      <origin rpy="-1.5707963267948966 0 -0.2532216481274778" xyz="0.00367747 0.01986 0.0055"/>
       <inertia ixx="0.00000416206" ixy="0.0" ixz="0.0" iyy="0.00000352216" iyz="0.0" izz="0.000000888131"/>
     </inertial>
     <visual>
-      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
+      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
@@ -478,26 +478,22 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
+      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
     </collision>
   </link>
-  <joint name="left_driver-left_coupler" type="revolute">
-    <origin rpy="0 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
+  <joint name="left_driver-left_coupler" type="fixed">
+    <origin rpy="0 0 3.141592653589793" xyz="-0.0314249 0.00453223 -0.0102"/>
     <parent link="left_driver_link"/>
     <child link="left_coupler_link"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="10.0" lower="-1.5707963267948966" upper="0.0" velocity="2.0"/>
-    <dynamics damping="0.01" friction="0.0"/>
-    <mimic joint="left_driver_joint" multiplier="-1.0" offset="0.0"/>
   </joint>
 
   <link name="left_spring_link">
     <inertial>
       <mass value="0.0221642"/>
-      <origin rpy="0 0 0" xyz="0 0.0181624 0.0212658"/>
+      <origin rpy="1.5707963267948966 0 -0.7266943697264541" xyz="-0.0183 -0.0205732 0.01205"/>
       <inertia ixx="0.00000896853" ixy="0.0" ixz="0.0" iyy="0.00000671733" iyz="0.0" izz="0.00000263931"/>
     </inertial>
     <visual>
@@ -529,7 +525,7 @@
   <link name="left_follower_link">
     <inertial>
       <mass value="0.0125222"/>
-      <origin rpy="0 0 0" xyz="0 -0.011046 0.0124786"/>
+      <origin rpy="1.5707963267948966 0 2.075119637178007" xyz="-0.00852976 -0.0014822 -0.00910001"/>
       <inertia ixx="0.00000267415" ixy="0.0" ixz="0.0" iyy="0.0000024559" iyz="0.0" izz="0.000000602031"/>
     </inertial>
     <visual>
@@ -564,7 +560,7 @@
     </collision>
   </link>
   <joint name="left_follower_joint" type="revolute">
-    <origin rpy="3.141592653589793 0 0" xyz="-0.0382079 -0.0425003 0.00295"/>
+    <origin rpy="-3.141592653589793 0 0.000038046199995410655" xyz="-0.0382079 -0.0425003 0.00295"/>
     <parent link="left_spring_link"/>
     <child link="left_follower_link"/>
     <axis xyz="0 0 1"/>
@@ -605,7 +601,7 @@
   <link name="right_driver_link">
     <inertial>
       <mass value="0.00899563"/>
-      <origin rpy="0 0 0" xyz="0 0.0177547 0.00107314"/>
+      <origin rpy="-1.5707963267948966 0 -1.6888148609579907" xyz="-0.0175297 0.00165308 -0.00469625"/>
       <inertia ixx="0.00000172352" ixy="0.0" ixz="0.0" iyy="0.00000160906" iyz="0.0" izz="0.000000322006"/>
     </inertial>
     <visual>
@@ -652,11 +648,11 @@
   <link name="right_coupler_link">
     <inertial>
       <mass value="0.0140974"/>
-      <origin rpy="0 0 0" xyz="0 0.00301209 0.0232175"/>
+      <origin rpy="-1.5707963267948966 0 -0.2532216481274778" xyz="0.00367747 0.01986 0.0055"/>
       <inertia ixx="0.00000416206" ixy="0.0" ixz="0.0" iyy="0.00000352216" iyz="0.0" izz="0.000000888131"/>
     </inertial>
     <visual>
-      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
+      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
@@ -665,26 +661,22 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="1.5707963267948966 0 0" xyz="-0.06359 0.04887 0"/>
+      <origin rpy="-1.5707963267948966 0 0" xyz="-0.062026 -0.0503723 0.0055"/>
       <geometry>
         <mesh filename="robotiq_2f85_v4/coupler.stl"/>
       </geometry>
     </collision>
   </link>
-  <joint name="right_driver-right_coupler" type="revolute">
-    <origin rpy="0 0 0" xyz="-0.0192768 0.0046642 -0.0058"/>
+  <joint name="right_driver-right_coupler" type="fixed">
+    <origin rpy="0 0 3.141592653589793" xyz="-0.0314249 0.00453223 -0.0102"/>
     <parent link="right_driver_link"/>
     <child link="right_coupler_link"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="10.0" lower="-1.5707963267948966" upper="0.0" velocity="2.0"/>
-    <dynamics damping="0.01" friction="0.0"/>
-    <mimic joint="right_driver_joint" multiplier="-1.0" offset="0.0"/>
   </joint>
 
   <link name="right_spring_link">
     <inertial>
       <mass value="0.0221642"/>
-      <origin rpy="0 0 0" xyz="0 0.0181624 0.0212658"/>
+      <origin rpy="1.5707963267948966 0 -0.7266943697264541" xyz="-0.0183 -0.0205732 0.01205"/>
       <inertia ixx="0.00000896853" ixy="0.0" ixz="0.0" iyy="0.00000671733" iyz="0.0" izz="0.00000263931"/>
     </inertial>
     <visual>
@@ -716,7 +708,7 @@
   <link name="right_follower_link">
     <inertial>
       <mass value="0.0125222"/>
-      <origin rpy="0 0 0" xyz="0 -0.011046 0.0124786"/>
+      <origin rpy="1.5707963267948966 0 2.075119637178007" xyz="-0.00852976 -0.0014822 -0.00910001"/>
       <inertia ixx="0.00000267415" ixy="0.0" ixz="0.0" iyy="0.0000024559" iyz="0.0" izz="0.000000602031"/>
     </inertial>
     <visual>

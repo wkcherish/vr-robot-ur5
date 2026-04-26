@@ -1,11 +1,14 @@
+import { getQuestXRSession } from "./questXRSession.js";
+
 const QUEST_PAD_PATTERN = /(quest|oculus|meta|touch|xr-standard)/i;
 const LEFT_PAD_PATTERN = /(left|l-touch|left controller)/i;
 const RIGHT_PAD_PATTERN = /(right|r-touch|right controller)/i;
 
 const LEFT_BUTTON_INDEX = {
-  select_upper_arm: [3],
-  select_forearm: [4],
-  select_wrist: [1, 2],
+  precision: [0],
+  select_wrist: [1],
+  select_upper_arm: [4],
+  select_forearm: [5],
 };
 
 const RIGHT_BUTTON_INDEX = {
@@ -23,7 +26,11 @@ function scoreQuestPad(pad) {
   const id = String(pad?.id || "");
   let score = 0;
   if (QUEST_PAD_PATTERN.test(id)) score += 10;
+  const hand = String(pad?.hand || "").toLowerCase();
+  if (hand === "left" || hand === "right") score += 8;
   if (String(pad?.mapping || "") === "xr-standard") score += 5;
+  if (Array.isArray(pad?.axes) && pad.axes.length >= 2) score += 3;
+  if (Array.isArray(pad?.buttons) && pad.buttons.length >= 2) score += 2;
   return score;
 }
 
@@ -36,7 +43,13 @@ function pickByPattern(pads, pattern) {
 function pickLeftRightPads() {
   const all = asConnectedPads();
   if (all.length === 0) {
-    return { leftPad: null, rightPad: null };
+    return { leftPad: null, rightPad: null, source: "none" };
+  }
+
+  const leftByHand = all.find((pad) => String(pad?.hand || "").toLowerCase() === "left") || null;
+  const rightByHand = all.find((pad) => String(pad?.hand || "").toLowerCase() === "right") || null;
+  if (leftByHand && rightByHand && leftByHand !== rightByHand) {
+    return { leftPad: leftByHand, rightPad: rightByHand, source: "navigator_gamepads" };
   }
 
   const ranked = [...all].sort((a, b) => scoreQuestPad(b) - scoreQuestPad(a));
@@ -58,7 +71,7 @@ function pickLeftRightPads() {
     rightPad = pool.find((pad) => pad !== leftPad) || null;
   }
 
-  return { leftPad, rightPad };
+  return { leftPad, rightPad, source: "navigator_gamepads" };
 }
 
 function clamp01(value) {
@@ -100,18 +113,95 @@ function readStickAxes(pad) {
   };
 }
 
-export function readQuestControllerSnapshot() {
-  const { leftPad, rightPad } = pickLeftRightPads();
+function normalizeHandedness(value) {
+  const handed = String(value || "").toLowerCase();
+  if (handed === "left" || handed === "right") return handed;
+  return "";
+}
+
+function pickLeftRightPadsFromXRSession() {
+  const session = getQuestXRSession();
+  if (!session) {
+    return { leftPad: null, rightPad: null, source: "none" };
+  }
+  const sources = Array.from(session.inputSources || []);
+  if (sources.length === 0) {
+    return { leftPad: null, rightPad: null, source: "none" };
+  }
+
+  const gamepadEntries = [];
+  sources.forEach((source, index) => {
+    if (!source || !source.gamepad) return;
+    gamepadEntries.push({
+      source,
+      gamepad: source.gamepad,
+      handedness: normalizeHandedness(source.handedness),
+      index,
+    });
+  });
+
+  if (gamepadEntries.length === 0) {
+    return { leftPad: null, rightPad: null, source: "none" };
+  }
+
+  let leftPad = null;
+  let rightPad = null;
+
+  for (const entry of gamepadEntries) {
+    if (entry.handedness === "left" && !leftPad) {
+      leftPad = entry.gamepad;
+    }
+    if (entry.handedness === "right" && !rightPad) {
+      rightPad = entry.gamepad;
+    }
+  }
+
+  if (!leftPad || !rightPad) {
+    const sorted = [...gamepadEntries].sort((a, b) => {
+      const scoreA = scoreQuestPad(a.gamepad);
+      const scoreB = scoreQuestPad(b.gamepad);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return a.index - b.index;
+    });
+
+    if (!leftPad) {
+      leftPad = sorted[0]?.gamepad || null;
+    }
+    if (!rightPad) {
+      rightPad = sorted.find((entry) => entry.gamepad !== leftPad)?.gamepad || null;
+    }
+  }
+
+  return {
+    leftPad,
+    rightPad,
+    source: "xr_input_sources",
+  };
+}
+
+function readSnapshotFromPads(leftPad, rightPad, source) {
   if (!leftPad || !rightPad) {
     return {
-      available: false,
-      reason: "missing_controller",
+      available: true,
+      has_device: false,
+      reason: "idle",
       timestamp_ms: Date.now(),
+      controls: {
+        select_upper_arm: 0,
+        select_forearm: 0,
+        select_wrist: 0,
+        precision: 0,
+        stick_x: 0,
+        stick_y: 0,
+        trigger: 0,
+      },
+      raw: null,
     };
   }
 
   const rightStick = readStickAxes(rightPad);
   const raw = {
+    source,
     left: {
       id: String(leftPad.id || ""),
       select_upper_arm: readButtonValue(leftPad, LEFT_BUTTON_INDEX.select_upper_arm),
@@ -128,16 +218,28 @@ export function readQuestControllerSnapshot() {
 
   return {
     available: true,
+    has_device: true,
     reason: "ok",
     timestamp_ms: Date.now(),
     controls: {
       select_upper_arm: raw.left.select_upper_arm,
       select_forearm: raw.left.select_forearm,
       select_wrist: raw.left.select_wrist,
+      precision: readButtonValue(leftPad, LEFT_BUTTON_INDEX.precision),
       stick_x: raw.right.stick_x,
       stick_y: raw.right.stick_y,
       trigger: raw.right.trigger,
     },
     raw,
   };
+}
+
+export function readQuestControllerSnapshot() {
+  const xrPads = pickLeftRightPadsFromXRSession();
+  if (xrPads.leftPad && xrPads.rightPad) {
+    return readSnapshotFromPads(xrPads.leftPad, xrPads.rightPad, xrPads.source);
+  }
+
+  const navigatorPads = pickLeftRightPads();
+  return readSnapshotFromPads(navigatorPads.leftPad, navigatorPads.rightPad, navigatorPads.source);
 }
