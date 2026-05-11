@@ -234,6 +234,20 @@ Quest3 控制频率、后端控制频率、策略推理频率，要为后续实�
 
 这说明“局部双向控制关系”已经存在，后续并不是从 0 写到 1，而是从“桌面 viewer 桥接 + 前后端同步基线”继续往 Quest3 和数据采集方向扩展。
 
+#### 3.1.6 关节限位双侧裁剪（2026-05-11 新增）
+
+VR / 手动控制大幅累加目标关节角时，可能直接越过 UR5 的物理 `jnt_range`，造成 MuJoCo 解算报警或末端姿态翻飞。本轮已经把“关节限位裁剪”落到前后端两侧，作为后续 Quest3 采集与 RL 微调的安全前置：
+
+- 后端 `backend/sim/simulation.py`：
+  - `SimulationCore` 新增 `_arm_joint_limits` 缓存，加载模型时读取 `jnt_limited` / `jnt_range`，按关节名记录 `(lo, hi)`。
+  - 新增 `_clamp_arm_targets`，在 `_apply_arm_command` 中对所有来源（`manual` / `vr` / `replay` 等）的目标关节角执行逐维裁剪，再做 blend 与积分。
+  - 状态接口（`state_broadcast` / `state_update`）的 payload 中追加 `joint_limits` 字段，与 `joint_names` 同序对外公布。
+- 前端 `frontend/src/utils/websocket.js`：
+  - `handleStateUpdate` 中缓存 `jointNames` 与 `jointLimits`，供发送链路即时复用。
+  - `sendControlCommand` 在组装 `target_positions` 时调用新增的 `clampToJointLimits`，先按后端公布的限位完成预裁剪，避免越界值进入 WebSocket。
+
+形成的安全模型为：前端预裁剪保证“可视控件 / VR 增量”不会发出违法目标，后端兜底裁剪保证“跨客户端、跨任务源”的命令也无法绕过物理限位。该机制对后续数据集采集（避免越界帧污染示教数据）与 RL 微调（动作空间和真实硬件保持一致）都是必备前置。
+
 ### 3.2 当前仍未完成的部分
 
 虽然基线已经存在，但以下关键环节仍基本未落地：

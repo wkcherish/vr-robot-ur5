@@ -19,6 +19,11 @@ class WebSocketManager {
     // 状态管理
     this.simulationState = null;
     this.lastStateUpdate = 0;
+
+    // 关节限位缓存（来自后端 state_broadcast.joint_limits）
+    // 形如 { jointName: [lo, hi] }，顺序与 jointNames 一致
+    this.jointNames = null;
+    this.jointLimits = null;
   }
 
   // 连接到 WebSocket 服务器
@@ -82,8 +87,9 @@ class WebSocketManager {
 
   // 发送控制命令
   sendControlCommand(targetPositions, options = {}) {
+    const clampedTargets = this.clampToJointLimits(targetPositions);
     const payload = {
-      target_positions: targetPositions,
+      target_positions: clampedTargets,
       n_steps: Number.isFinite(Number(options.n_steps))
         ? Math.max(1, Math.floor(Number(options.n_steps)))
         : 2,
@@ -296,7 +302,33 @@ class WebSocketManager {
   handleStateUpdate(data) {
     this.simulationState = data;
     this.lastStateUpdate = Date.now();
+    if (data && Array.isArray(data.joint_names)) {
+      this.jointNames = data.joint_names.map((name) => String(name));
+    }
+    if (data && data.joint_limits && typeof data.joint_limits === 'object') {
+      this.jointLimits = data.joint_limits;
+    }
     this.emit('stateUpdate', data);
+  }
+
+  // 将目标关节角裁剪到后端公布的关节限位内，防止越过物理边界
+  clampToJointLimits(targetPositions) {
+    if (!Array.isArray(targetPositions)) return targetPositions;
+    if (!this.jointLimits || !Array.isArray(this.jointNames)) return targetPositions;
+    return targetPositions.map((value, idx) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return value;
+      const name = this.jointNames[idx];
+      if (!name) return numeric;
+      const limits = this.jointLimits[name];
+      if (!Array.isArray(limits) || limits.length !== 2) return numeric;
+      const lo = Number(limits[0]);
+      const hi = Number(limits[1]);
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return numeric;
+      if (numeric < lo) return lo;
+      if (numeric > hi) return hi;
+      return numeric;
+    });
   }
 
   handleClose(event) {
