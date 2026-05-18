@@ -19,6 +19,15 @@
 
 这一部分对应“旧 ToDo 中已经完成、而且经代码复核确认属实”的内容。
 
+### A0-1. 2026-05-11 关节限位双侧裁剪修复
+
+- [x] `P0` 后端 `SimulationCore` 在加载 MuJoCo 模型时缓存所有受限手臂关节的 `jnt_range`（`_arm_joint_limits`）
+- [x] `P0` 在 `_apply_arm_command` 之前新增 `_clamp_arm_targets`，对来自任意 `source`（manual / vr / replay 等）的目标关节角逐维 clamp 到 `[lo, hi]`
+- [x] `P0` 状态广播 `state_broadcast` / `state_update` 中新增 `joint_limits` 字段（与 `joint_names` 同序），向前端公布限位
+- [x] `P0` 前端 `frontend/src/utils/websocket.js` 在 `handleStateUpdate` 中缓存 `jointNames` / `jointLimits`
+- [x] `P0` 前端 `sendControlCommand` 在发送前调用新的 `clampToJointLimits` 完成预裁剪，避免越界目标进入网络与 MuJoCo
+- [x] `P0` 解决的问题：Quest3 / VR 控制及面板手动控制在大幅累加增量时，UR5 关节会越过物理限位导致 MuJoCo 报警或姿态翻飞；现在前后端形成“前端预裁剪 + 后端兜底裁剪”的双层防护
+
 ### A0. 2026-04-24 VR 控制与性能修复记录
 
 - [x] `P0` 修复 Quest3 进入 VR 后已选模式但控制链不稳定的问题（会话创建时机、输入采样链、发送链路）
