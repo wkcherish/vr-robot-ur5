@@ -253,6 +253,7 @@ class SimulationCore:
         self._mj_model: Any | None = None
         self._mj_data: Any | None = None
         self._arm_joint_qpos_addr: dict[str, int] = {}
+        self._arm_joint_limits: dict[str, tuple[float, float]] = {}
         self._gripper_joint_qpos_addr: dict[str, int] = {}
         self._object_body_ids: dict[str, int] = {}
         self._tool_body_id: int | None = None
@@ -884,10 +885,14 @@ class SimulationCore:
 
         model = self._mj_model
         self._arm_joint_qpos_addr = {}
+        self._arm_joint_limits = {}
         for name in self._arm_joint_names:
             joint_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_JOINT, name)
             if joint_id >= 0:
                 self._arm_joint_qpos_addr[name] = int(model.jnt_qposadr[joint_id])
+                if bool(model.jnt_limited[joint_id]):
+                    lo, hi = model.jnt_range[joint_id]
+                    self._arm_joint_limits[name] = (float(lo), float(hi))
 
         self._gripper_joint_qpos_addr = {}
         for name in DEFAULT_GRIPPER_JOINT_NAMES:
@@ -1166,6 +1171,23 @@ class SimulationCore:
         if using_mujoco and model_changed and _mujoco is not None and self._mj_model is not None and self._mj_data is not None:
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
+    def _clamp_arm_targets(self, target: list[float]) -> list[float]:
+        if not self._arm_joint_limits:
+            return target
+        clamped = list(target)
+        for idx, name in enumerate(self._arm_joint_names):
+            if idx >= len(clamped):
+                break
+            limits = self._arm_joint_limits.get(name)
+            if limits is None:
+                continue
+            lo, hi = limits
+            if clamped[idx] < lo:
+                clamped[idx] = lo
+            elif clamped[idx] > hi:
+                clamped[idx] = hi
+        return clamped
+
     def _apply_arm_command(self, target_positions: list[float] | None, n_steps: int, source: str = "manual") -> None:
         if target_positions is None:
             self._arm_qvel = [0.0 for _ in self._arm_qvel]
@@ -1178,7 +1200,7 @@ class SimulationCore:
                 qpos_addr = self._arm_joint_qpos_addr.get(name)
                 current.append(float(self._mj_data.qpos[qpos_addr]) if qpos_addr is not None else 0.0)
 
-        target = [float(v) for v in target_positions]
+        target = self._clamp_arm_targets([float(v) for v in target_positions])
         blend = _resolve_command_blend(source, n_steps, ARM_COMMAND_BLEND_PER_STEP)
         applied = [
             current[idx] + (target[idx] - current[idx]) * blend
@@ -1586,6 +1608,10 @@ class SimulationCore:
             "timestamp": time.time(),
             "sim_time": self._sim_time,
             "joint_names": list(self._arm_joint_names),
+            "joint_limits": {
+                name: [float(limits[0]), float(limits[1])]
+                for name, limits in self._arm_joint_limits.items()
+            },
             "qpos": qpos,
             "qvel": qvel,
             "ee_pose": ee_pose,
