@@ -48,6 +48,7 @@ VIEWER_BRIDGE_GUARD_S = 0.35
 VIEWER_BRIDGE_MIN_PUSH_INTERVAL_S = 0.08
 VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD = 0.003
 VIEWER_BRIDGE_PENDING_TIMEOUT_S = 2.0
+MAX_VIEWER_LOCAL_PHYSICS_SUBSTEPS = 64
 # Keep viewer state polling tolerant to transient backend jitter.
 MIN_STATE_FETCH_TIMEOUT_S = 0.20
 MAX_STATE_FETCH_TIMEOUT_S = 1.00
@@ -78,7 +79,6 @@ def _apply_home_pose(
     joint_names: list[str],
     arm_qpos: list[float],
 ) -> None:
-    data.qpos[:] = 0.0
     data.qvel[:] = 0.0
 
     for idx, name in enumerate(joint_names):
@@ -107,7 +107,88 @@ def _apply_home_pose(
         qpos_addr = int(model.jnt_qposadr[joint_id])
         data.qpos[qpos_addr] = gripper_values[name]
 
+    if data.ctrl is not None and len(data.ctrl) > 0:
+        for idx, actuator_name in enumerate(DEFAULT_ARM_ACTUATOR_NAMES):
+            if idx >= len(joint_names) or idx >= len(arm_qpos):
+                break
+            actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
+            if actuator_id < 0:
+                continue
+            _set_actuator_ctrl_for_joint_target(
+                model=model,
+                data=data,
+                actuator_id=int(actuator_id),
+                joint_name=joint_names[idx],
+                target_qpos=float(arm_qpos[idx]),
+            )
+        gripper_actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, DEFAULT_GRIPPER_ACTUATOR_NAME)
+        if gripper_actuator_id >= 0:
+            _set_actuator_ctrl_for_joint_target(
+                model=model,
+                data=data,
+                actuator_id=int(gripper_actuator_id),
+                joint_name="left_driver_joint",
+                target_qpos=driver,
+            )
+
     mujoco.mj_forward(model, data)
+
+
+def _normalize_quaternion(quaternion_wxyz: list[float]) -> list[float]:
+    if len(quaternion_wxyz) < 4:
+        return [1.0, 0.0, 0.0, 0.0]
+    w, x, y, z = [float(v) for v in quaternion_wxyz[:4]]
+    norm = (w * w + x * x + y * y + z * z) ** 0.5
+    if norm <= 1e-8:
+        return [1.0, 0.0, 0.0, 0.0]
+    inv = 1.0 / norm
+    return [w * inv, x * inv, y * inv, z * inv]
+
+
+def _joint_qpos0(model: mujoco.MjModel, joint_name: str) -> float:
+    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+    if joint_id < 0:
+        return 0.0
+    qpos_addr = int(model.jnt_qposadr[joint_id])
+    return float(model.qpos0[qpos_addr])
+
+
+def _set_actuator_ctrl_for_joint_target(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    actuator_id: int,
+    joint_name: str,
+    target_qpos: float,
+) -> None:
+    data.ctrl[int(actuator_id)] = float(target_qpos) - _joint_qpos0(model, joint_name)
+
+
+def _apply_object_pose_to_viewer(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    body_id: int,
+    position: list[float],
+    quaternion: list[float],
+) -> None:
+    normalized_quat = _normalize_quaternion(quaternion)
+    body_joint_count = int(model.body_jntnum[body_id])
+    if body_joint_count > 0:
+        joint_start = int(model.body_jntadr[body_id])
+        for offset in range(body_joint_count):
+            joint_id = joint_start + offset
+            if int(model.jnt_type[joint_id]) != int(mujoco.mjtJoint.mjJNT_FREE):
+                continue
+            qpos_addr = int(model.jnt_qposadr[joint_id])
+            data.qpos[qpos_addr : qpos_addr + 3] = [
+                float(position[0]),
+                float(position[1]),
+                float(position[2]),
+            ]
+            data.qpos[qpos_addr + 3 : qpos_addr + 7] = normalized_quat
+            return
+
+    model.body_pos[body_id] = [float(position[0]), float(position[1]), float(position[2])]
+    model.body_quat[body_id] = normalized_quat
 
 
 def _extract_gripper_joint_targets(state: dict[str, object]) -> dict[str, float]:
@@ -199,11 +280,23 @@ def _apply_backend_state_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, s
             actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
             if actuator_id < 0:
                 continue
-            data.ctrl[int(actuator_id)] = float(target_value)
+            _set_actuator_ctrl_for_joint_target(
+                model=model,
+                data=data,
+                actuator_id=int(actuator_id),
+                joint_name=DEFAULT_ARM_JOINT_NAMES[idx],
+                target_qpos=float(target_value),
+            )
         if applied_driver is not None:
             actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, DEFAULT_GRIPPER_ACTUATOR_NAME)
             if actuator_id >= 0:
-                data.ctrl[int(actuator_id)] = float(applied_driver)
+                _set_actuator_ctrl_for_joint_target(
+                    model=model,
+                    data=data,
+                    actuator_id=int(actuator_id),
+                    joint_name="left_driver_joint",
+                    target_qpos=float(applied_driver),
+                )
 
     # Keep tabletop objects in viewer aligned with backend state (toolbox/tools/camera assets).
     objects_raw = state.get("objects")
@@ -219,16 +312,18 @@ def _apply_backend_state_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, s
                 continue
 
             position = object_state.get("position")
+            parsed_position: list[float] | None = None
             if isinstance(position, list) and len(position) >= 3:
                 try:
-                    model.body_pos[int(body_id)] = [float(position[0]), float(position[1]), float(position[2])]
+                    parsed_position = [float(position[0]), float(position[1]), float(position[2])]
                 except (TypeError, ValueError):
                     pass
 
             quaternion = object_state.get("quaternion")
+            parsed_quaternion: list[float] | None = None
             if isinstance(quaternion, list) and len(quaternion) >= 4:
                 try:
-                    model.body_quat[int(body_id)] = [
+                    parsed_quaternion = [
                         float(quaternion[0]),
                         float(quaternion[1]),
                         float(quaternion[2]),
@@ -236,6 +331,20 @@ def _apply_backend_state_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, s
                     ]
                 except (TypeError, ValueError):
                     pass
+
+            if parsed_position is not None or parsed_quaternion is not None:
+                body_id_int = int(body_id)
+                if parsed_position is None:
+                    parsed_position = [float(v) for v in data.xpos[body_id_int]]
+                if parsed_quaternion is None:
+                    parsed_quaternion = [float(v) for v in data.xquat[body_id_int]]
+                _apply_object_pose_to_viewer(
+                    model=model,
+                    data=data,
+                    body_id=body_id_int,
+                    position=parsed_position,
+                    quaternion=parsed_quaternion,
+                )
 
     mujoco.mj_forward(model, data)
     return True
@@ -291,11 +400,23 @@ def _apply_pose_to_viewer(model: mujoco.MjModel, data: mujoco.MjData, pose: dict
             actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
             if actuator_id < 0:
                 continue
-            data.ctrl[int(actuator_id)] = float(target_value)
+            _set_actuator_ctrl_for_joint_target(
+                model=model,
+                data=data,
+                actuator_id=int(actuator_id),
+                joint_name=DEFAULT_ARM_JOINT_NAMES[idx],
+                target_qpos=float(target_value),
+            )
         if driver_value is not None:
             actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, DEFAULT_GRIPPER_ACTUATOR_NAME)
             if actuator_id >= 0:
-                data.ctrl[int(actuator_id)] = float(driver_value)
+                _set_actuator_ctrl_for_joint_target(
+                    model=model,
+                    data=data,
+                    actuator_id=int(actuator_id),
+                    joint_name="left_driver_joint",
+                    target_qpos=float(driver_value),
+                )
 
     mujoco.mj_forward(model, data)
     return True
@@ -374,6 +495,7 @@ def _resolve_actuator_ids(model: mujoco.MjModel) -> tuple[list[int | None], int 
 
 
 def _capture_viewer_target_pose_from_ctrl(
+    model: mujoco.MjModel,
     data: mujoco.MjData,
     arm_actuator_ids: list[int | None],
     gripper_actuator_id: int | None,
@@ -384,14 +506,14 @@ def _capture_viewer_target_pose_from_ctrl(
         return None
 
     arm: list[float] = []
-    for actuator_id in arm_actuator_ids[: len(DEFAULT_ARM_JOINT_NAMES)]:
+    for idx, actuator_id in enumerate(arm_actuator_ids[: len(DEFAULT_ARM_JOINT_NAMES)]):
         if actuator_id is None:
             return None
-        arm.append(float(data.ctrl[actuator_id]))
+        arm.append(float(data.ctrl[actuator_id]) + _joint_qpos0(model, DEFAULT_ARM_JOINT_NAMES[idx]))
 
     driver: float | None = None
     if gripper_actuator_id is not None:
-        driver = float(data.ctrl[gripper_actuator_id])
+        driver = float(data.ctrl[gripper_actuator_id]) + _joint_qpos0(model, "left_driver_joint")
 
     return {"arm": arm, "driver": driver}
 
@@ -529,6 +651,11 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
     _apply_home_pose(model, data, names, qpos)
 
     dt = max(1e-4, 1.0 / max(1.0, fps))
+    model_timestep = max(1e-4, float(model.opt.timestep))
+    local_physics_substeps = max(
+        1,
+        min(MAX_VIEWER_LOCAL_PHYSICS_SUBSTEPS, int(round(dt / model_timestep))),
+    )
     state_poll_interval = max(0.005, 1.0 / min(max(fps, 1.0), 60.0))
     state_fetch_timeout = max(MIN_STATE_FETCH_TIMEOUT_S, min(MAX_STATE_FETCH_TIMEOUT_S, 2.5 * dt))
     last_poll_at = 0.0
@@ -544,6 +671,7 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
     print(f"[viewer] loading: {model_path}")
     print(f"[viewer] syncing state from: {state_url}")
     print(f"[viewer] forwarding local edits to: {step_url}")
+    print(f"[viewer] local control physics substeps/frame: {local_physics_substeps}")
     print("[viewer] controls: left-drag rotate, right-drag pan, wheel zoom")
     print("[viewer] close the window to return to backend console")
 
@@ -551,7 +679,7 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
         while viewer.is_running():
             start = time.perf_counter()
             current_pose = _capture_viewer_pose(model, data)
-            ctrl_target_pose = _capture_viewer_target_pose_from_ctrl(data, arm_actuator_ids, gripper_actuator_id)
+            ctrl_target_pose = _capture_viewer_target_pose_from_ctrl(model, data, arm_actuator_ids, gripper_actuator_id)
             current_ctrl_snapshot = _extract_ctrl_vector(data, arm_actuator_ids, gripper_actuator_id)
             ctrl_changed = _ctrl_changed(
                 current=current_ctrl_snapshot,
@@ -559,10 +687,18 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
                 threshold=VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD,
             )
 
+            pending_kind = (
+                str(pending_viewer_push.get("kind", "pose"))
+                if isinstance(pending_viewer_push, dict)
+                else ""
+            )
+            ctrl_pending_active = pending_kind == "ctrl"
             edit_pose: dict[str, object] | None = None
+            edit_kind = "pose"
+            step_local_physics = False
             if current_pose is not None and last_applied_backend_pose is not None:
                 local_edit_error = _pose_max_error(current_pose, last_applied_backend_pose)
-                if local_edit_error > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD:
+                if (not ctrl_pending_active) and local_edit_error > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD:
                     edit_pose = current_pose
 
             if (
@@ -573,10 +709,17 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
             ):
                 # Prefer ctrl-target pose when user drags the MuJoCo Control panel sliders.
                 edit_pose = ctrl_target_pose
+                edit_kind = "ctrl"
 
             if edit_pose is not None:
-                # Make local slider interaction effective immediately in viewer, then bridge to backend.
-                _apply_pose_to_viewer(model, data, edit_pose)
+                if edit_kind == "ctrl":
+                    # Control-panel sliders edit actuator targets. Let MuJoCo
+                    # integrate toward them so contacts constrain the motion.
+                    step_local_physics = True
+                else:
+                    # Direct qpos edits are already kinematic; keep them visible
+                    # while they are bridged to the backend.
+                    _apply_pose_to_viewer(model, data, edit_pose)
                 local_override_until = max(local_override_until, start + VIEWER_BRIDGE_GUARD_S)
 
                 replace_pending = True
@@ -588,6 +731,7 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
                 if replace_pending:
                     pending_viewer_push = {
                         "pose": edit_pose,
+                        "kind": edit_kind,
                         "created_at": start,
                         "last_attempt_at": 0.0,
                     }
@@ -649,9 +793,23 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
                         if backend_pose is not None:
                             last_applied_backend_pose = backend_pose
                 else:
-                    mujoco.mj_forward(model, data)
+                    if step_local_physics or (
+                        isinstance(pending_viewer_push, dict)
+                        and str(pending_viewer_push.get("kind", "")) == "ctrl"
+                    ):
+                        for _ in range(local_physics_substeps):
+                            mujoco.mj_step(model, data)
+                    else:
+                        mujoco.mj_forward(model, data)
             else:
-                mujoco.mj_forward(model, data)
+                if step_local_physics or (
+                    isinstance(pending_viewer_push, dict)
+                    and str(pending_viewer_push.get("kind", "")) == "ctrl"
+                ):
+                    for _ in range(local_physics_substeps):
+                        mujoco.mj_step(model, data)
+                else:
+                    mujoco.mj_forward(model, data)
 
             viewer.sync()
             # Keep the pre-sync ctrl snapshot as baseline so UI edits applied during
