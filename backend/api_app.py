@@ -285,9 +285,8 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             request = StepRequest.model_validate(message_data)
             if not getattr(request, "source", None):
                 request.source = "desktop_manual"
-            # Keep VR control lightweight, but return state for desktop/manual edits so
-            # frontend can lock-step update and avoid stale broadcast pull-back.
-            return_state = request.source not in {"quest3_controller", "quest3_hand"}
+            # Always return state so frontend can stay synchronized with backend physics.
+            return_state = True
             state = await simulation.enqueue_step(request, return_state=return_state)
             return {
                 "type": "control_result",

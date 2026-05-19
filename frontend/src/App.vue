@@ -556,7 +556,7 @@ const UI_SYNC_INTERVAL_MS = 66;
 const UI_POSE_SYNC_INTERVAL_MS = 100;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
 const VR_COMMAND_MIN_INTERVAL_MS = 22;
-const VR_COMMAND_STEPS = 1;
+const VR_COMMAND_STEPS = 20;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
 const RENDER_ARM_EPSILON_RAD = 2e-4;
 const RENDER_GRIPPER_EPSILON_RAD = 2e-4;
@@ -1624,6 +1624,8 @@ function sendQuestControlPayload(payload) {
   if (!payload || typeof payload !== "object") return;
   lastQuestControllerSentAt.value = Date.now();
 
+  // VR mode must follow backend physics state as source of truth.
+  // Do not pre-apply local kinematic pose before backend acknowledgment.
   if (websocketManager.isConnected) {
     const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
     if (sent) return;
@@ -1692,6 +1694,8 @@ function sendQuestHandControlPayload(payload) {
   if (!payload || typeof payload !== "object") return;
   lastQuestHandSentAt.value = Date.now();
 
+  // VR mode must follow backend physics state as source of truth.
+  // Do not pre-apply local kinematic pose before backend acknowledgment.
   if (websocketManager.isConnected) {
     const sent = websocketManager.sendControlCommand(payload.target_positions, payload);
     if (sent) return;
@@ -1789,7 +1793,9 @@ function runQuestControllerTick(nowOverrideMs = Date.now()) {
   }
 
   if (mapped?.has_command) {
-    applyQuestCommandLocally(mapped);
+    if (!websocketManager.isConnected) {
+      applyQuestCommandLocally(mapped);
+    }
     sendQuestControlToBackend(mapped);
   }
 }
@@ -1889,7 +1895,9 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   });
 
   if (mapped?.has_command) {
-    applyQuestCommandLocally(mapped);
+    if (!websocketManager.isConnected) {
+      applyQuestCommandLocally(mapped);
+    }
     sendQuestHandControlToBackend(mapped);
   }
 }
