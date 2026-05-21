@@ -1,4 +1,16 @@
 <mujoco model="toolbox">
+  <default>
+    <default class="toolbox_contact">
+      <geom
+        type="mesh"
+        friction="1.0 0.02 0.002"
+        solimp="0.95 0.99 0.001"
+        solref="0.004 1"
+        condim="4"
+      />
+    </default>
+  </default>
+
   <asset>
     <mesh name="toolbox_mesh_p01" content_type="model/stl" file="meshes/tools/toolbox_part_01.stl" scale="0.32 0.32 0.32" />
     <mesh name="toolbox_mesh_p02" content_type="model/stl" file="meshes/tools/toolbox_part_02.stl" scale="0.32 0.32 0.32" />
@@ -16,69 +28,127 @@
       pos="0.48 0.2 1.0"
       euler="0 0 -1.5707963267948966"
     >
+      <freejoint/>
+      <inertial pos="-0.002 0.037 0.105" mass="1.2" diaginertia="0.008 0.010 0.009"/>
       <geom
+        class="toolbox_contact"
         name="toolbox_geom"
         type="mesh"
         mesh="toolbox_mesh_p01"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p02"
         type="mesh"
         mesh="toolbox_mesh_p02"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p03"
         type="mesh"
         mesh="toolbox_mesh_p03"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p04"
         type="mesh"
         mesh="toolbox_mesh_p04"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p05"
         type="mesh"
         mesh="toolbox_mesh_p05"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p06"
         type="mesh"
         mesh="toolbox_mesh_p06"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p07"
         type="mesh"
         mesh="toolbox_mesh_p07"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="toolbox_contact"
         name="toolbox_geom_p08"
         type="mesh"
         mesh="toolbox_mesh_p08"
         pos="-0.00247949 0.05470546 0"
         rgba="0.76 0.20 0.18 1"
-        friction="1.0 0.1 0.01"
+        contype="0"
+        conaffinity="0"
+      />
+      <geom
+        class="toolbox_contact"
+        name="toolbox_bottom_collision"
+        type="box"
+        pos="-0.002 0.037 0.012"
+        size="0.125 0.09 0.012"
+        rgba="0 0 0 0"
+      />
+      <geom
+        class="toolbox_contact"
+        name="toolbox_left_wall_collision"
+        type="box"
+        pos="-0.127 0.037 0.105"
+        size="0.008 0.09 0.105"
+        rgba="0 0 0 0"
+      />
+      <geom
+        class="toolbox_contact"
+        name="toolbox_right_wall_collision"
+        type="box"
+        pos="0.123 0.037 0.105"
+        size="0.008 0.09 0.105"
+        rgba="0 0 0 0"
+      />
+      <geom
+        class="toolbox_contact"
+        name="toolbox_front_wall_collision"
+        type="box"
+        pos="-0.002 -0.053 0.105"
+        size="0.125 0.008 0.105"
+        rgba="0 0 0 0"
+      />
+      <geom
+        class="toolbox_contact"
+        name="toolbox_back_wall_collision"
+        type="box"
+        pos="-0.002 0.127 0.105"
+        size="0.125 0.008 0.105"
+        rgba="0 0 0 0"
       />
     </body>
   </worldbody>

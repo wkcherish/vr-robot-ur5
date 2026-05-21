@@ -7,9 +7,9 @@ function frameLoop(timestamp, frame) {
   state.session.requestAnimationFrame(frameLoop);
 }
 
-export async function startQuestHandInput() {
+export async function startQuestHandInput(options = {}) {
   state.running = true;
-  await ensureSession();
+  await ensureSession(options);
   if (state.session) {
     state.session.requestAnimationFrame(frameLoop);
   }

@@ -22,6 +22,8 @@ const JOINT_LIMITS_RAD = [
   [-2 * Math.PI, 2 * Math.PI],
 ];
 
+const ARM_TARGET_RESET_THRESHOLD_RAD = 0.75;
+
 function clamp(value, min, max) {
   return Math.min(Math.max(Number(value) || 0, min), max);
 }
@@ -45,6 +47,21 @@ function applyDeadzone(value, deadzone) {
   if (magnitude <= dz) return 0;
   const normalized = (magnitude - dz) / (1 - dz);
   return Math.sign(x) * normalized;
+}
+
+function cloneArm(arm) {
+  if (!Array.isArray(arm) || arm.length < 6) return null;
+  const cloned = arm.slice(0, 6).map((value) => Number(value));
+  return cloned.every((value) => Number.isFinite(value)) ? cloned : null;
+}
+
+function maxAbsDiff(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return Infinity;
+  let maxDiff = 0;
+  for (let index = 0; index < 6; index += 1) {
+    maxDiff = Math.max(maxDiff, Math.abs((Number(a[index]) || 0) - (Number(b[index]) || 0)));
+  }
+  return maxDiff;
 }
 
 function resolvePressedGroup(controls) {
@@ -88,14 +105,22 @@ export function createQuestControllerTeleop(options = {}) {
     gripper_smoothing: Number.isFinite(Number(options.gripper_smoothing))
       ? Number(options.gripper_smoothing)
       : 0.16,
+    target_idle_sync: Number.isFinite(Number(options.target_idle_sync))
+      ? Number(options.target_idle_sync)
+      : 0.22,
+    max_target_lead_rad: Number.isFinite(Number(options.max_target_lead_rad))
+      ? Number(options.max_target_lead_rad)
+      : 0.55,
     gripper_min: 0,
     gripper_max: 0.9,
   };
 
   let selectedGroup = "upper_arm";
+  let targetArm = null;
   let lastStickX = 0;
   let lastStickY = 0;
   let lastGripper = 0.8;
+  let gripperInitialized = false;
   let commandGuardUntilMs = 0;
   let requireNeutralRelease = false;
 
@@ -107,17 +132,49 @@ export function createQuestControllerTeleop(options = {}) {
     };
   }
 
+  function prepareTargetArm(currentArm, active) {
+    const current = cloneArm(currentArm);
+    if (!current) return null;
+
+    if (!targetArm || maxAbsDiff(targetArm, current) > ARM_TARGET_RESET_THRESHOLD_RAD) {
+      targetArm = current;
+    } else if (!active) {
+      targetArm = targetArm.map((value, index) =>
+        lowPass(value, current[index], cfg.target_idle_sync)
+      );
+    }
+
+    const lead = Math.max(0.05, cfg.max_target_lead_rad);
+    targetArm = targetArm.map((value, index) =>
+      clamp(value, current[index] - lead, current[index] + lead)
+    );
+    return targetArm.slice(0, 6);
+  }
+
+  function storeTargetArm(arm) {
+    const cloned = cloneArm(arm);
+    if (cloned) {
+      targetArm = cloned;
+    }
+  }
+
   function applySnapshot(snapshot, currentArmRadians, currentGripperOpening, dtSec = BASE_STEP_DT_SEC) {
     const nowMs = Number(snapshot?.timestamp_ms) || Date.now();
-    const arm = Array.isArray(currentArmRadians) ? currentArmRadians.slice(0, 6) : null;
-    if (!arm || arm.length < 6) {
+    const currentArm = cloneArm(currentArmRadians);
+    if (!currentArm) {
       return { has_command: false, reason: "invalid_arm_state", ...getState() };
+    }
+    const currentGripper = clamp(currentGripperOpening, 0, 1);
+    if (!gripperInitialized) {
+      lastGripper = currentGripper;
+      gripperInitialized = true;
     }
 
     if (!snapshot?.available || !snapshot?.controls) {
       lastStickX = lowPass(lastStickX, 0, cfg.stick_smoothing);
       lastStickY = lowPass(lastStickY, 0, cfg.stick_smoothing);
-      lastGripper = lowPass(lastGripper, clamp(currentGripperOpening, 0, 1), cfg.gripper_smoothing);
+      lastGripper = lowPass(lastGripper, currentGripper, cfg.gripper_smoothing);
+      prepareTargetArm(currentArm, false);
       return { has_command: false, reason: "controller_unavailable", ...getState() };
     }
 
@@ -128,11 +185,12 @@ export function createQuestControllerTeleop(options = {}) {
     if (nowMs < commandGuardUntilMs || requireNeutralRelease) {
       lastStickX = lowPass(lastStickX, 0, cfg.stick_smoothing);
       lastStickY = lowPass(lastStickY, 0, cfg.stick_smoothing);
-      lastGripper = lowPass(lastGripper, clamp(currentGripperOpening, 0, 1), cfg.gripper_smoothing);
+      lastGripper = lowPass(lastGripper, currentGripper, cfg.gripper_smoothing);
+      const guardedArm = prepareTargetArm(currentArm, false) || currentArm;
       return {
         has_command: false,
         reason: "control_guard",
-        target_positions: arm,
+        target_positions: guardedArm,
         gripper_opening: clamp(lastGripper, cfg.gripper_min, cfg.gripper_max),
         input_source: "quest3_controller",
         selected_joint_group: selectedGroup,
@@ -170,15 +228,16 @@ export function createQuestControllerTeleop(options = {}) {
 
     const dtScale = normalizeDtScale(dtSec);
     const speedScale = cfg.joint_step * dtScale * (precisionMode ? cfg.precision_scale : 1);
-    let deltaA = 0;
-    let deltaB = 0;
-    if (pressedGroup) {
-      const pair = GROUP_JOINT_INDEX[selectedGroup] || GROUP_JOINT_INDEX.upper_arm;
-      const [indexA, indexB] = pair;
-      deltaA = smoothStickY * speedScale;
-      deltaB = smoothStickX * speedScale;
+    const pair = GROUP_JOINT_INDEX[selectedGroup] || GROUP_JOINT_INDEX.upper_arm;
+    const [indexA, indexB] = pair;
+    const stickIntent = Math.abs(smoothStickX) + Math.abs(smoothStickY) > cfg.stick_activity_epsilon;
+    const arm = prepareTargetArm(currentArm, stickIntent) || currentArm;
+    const deltaA = stickIntent ? smoothStickY * speedScale : 0;
+    const deltaB = stickIntent ? smoothStickX * speedScale : 0;
+    if (stickIntent) {
       arm[indexA] = clamp(arm[indexA] + deltaA, JOINT_LIMITS_RAD[indexA][0], JOINT_LIMITS_RAD[indexA][1]);
       arm[indexB] = clamp(arm[indexB] + deltaB, JOINT_LIMITS_RAD[indexB][0], JOINT_LIMITS_RAD[indexB][1]);
+      storeTargetArm(arm);
     }
 
     const mappedGripper = cfg.gripper_min + triggerRaw * (cfg.gripper_max - cfg.gripper_min);
@@ -186,9 +245,8 @@ export function createQuestControllerTeleop(options = {}) {
     const nextGripper = clamp(lastGripper, cfg.gripper_min, cfg.gripper_max);
 
     const changedGroup = previousGroup !== selectedGroup;
-    const stickIntent = Math.abs(smoothStickX) + Math.abs(smoothStickY) > cfg.stick_activity_epsilon;
-    const hasJointActivity = Boolean(pressedGroup) && stickIntent && Math.abs(deltaA) + Math.abs(deltaB) > 1e-4;
-    const hasGripperActivity = Math.abs(nextGripper - clamp(currentGripperOpening, 0, 1)) > 0.004;
+    const hasJointActivity = stickIntent && Math.abs(deltaA) + Math.abs(deltaB) > 1e-4;
+    const hasGripperActivity = Math.abs(nextGripper - currentGripper) > 0.004;
     const hasCommand = hasJointActivity || hasGripperActivity;
 
     return {
@@ -208,6 +266,7 @@ export function createQuestControllerTeleop(options = {}) {
         select_upper_arm: clamp(snapshot.controls.select_upper_arm, 0, 1),
         select_forearm: clamp(snapshot.controls.select_forearm, 0, 1),
         select_wrist: clamp(snapshot.controls.select_wrist, 0, 1),
+        target_lead_rad: maxAbsDiff(arm, currentArm),
       },
       raw_input: snapshot.raw || null,
       timestamp_ms: nowMs,
@@ -227,7 +286,9 @@ export function createQuestControllerTeleop(options = {}) {
     }
     lastStickX = 0;
     lastStickY = 0;
-    lastGripper = 0.8;
+    targetArm = null;
+    lastGripper = 0;
+    gripperInitialized = false;
     commandGuardUntilMs = 0;
     requireNeutralRelease = false;
   }
