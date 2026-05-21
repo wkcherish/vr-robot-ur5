@@ -86,31 +86,103 @@ function clampAxis(value) {
   return Math.min(Math.max(numeric, -1), 1);
 }
 
+function readNumericArray(values) {
+  if (!values || typeof values.length !== "number") return [];
+  return Array.from(values).map((value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  });
+}
+
+function summarizeButtons(buttons) {
+  if (!buttons || typeof buttons.length !== "number") {
+    return { values: [], pressed: [], touched: [] };
+  }
+  const values = [];
+  const pressed = [];
+  const touched = [];
+  Array.from(buttons).forEach((button) => {
+    values.push(clamp01(button?.value));
+    pressed.push(Boolean(button?.pressed));
+    touched.push(Boolean(button?.touched));
+  });
+  return { values, pressed, touched };
+}
+
 function readButtonValue(pad, candidates) {
-  if (!pad || !Array.isArray(pad.buttons)) return 0;
+  if (!pad || !pad.buttons || typeof pad.buttons.length !== "number") return 0;
   const indices = Array.isArray(candidates) ? candidates : [candidates];
   let maxValue = 0;
   indices.forEach((index) => {
     const button = pad.buttons[index];
     if (!button) return;
-    const value = clamp01(button.value);
+    const value = Math.max(clamp01(button.value), button.pressed ? 1 : 0);
     if (value > maxValue) maxValue = value;
   });
   return maxValue;
 }
 
+function readAxisPair(pad, startIndex) {
+  const axes = pad?.axes;
+  const xRaw = Number(axes?.[startIndex]);
+  const yRaw = Number(axes?.[startIndex + 1]);
+  const hasX = Number.isFinite(xRaw);
+  const hasY = Number.isFinite(yRaw);
+  const x = hasX ? clampAxis(xRaw) : 0;
+  const y = hasY ? clampAxis(yRaw) : 0;
+  return {
+    x,
+    y,
+    pair: `${startIndex}/${startIndex + 1}`,
+    present: hasX || hasY,
+    magnitude: Math.abs(x) + Math.abs(y),
+  };
+}
+
+function readStickMagnitude(stick) {
+  return Math.abs(Number(stick?.x) || 0) + Math.abs(Number(stick?.y) || 0);
+}
+
 function readStickAxes(pad) {
-  if (!pad || !Array.isArray(pad.axes)) {
-    return { x: 0, y: 0 };
+  if (!pad || !pad.axes || typeof pad.axes.length !== "number") {
+    return { x: 0, y: 0, pair: "" };
   }
 
-  const xRaw = Number.isFinite(Number(pad.axes[2])) ? pad.axes[2] : pad.axes[0];
-  const yRaw = Number.isFinite(Number(pad.axes[3])) ? pad.axes[3] : pad.axes[1];
+  const candidates = [readAxisPair(pad, 2), readAxisPair(pad, 0)].filter((item) => item.present);
+  if (candidates.length === 0) {
+    return { x: 0, y: 0, pair: "" };
+  }
+  candidates.sort((a, b) => b.magnitude - a.magnitude);
+  const selected = candidates[0];
 
   return {
-    x: clampAxis(xRaw),
-    y: clampAxis(yRaw),
+    x: selected.x,
+    y: selected.y,
+    pair: selected.pair,
   };
+}
+
+function readButtonValueFromPads(pads, candidates) {
+  return pads.reduce((maxValue, pad) => Math.max(maxValue, readButtonValue(pad, candidates)), 0);
+}
+
+function pickControlPad(leftPad, rightPad) {
+  const leftStick = readStickAxes(leftPad);
+  const rightStick = readStickAxes(rightPad);
+  const leftMagnitude = readStickMagnitude(leftStick);
+  const rightMagnitude = readStickMagnitude(rightStick);
+
+  if (rightMagnitude > 0 || leftMagnitude > 0) {
+    if (rightMagnitude >= leftMagnitude) {
+      return { pad: rightPad || leftPad, stick: rightStick, role: rightPad ? "right" : "left" };
+    }
+    return { pad: leftPad || rightPad, stick: leftStick, role: leftPad ? "left" : "right" };
+  }
+
+  if (rightPad) {
+    return { pad: rightPad, stick: rightStick, role: "right" };
+  }
+  return { pad: leftPad, stick: leftStick, role: leftPad ? "left" : "" };
 }
 
 function normalizeHandedness(value) {
@@ -180,7 +252,7 @@ function pickLeftRightPadsFromXRSession() {
 }
 
 function readSnapshotFromPads(leftPad, rightPad, source) {
-  if (!leftPad || !rightPad) {
+  if (!leftPad && !rightPad) {
     return {
       available: true,
       has_device: false,
@@ -199,20 +271,49 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
     };
   }
 
-  const rightStick = readStickAxes(rightPad);
+  const pads = [leftPad, rightPad].filter(Boolean);
+  const selectPad = leftPad || rightPad || null;
+  const control = pickControlPad(leftPad, rightPad);
+  const controlPad = control.pad || selectPad;
+  const rightStick = control.stick || readStickAxes(controlPad);
+  const leftButtons = summarizeButtons(selectPad?.buttons);
+  const rightButtons = summarizeButtons(controlPad?.buttons);
+  const selectUpperArm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_upper_arm);
+  const selectForearm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_forearm);
+  const selectWrist = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_wrist);
+  const precision = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.precision);
   const raw = {
     source,
+    roles: {
+      select: leftPad ? "left" : rightPad ? "right" : "",
+      control: control.role,
+    },
     left: {
-      id: String(leftPad.id || ""),
-      select_upper_arm: readButtonValue(leftPad, LEFT_BUTTON_INDEX.select_upper_arm),
-      select_forearm: readButtonValue(leftPad, LEFT_BUTTON_INDEX.select_forearm),
-      select_wrist: readButtonValue(leftPad, LEFT_BUTTON_INDEX.select_wrist),
+      id: String(selectPad?.id || ""),
+      mapping: String(selectPad?.mapping || ""),
+      handedness: String(selectPad?.hand || ""),
+      axes: readNumericArray(selectPad?.axes),
+      button_values: leftButtons.values,
+      button_pressed: leftButtons.pressed,
+      button_touched: leftButtons.touched,
+      select_upper_arm: selectUpperArm,
+      select_forearm: selectForearm,
+      select_wrist: selectWrist,
+      precision,
     },
     right: {
-      id: String(rightPad.id || ""),
+      id: String(controlPad?.id || ""),
+      mapping: String(controlPad?.mapping || ""),
+      handedness: String(controlPad?.hand || ""),
+      axes: readNumericArray(controlPad?.axes),
+      axis_pair: rightStick.pair,
+      fallback_hand: control.role,
+      button_values: rightButtons.values,
+      button_pressed: rightButtons.pressed,
+      button_touched: rightButtons.touched,
       stick_x: rightStick.x,
       stick_y: rightStick.y,
-      trigger: readButtonValue(rightPad, RIGHT_BUTTON_INDEX.trigger),
+      trigger: readButtonValue(controlPad, RIGHT_BUTTON_INDEX.trigger),
     },
   };
 
@@ -225,7 +326,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       select_upper_arm: raw.left.select_upper_arm,
       select_forearm: raw.left.select_forearm,
       select_wrist: raw.left.select_wrist,
-      precision: readButtonValue(leftPad, LEFT_BUTTON_INDEX.precision),
+      precision: raw.left.precision,
       stick_x: raw.right.stick_x,
       stick_y: raw.right.stick_y,
       trigger: raw.right.trigger,
@@ -236,7 +337,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
 
 export function readQuestControllerSnapshot() {
   const xrPads = pickLeftRightPadsFromXRSession();
-  if (xrPads.leftPad && xrPads.rightPad) {
+  if (xrPads.leftPad || xrPads.rightPad) {
     return readSnapshotFromPads(xrPads.leftPad, xrPads.rightPad, xrPads.source);
   }
 

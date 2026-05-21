@@ -56,6 +56,11 @@ TOOL_BODY_NAMES = {
     "screwdriver_01",
     "pliers_01",
 }
+GRASPABLE_TOOL_BODY_NAMES = {
+    "wrench_01",
+    "screwdriver_01",
+    "pliers_01",
+}
 GRIPPER_BODY_NAMES = {
     "left_driver_link",
     "left_coupler_link",
@@ -109,8 +114,23 @@ DEFAULT_CAMERA_ALIGNMENT_MODE = "same_tick"
 DEFAULT_CAMERA_ALIGNMENT_MAX_DELTA_MS = 5.0
 DEFAULT_CAMERA_DEBUG_OBJECTS = ["camera_base", "camera"]
 REALTIME_SOURCE_MIN_PHYSICS_HORIZON_S = 0.02
-REALTIME_ARM_MAX_DELTA_RAD = 0.08
+REALTIME_COMMAND_BLEND_PER_STEP = 1.0
+REALTIME_ARM_MAX_DELTA_RAD = 0.12
 REALTIME_GRIPPER_MAX_DELTA_OPENING = 0.12
+REALTIME_EE_MAX_DELTA_M = 0.055
+IK_MAX_ITERATIONS = 8
+IK_POSITION_TOLERANCE_M = 0.003
+IK_ORIENTATION_TOLERANCE_RAD = 0.055
+IK_DAMPING = 0.08
+IK_MAX_STEP_RAD = 0.12
+IK_POSITION_WEIGHT = 1.0
+IK_ORIENTATION_WEIGHT = 0.35
+GRIPPER_GRASP_ENGAGE_OPENING = 0.52
+GRIPPER_GRASP_RELEASE_OPENING = 0.18
+GRIPPER_GRASP_ATTACH_RADIUS_M = 0.20
+GRIPPER_GRASP_CONTACT_MARGIN_M = 0.015
+GRIPPER_GRASP_PAD_BODY_NAMES = ("left_pad_link", "right_pad_link")
+SCENE_SETTLE_STEPS = 1000
 
 
 @dataclass
@@ -140,12 +160,13 @@ def _compute_command_blend(n_steps: int, per_step_blend: float) -> float:
 
 def _resolve_command_blend(source: str, n_steps: int, per_step_blend: float) -> float:
     """
-    VR teleop sources should follow the latest target immediately.
-    This avoids front-end incremental commands being damped again in backend.
+    VR teleop sources are already incremental, but LAN delivery can be bursty.
+    Blend them over the physics horizon so the actuator target advances without
+    snapping back and forth when an older broadcast arrives late.
     """
     normalized = str(source or "").strip().lower()
     if normalized in {"quest3_controller", "quest3_hand"}:
-        return 1.0
+        return _compute_command_blend(n_steps, REALTIME_COMMAND_BLEND_PER_STEP)
     return _compute_command_blend(n_steps, per_step_blend)
 
 
@@ -222,6 +243,21 @@ def _normalize_quaternion(quaternion_wxyz: list[float]) -> list[float]:
         return [1.0, 0.0, 0.0, 0.0]
     inv = 1.0 / norm
     return [w * inv, x * inv, y * inv, z * inv]
+
+
+def _quaternion_error_vector(target_wxyz: list[float], current_wxyz: list[float]) -> list[float]:
+    target = _normalize_quaternion(target_wxyz)
+    current = _normalize_quaternion(current_wxyz)
+    error = _quaternion_multiply(target, _quaternion_conjugate(current))
+    if error[0] < 0.0:
+        error = [-value for value in error]
+    w, x, y, z = error
+    sin_half = math.sqrt(x * x + y * y + z * z)
+    if sin_half <= 1e-8:
+        return [2.0 * x, 2.0 * y, 2.0 * z]
+    angle = 2.0 * math.atan2(sin_half, max(-1.0, min(1.0, w)))
+    scale = angle / sin_half
+    return [x * scale, y * scale, z * scale]
 
 
 def _rotate_vector_by_quaternion(vector_xyz: list[float], quaternion_wxyz: list[float]) -> list[float]:
@@ -308,6 +344,7 @@ class SimulationCore:
         self._object_body_ids: dict[str, int] = {}
         self._object_freejoint_qpos_addr: dict[str, int] = {}
         self._object_freejoint_dof_addr: dict[str, int] = {}
+        self._gripper_body_ids: dict[str, int] = {}
         self._tool_body_id: int | None = None
         self._mj_rgb_camera_id: int = -1
         self._mj_depth_camera_id: int = -1
@@ -321,6 +358,9 @@ class SimulationCore:
         self._gripper_velocity = 0.0
         self._gripper_joints = self._map_gripper_joints(0.0)
         self._objects_state: dict[str, dict[str, Any]] = {}
+        self._attached_object_id: str | None = None
+        self._attached_object_rel_position: list[float] | None = None
+        self._attached_object_rel_quaternion: list[float] | None = None
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
         self._vr_state = {
@@ -340,6 +380,9 @@ class SimulationCore:
         self._last_selected_joint_group: str | None = None
         self._last_raw_input: dict[str, Any] | None = None
         self._last_normalized_input: dict[str, Any] | None = None
+        self._safety_status = "normal"
+        self._collision_blocked = False
+        self._last_collision_contacts: list[dict[str, Any]] = []
         self._sim_time = 0.0
         self._dt = DEFAULT_DT
         self._stats = {
@@ -382,16 +425,21 @@ class SimulationCore:
         async with self._lock:
             self._close_mujoco_renderer()
 
-    async def enqueue_step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
+    def queue_step(self, request: StepRequest, return_state: bool = True) -> asyncio.Future[dict[str, Any]]:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        await self._command_queue.put(
+        self._remember_realtime_command_seq(request)
+        self._command_queue.put_nowait(
             _QueuedCommand(
                 request=request,
                 future=future,
                 return_state=bool(return_state),
             )
         )
+        return future
+
+    async def enqueue_step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
+        future = self.queue_step(request, return_state=return_state)
         return await future
 
     async def step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
@@ -399,10 +447,6 @@ class SimulationCore:
             started_at = perf_counter()
 
             target_positions = request.target_positions
-            if target_positions is not None and len(target_positions) != len(self._arm_joint_names):
-                raise ValueError(
-                    f"Expected {len(self._arm_joint_names)} arm joints, got {len(target_positions)}."
-                )
 
             snapshot: dict[str, Any] = {
                 "arm_qpos": list(self._arm_qpos),
@@ -410,6 +454,17 @@ class SimulationCore:
                 "gripper_opening": float(self._gripper_opening),
                 "gripper_velocity": float(self._gripper_velocity),
                 "gripper_joints": dict(self._gripper_joints),
+                "attached_object_id": self._attached_object_id,
+                "attached_object_rel_position": (
+                    list(self._attached_object_rel_position)
+                    if self._attached_object_rel_position is not None
+                    else None
+                ),
+                "attached_object_rel_quaternion": (
+                    list(self._attached_object_rel_quaternion)
+                    if self._attached_object_rel_quaternion is not None
+                    else None
+                ),
             }
             if self._using_mujoco_model() and self._mj_data is not None:
                 snapshot["mj_qpos"] = self._mj_data.qpos.copy()
@@ -430,14 +485,27 @@ class SimulationCore:
                 dict(request.normalized_input) if isinstance(request.normalized_input, dict) else None
             )
             if request.source == "quest3_controller":
+                self._vr_state["control_owner"] = "quest3_controller"
                 self._vr_state["last_quest_input_ts"] = time.time()
                 self._vr_state["input_source_available"]["controller"] = True
                 if self._last_selected_joint_group:
                     self._vr_state["selected_joint_group"] = self._last_selected_joint_group
+            elif request.source == "quest3_hand":
+                self._vr_state["control_owner"] = "quest3_hand"
+                self._vr_state["last_quest_input_ts"] = time.time()
+                self._vr_state["input_source_available"]["hand"] = True
+                if self._last_selected_joint_group:
+                    self._vr_state["selected_joint_group"] = self._last_selected_joint_group
+            target_positions = self._resolve_arm_target_for_request_locked(request, target_positions)
+            if target_positions is not None and len(target_positions) != len(self._arm_joint_names):
+                raise ValueError(
+                    f"Expected {len(self._arm_joint_names)} arm joints, got {len(target_positions)}."
+                )
             requested_steps = max(1, int(request.n_steps))
             physics_steps = _resolve_physics_steps(self._source, requested_steps, self._dt)
             self._apply_arm_command(target_positions, physics_steps, self._source)
             self._apply_gripper_command(request.gripper_command, physics_steps, self._source)
+            self._update_grasp_assist_locked(forward=True)
 
             forbidden_contacts: list[dict[str, Any]] = []
             if self._using_mujoco_model() and self._mj_model is not None and self._mj_data is not None and _mujoco is not None:
@@ -447,7 +515,12 @@ class SimulationCore:
                     last_safe_qpos = start_qpos.copy()
                     last_safe_qvel = start_qvel.copy()
                     for _ in range(physics_steps):
+                        self._set_mujoco_gripper_kinematic_state_locked(
+                            self._gripper_opening,
+                            self._gripper_velocity,
+                        )
                         _mujoco.mj_step(self._mj_model, self._mj_data)
+                        self._update_grasp_assist_locked(forward=False)
                         forbidden_contacts = self._collect_forbidden_contacts_locked()
                         if forbidden_contacts:
                             break
@@ -460,15 +533,27 @@ class SimulationCore:
                         self._mj_data.qvel[:] = last_safe_qvel
                         _mujoco.mj_forward(self._mj_model, self._mj_data)
 
+                    self._set_mujoco_gripper_kinematic_state_locked(
+                        self._gripper_opening,
+                        self._gripper_velocity,
+                        forward=True,
+                    )
                     self._sync_internal_state_from_mujoco_locked()
+                    self._update_grasp_assist_locked(forward=True)
                 else:
                     forbidden_contacts = self._collect_forbidden_contacts_locked()
             else:
                 forbidden_contacts = self._collect_forbidden_contacts_locked()
 
             if forbidden_contacts:
+                self._safety_status = "collision_blocked"
+                self._collision_blocked = True
+                self._last_collision_contacts = deepcopy(forbidden_contacts)
                 raise RuntimeError(self._format_collision_message(forbidden_contacts))
 
+            self._safety_status = "normal"
+            self._collision_blocked = False
+            self._last_collision_contacts = []
             self._sim_time += physics_steps * self._dt
             self._stats["steps"] += physics_steps
             self._stats["commands"] += 1
@@ -575,7 +660,9 @@ class SimulationCore:
                 self._vr_state["input_source_available"]["hand"] = bool(request.hand_tracking_available)
 
             if request.selected_joint_group is not None:
-                self._vr_state["selected_joint_group"] = str(request.selected_joint_group)
+                selected_joint_group = str(request.selected_joint_group)
+                self._vr_state["selected_joint_group"] = selected_joint_group
+                self._last_selected_joint_group = selected_joint_group
 
             if request.recording_ready is not None:
                 self._vr_state["recording_ready"] = bool(request.recording_ready)
@@ -588,6 +675,19 @@ class SimulationCore:
 
             if request.error_message is not None:
                 self._vr_state["error_message"] = str(request.error_message)
+
+            if request.source is not None:
+                self._last_input_source = str(request.source)
+
+            if isinstance(request.raw_input, dict):
+                self._last_raw_input = deepcopy(request.raw_input)
+            elif request.source in {"manual", "desktop_manual"}:
+                self._last_raw_input = None
+
+            if isinstance(request.normalized_input, dict):
+                self._last_normalized_input = deepcopy(request.normalized_input)
+            elif request.source in {"manual", "desktop_manual"}:
+                self._last_normalized_input = None
 
             if request.source is not None:
                 self._source = request.source
@@ -881,6 +981,7 @@ class SimulationCore:
         self._object_body_ids = {}
         self._object_freejoint_qpos_addr = {}
         self._object_freejoint_dof_addr = {}
+        self._gripper_body_ids = {}
         self._tool_body_id = None
         self._mj_rgb_camera_id = -1
         self._mj_depth_camera_id = -1
@@ -986,6 +1087,12 @@ class SimulationCore:
         )
         if gripper_actuator_id >= 0:
             self._gripper_driver_actuator_id = int(gripper_actuator_id)
+
+        self._gripper_body_ids = {}
+        for name in GRIPPER_GRASP_PAD_BODY_NAMES:
+            body_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_BODY, name)
+            if body_id >= 0:
+                self._gripper_body_ids[name] = int(body_id)
 
         self._object_body_ids = {}
         self._object_freejoint_qpos_addr = {}
@@ -1110,6 +1217,20 @@ class SimulationCore:
         self._gripper_opening = float(snapshot.get("gripper_opening", self._gripper_opening))
         self._gripper_velocity = float(snapshot.get("gripper_velocity", self._gripper_velocity))
         self._gripper_joints = dict(snapshot.get("gripper_joints", self._gripper_joints))
+        restored_attached_id = snapshot.get("attached_object_id")
+        self._attached_object_id = str(restored_attached_id) if restored_attached_id else None
+        restored_rel_position = snapshot.get("attached_object_rel_position")
+        self._attached_object_rel_position = (
+            [float(v) for v in restored_rel_position[:3]]
+            if isinstance(restored_rel_position, list) and len(restored_rel_position) >= 3
+            else None
+        )
+        restored_rel_quaternion = snapshot.get("attached_object_rel_quaternion")
+        self._attached_object_rel_quaternion = (
+            _normalize_quaternion(restored_rel_quaternion)
+            if isinstance(restored_rel_quaternion, list) and len(restored_rel_quaternion) >= 4
+            else None
+        )
 
         if not self._using_mujoco_model() or self._mj_data is None or _mujoco is None or self._mj_model is None:
             return
@@ -1163,6 +1284,31 @@ class SimulationCore:
         for name, value in default_mapping.items():
             gripper_joints.setdefault(name, float(value))
         self._gripper_joints = gripper_joints
+
+    def _set_mujoco_gripper_kinematic_state_locked(
+        self,
+        opening: float,
+        opening_velocity: float = 0.0,
+        forward: bool = False,
+    ) -> None:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
+            return
+
+        targets = self._map_gripper_joints(opening)
+        joint_velocity = float(opening_velocity) * GRIPPER_DRIVER_LIMIT
+        for joint_name, target in targets.items():
+            qpos_addr = self._gripper_joint_qpos_addr.get(joint_name)
+            if qpos_addr is not None:
+                self._mj_data.qpos[qpos_addr] = float(target)
+            qvel_addr = self._gripper_joint_qvel_addr.get(joint_name)
+            if qvel_addr is not None:
+                self._mj_data.qvel[qvel_addr] = joint_velocity
+
+        if self._gripper_driver_actuator_id is not None:
+            self._mj_data.ctrl[self._gripper_driver_actuator_id] = float(targets["left_driver_joint"])
+
+        if forward and _mujoco is not None:
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
 
     def _format_collision_message(self, contacts: list[dict[str, Any]]) -> str:
         if not contacts:
@@ -1220,6 +1366,210 @@ class SimulationCore:
         ]
         return True
 
+    def _get_object_pose_locked(self, obj_id: str) -> dict[str, list[float]] | None:
+        if self._using_mujoco_model() and self._mj_data is not None:
+            body_id = self._object_body_ids.get(obj_id, -1)
+            if body_id >= 0:
+                return {
+                    "position": [float(v) for v in self._mj_data.xpos[body_id]],
+                    "quaternion": [float(v) for v in self._mj_data.xquat[body_id]],
+                }
+
+        state = self._objects_state.get(obj_id) or self._scene_objects_template.get(obj_id)
+        if not isinstance(state, dict):
+            return None
+        position = state.get("position")
+        quaternion = state.get("quaternion")
+        if not isinstance(position, list) or len(position) < 3:
+            return None
+        if not isinstance(quaternion, list) or len(quaternion) < 4:
+            return None
+        return {
+            "position": [float(v) for v in position[:3]],
+            "quaternion": _normalize_quaternion(quaternion),
+        }
+
+    def _compute_gripper_grasp_pose_locked(self) -> dict[str, list[float]]:
+        if self._using_mujoco_model() and self._mj_data is not None:
+            pad_positions: list[list[float]] = []
+            for name in GRIPPER_GRASP_PAD_BODY_NAMES:
+                body_id = self._gripper_body_ids.get(name)
+                if body_id is not None:
+                    pad_positions.append([float(v) for v in self._mj_data.xpos[body_id]])
+
+            if pad_positions:
+                inv_count = 1.0 / len(pad_positions)
+                position = [
+                    sum(pad_position[axis] for pad_position in pad_positions) * inv_count
+                    for axis in range(3)
+                ]
+                if self._tool_body_id is not None:
+                    quaternion = [float(v) for v in self._mj_data.xquat[self._tool_body_id]]
+                else:
+                    first_pad_id = self._gripper_body_ids.get(GRIPPER_GRASP_PAD_BODY_NAMES[0])
+                    quaternion = (
+                        [float(v) for v in self._mj_data.xquat[first_pad_id]]
+                        if first_pad_id is not None
+                        else [1.0, 0.0, 0.0, 0.0]
+                    )
+                return {
+                    "position": position,
+                    "quaternion": _normalize_quaternion(quaternion),
+                }
+
+        return self._compute_ee_pose_locked()
+
+    def _clear_grasp_attachment_locked(self) -> None:
+        if self._attached_object_id in self._scene_objects_template:
+            self._scene_objects_template[self._attached_object_id]["attached_to_gripper"] = False
+        self._attached_object_id = None
+        self._attached_object_rel_position = None
+        self._attached_object_rel_quaternion = None
+
+    def _find_nearest_graspable_object_locked(
+        self,
+        grasp_pose: dict[str, list[float]],
+    ) -> tuple[str | None, float]:
+        grasp_position = grasp_pose.get("position", [0.0, 0.0, 0.0])
+        nearest_id: str | None = None
+        nearest_distance = float("inf")
+        for obj_id in GRASPABLE_TOOL_BODY_NAMES:
+            pose = self._get_object_pose_locked(obj_id)
+            if pose is None:
+                continue
+            position = pose["position"]
+            distance = math.sqrt(
+                (position[0] - grasp_position[0]) ** 2
+                + (position[1] - grasp_position[1]) ** 2
+                + (position[2] - grasp_position[2]) ** 2
+            )
+            if distance < nearest_distance:
+                nearest_id = obj_id
+                nearest_distance = distance
+
+        if nearest_distance > GRIPPER_GRASP_ATTACH_RADIUS_M:
+            return None, nearest_distance
+        return nearest_id, nearest_distance
+
+    def _find_contacted_graspable_object_locked(self) -> str | None:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
+            return None
+
+        for idx in range(int(self._mj_data.ncon)):
+            contact = self._mj_data.contact[idx]
+            if float(contact.dist) > GRIPPER_GRASP_CONTACT_MARGIN_M:
+                continue
+
+            geom_a = int(contact.geom1)
+            geom_b = int(contact.geom2)
+            body_a = int(self._mj_model.geom_bodyid[geom_a])
+            body_b = int(self._mj_model.geom_bodyid[geom_b])
+            body_name_a = (
+                _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_a)
+                if body_a > 0
+                else ""
+            )
+            body_name_b = (
+                _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_b)
+                if body_b > 0
+                else ""
+            )
+
+            if body_name_a in GRASPABLE_TOOL_BODY_NAMES and body_name_b in GRIPPER_BODY_NAMES:
+                return body_name_a
+            if body_name_b in GRASPABLE_TOOL_BODY_NAMES and body_name_a in GRIPPER_BODY_NAMES:
+                return body_name_b
+
+        return None
+
+    def _attach_object_to_gripper_locked(
+        self,
+        obj_id: str,
+        grasp_pose: dict[str, list[float]],
+    ) -> bool:
+        object_pose = self._get_object_pose_locked(obj_id)
+        if object_pose is None:
+            return False
+
+        grasp_position = grasp_pose["position"]
+        grasp_quaternion = _normalize_quaternion(grasp_pose["quaternion"])
+        object_position = object_pose["position"]
+        object_quaternion = _normalize_quaternion(object_pose["quaternion"])
+        inverse_grasp_quaternion = _quaternion_conjugate(grasp_quaternion)
+        relative_position_world = [
+            object_position[axis] - grasp_position[axis]
+            for axis in range(3)
+        ]
+
+        self._attached_object_id = obj_id
+        self._attached_object_rel_position = _rotate_vector_by_quaternion(
+            relative_position_world,
+            inverse_grasp_quaternion,
+        )
+        self._attached_object_rel_quaternion = _normalize_quaternion(
+            _quaternion_multiply(inverse_grasp_quaternion, object_quaternion)
+        )
+        if obj_id in self._scene_objects_template:
+            self._scene_objects_template[obj_id]["attached_to_gripper"] = True
+        return True
+
+    def _follow_attached_object_locked(self, forward: bool = True) -> None:
+        obj_id = self._attached_object_id
+        if (
+            not obj_id
+            or self._attached_object_rel_position is None
+            or self._attached_object_rel_quaternion is None
+        ):
+            return
+
+        grasp_pose = self._compute_gripper_grasp_pose_locked()
+        object_pose = _compose_pose(
+            grasp_pose["position"],
+            grasp_pose["quaternion"],
+            self._attached_object_rel_position,
+            self._attached_object_rel_quaternion,
+        )
+        if not self._set_object_pose_locked(
+            obj_id,
+            object_pose["position"],
+            object_pose["quaternion"],
+            reset_velocity=True,
+        ):
+            self._clear_grasp_attachment_locked()
+            return
+
+        if obj_id in self._scene_objects_template:
+            self._scene_objects_template[obj_id]["attached_to_gripper"] = True
+        if (
+            forward
+            and self._using_mujoco_model()
+            and _mujoco is not None
+            and self._mj_model is not None
+            and self._mj_data is not None
+        ):
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+    def _update_grasp_assist_locked(self, forward: bool = True) -> None:
+        if self._gripper_opening <= GRIPPER_GRASP_RELEASE_OPENING:
+            self._clear_grasp_attachment_locked()
+            return
+
+        if self._attached_object_id is not None:
+            self._follow_attached_object_locked(forward=forward)
+            return
+
+        if self._gripper_opening < GRIPPER_GRASP_ENGAGE_OPENING:
+            return
+
+        grasp_pose = self._compute_gripper_grasp_pose_locked()
+        graspable_id = self._find_contacted_graspable_object_locked()
+        if graspable_id is None:
+            graspable_id, _ = self._find_nearest_graspable_object_locked(grasp_pose)
+        if graspable_id is None:
+            return
+        if self._attach_object_to_gripper_locked(graspable_id, grasp_pose):
+            self._follow_attached_object_locked(forward=forward)
+
     def _sync_scene_objects_to_model_locked(self) -> None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:
             return
@@ -1253,6 +1603,9 @@ class SimulationCore:
         self._gripper_opening = 0.0
         self._gripper_velocity = 0.0
         self._gripper_joints = self._map_gripper_joints(self._gripper_opening)
+        self._attached_object_id = None
+        self._attached_object_rel_position = None
+        self._attached_object_rel_quaternion = None
 
         if self._using_mujoco_model():
             assert _mujoco is not None
@@ -1279,10 +1632,16 @@ class SimulationCore:
                 self._mj_data.ctrl[self._gripper_driver_actuator_id] = float(
                     self._gripper_joints.get("left_driver_joint", 0.0)
                 )
+            self._set_mujoco_gripper_kinematic_state_locked(
+                self._gripper_opening,
+                self._gripper_velocity,
+                forward=True,
+            )
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
         self._sync_scene_objects_to_model_locked()
         self._apply_object_reset_policy_locked()
+        self._settle_scene_locked()
         self._objects_state = self._collect_objects_state_locked()
         self._source = "manual"
         self._task_state = {"running": False, "name": None, "phase": None}
@@ -1303,6 +1662,9 @@ class SimulationCore:
         self._last_selected_joint_group = None
         self._last_raw_input = None
         self._last_normalized_input = None
+        self._safety_status = "normal"
+        self._collision_blocked = False
+        self._last_collision_contacts = []
         self._latest_realtime_seq_by_source = {}
         self._sim_time = 0.0
         self._stats["steps"] = 0
@@ -1316,6 +1678,46 @@ class SimulationCore:
         self._camera_last_state = None
         self._camera_last_rgb_frame = None
         self._camera_last_depth_frame = None
+
+    def _settle_scene_locked(self) -> None:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
+            return
+
+        preserved_qpos: list[tuple[int, float]] = []
+        preserved_qvel: list[int] = []
+        for joint_name in [*self._arm_joint_names, *DEFAULT_GRIPPER_JOINT_NAMES]:
+            qpos_addr = self._arm_joint_qpos_addr.get(joint_name)
+            if qpos_addr is None:
+                qpos_addr = self._gripper_joint_qpos_addr.get(joint_name)
+            if qpos_addr is None:
+                continue
+            preserved_qpos.append((int(qpos_addr), float(self._mj_data.qpos[int(qpos_addr)])))
+
+            qvel_addr = self._arm_joint_qvel_addr.get(joint_name)
+            if qvel_addr is None:
+                qvel_addr = self._gripper_joint_qvel_addr.get(joint_name)
+            if qvel_addr is not None:
+                preserved_qvel.append(int(qvel_addr))
+
+        ctrl_snapshot = self._mj_data.ctrl.copy() if self._mj_data.ctrl is not None and len(self._mj_data.ctrl) > 0 else None
+        for _ in range(max(0, int(SCENE_SETTLE_STEPS))):
+            _mujoco.mj_step(self._mj_model, self._mj_data)
+            for qpos_addr, qpos_value in preserved_qpos:
+                self._mj_data.qpos[qpos_addr] = qpos_value
+            for qvel_addr in preserved_qvel:
+                self._mj_data.qvel[qvel_addr] = 0.0
+            if ctrl_snapshot is not None:
+                self._mj_data.ctrl[:] = ctrl_snapshot
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
+        for qpos_addr, qpos_value in preserved_qpos:
+            self._mj_data.qpos[qpos_addr] = qpos_value
+        for qvel_addr in preserved_qvel:
+            self._mj_data.qvel[qvel_addr] = 0.0
+        if ctrl_snapshot is not None:
+            self._mj_data.ctrl[:] = ctrl_snapshot
+        self._mj_data.qvel[:] = 0.0
+        _mujoco.mj_forward(self._mj_model, self._mj_data)
+        self._sync_internal_state_from_mujoco_locked()
 
     def _apply_object_reset_policy_locked(self) -> None:
         using_mujoco = self._using_mujoco_model()
@@ -1375,6 +1777,217 @@ class SimulationCore:
             elif clamped[idx] > hi:
                 clamped[idx] = hi
         return clamped
+
+    def _read_current_arm_qpos_locked(self) -> list[float]:
+        if self._using_mujoco_model() and self._mj_data is not None:
+            current: list[float] = []
+            for idx, name in enumerate(self._arm_joint_names):
+                qpos_addr = self._arm_joint_qpos_addr.get(name)
+                if qpos_addr is None:
+                    current.append(self._arm_qpos[idx] if idx < len(self._arm_qpos) else 0.0)
+                else:
+                    current.append(float(self._mj_data.qpos[qpos_addr]))
+            return current
+        return list(self._arm_qpos)
+
+    def _extract_ee_target_pose_locked(
+        self,
+        request: StepRequest,
+    ) -> tuple[list[float], list[float]] | None:
+        target_pose = getattr(request, "target_ee_pose", None)
+        target_delta = getattr(request, "target_ee_delta", None)
+        if target_pose is None and target_delta is None:
+            return None
+
+        current_pose = self._compute_ee_pose_locked()
+        target_position: list[float] | None = None
+        target_quaternion = _normalize_quaternion(current_pose.get("quaternion", [1.0, 0.0, 0.0, 0.0]))
+
+        raw_position = getattr(target_pose, "position", None) if target_pose is not None else None
+        if isinstance(raw_position, list) and len(raw_position) >= 3:
+            try:
+                target_position = [float(raw_position[0]), float(raw_position[1]), float(raw_position[2])]
+            except (TypeError, ValueError):
+                target_position = None
+
+        raw_quaternion = getattr(target_pose, "quaternion", None) if target_pose is not None else None
+        if isinstance(raw_quaternion, list) and len(raw_quaternion) >= 4:
+            try:
+                target_quaternion = _normalize_quaternion([float(v) for v in raw_quaternion[:4]])
+            except (TypeError, ValueError):
+                target_quaternion = _normalize_quaternion(current_pose.get("quaternion", [1.0, 0.0, 0.0, 0.0]))
+
+        if target_position is None and isinstance(target_delta, list) and len(target_delta) >= 3:
+            try:
+                target_position = [
+                    float(current_pose["position"][axis]) + float(target_delta[axis])
+                    for axis in range(3)
+                ]
+            except (TypeError, ValueError):
+                target_position = None
+
+        if target_position is None:
+            return None
+
+        if _is_realtime_source(request.source):
+            current_position = [float(v) for v in current_pose["position"][:3]]
+            delta = [
+                target_position[axis] - current_position[axis]
+                for axis in range(3)
+            ]
+            delta_norm = math.sqrt(sum(component * component for component in delta))
+            if delta_norm > REALTIME_EE_MAX_DELTA_M and delta_norm > 1e-8:
+                scale = REALTIME_EE_MAX_DELTA_M / delta_norm
+                target_position = [
+                    current_position[axis] + delta[axis] * scale
+                    for axis in range(3)
+                ]
+
+        return target_position, target_quaternion
+
+    def _solve_ee_ik_locked(
+        self,
+        target_position: list[float],
+        target_quaternion: list[float],
+    ) -> tuple[list[float] | None, dict[str, Any]]:
+        info: dict[str, Any] = {
+            "active": True,
+            "status": "unavailable",
+            "position_error_m": None,
+            "orientation_error_rad": None,
+        }
+        if (
+            not self._using_mujoco_model()
+            or self._mj_model is None
+            or self._mj_data is None
+            or self._tool_body_id is None
+            or _mujoco is None
+            or np is None
+        ):
+            return None, info
+
+        arm_qpos_addrs = [self._arm_joint_qpos_addr.get(name) for name in self._arm_joint_names]
+        arm_dof_addrs = [self._arm_joint_qvel_addr.get(name) for name in self._arm_joint_names]
+        if any(addr is None for addr in arm_qpos_addrs) or any(addr is None for addr in arm_dof_addrs):
+            info["status"] = "missing_arm_joints"
+            return None, info
+
+        qpos_snapshot = self._mj_data.qpos.copy()
+        qvel_snapshot = self._mj_data.qvel.copy()
+        ctrl_snapshot = self._mj_data.ctrl.copy()
+
+        try:
+            q = np.asarray(self._read_current_arm_qpos_locked(), dtype=float)
+            target_pos = np.asarray(target_position[:3], dtype=float)
+            target_quat = _normalize_quaternion(target_quaternion)
+            qpos_indices = [int(addr) for addr in arm_qpos_addrs if addr is not None]
+            dof_indices = [int(addr) for addr in arm_dof_addrs if addr is not None]
+
+            for idx, qpos_addr in enumerate(qpos_indices):
+                self._mj_data.qpos[qpos_addr] = float(q[idx])
+            self._mj_data.qvel[:] = 0.0
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+            final_position_error = float("inf")
+            final_orientation_error = float("inf")
+            for _ in range(IK_MAX_ITERATIONS):
+                current_pos = np.asarray(self._mj_data.xpos[self._tool_body_id], dtype=float)
+                current_quat = [float(v) for v in self._mj_data.xquat[self._tool_body_id]]
+                position_error = target_pos - current_pos
+                orientation_error = np.asarray(
+                    _quaternion_error_vector(target_quat, current_quat),
+                    dtype=float,
+                )
+                final_position_error = float(np.linalg.norm(position_error))
+                final_orientation_error = float(np.linalg.norm(orientation_error))
+                if (
+                    final_position_error <= IK_POSITION_TOLERANCE_M
+                    and final_orientation_error <= IK_ORIENTATION_TOLERANCE_RAD
+                ):
+                    break
+
+                jacp = np.zeros((3, self._mj_model.nv), dtype=float)
+                jacr = np.zeros((3, self._mj_model.nv), dtype=float)
+                _mujoco.mj_jacBody(self._mj_model, self._mj_data, jacp, jacr, int(self._tool_body_id))
+                task_error = np.concatenate(
+                    [
+                        position_error * IK_POSITION_WEIGHT,
+                        orientation_error * IK_ORIENTATION_WEIGHT,
+                    ]
+                )
+                task_jacobian = np.vstack(
+                    [
+                        jacp[:, dof_indices] * IK_POSITION_WEIGHT,
+                        jacr[:, dof_indices] * IK_ORIENTATION_WEIGHT,
+                    ]
+                )
+                lhs = task_jacobian @ task_jacobian.T
+                lhs += np.eye(lhs.shape[0]) * (IK_DAMPING * IK_DAMPING)
+                try:
+                    task_step = np.linalg.solve(lhs, task_error)
+                except Exception:
+                    task_step = np.linalg.lstsq(lhs, task_error, rcond=None)[0]
+                dq = task_jacobian.T @ task_step
+                max_abs_step = float(np.max(np.abs(dq))) if dq.size else 0.0
+                if max_abs_step > IK_MAX_STEP_RAD:
+                    dq *= IK_MAX_STEP_RAD / max_abs_step
+
+                q = np.asarray(self._clamp_arm_targets((q + dq).tolist()), dtype=float)
+                for idx, qpos_addr in enumerate(qpos_indices):
+                    self._mj_data.qpos[qpos_addr] = float(q[idx])
+                self._mj_data.qvel[:] = 0.0
+                _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+            current_pos = np.asarray(self._mj_data.xpos[self._tool_body_id], dtype=float)
+            current_quat = [float(v) for v in self._mj_data.xquat[self._tool_body_id]]
+            final_position_error = float(np.linalg.norm(target_pos - current_pos))
+            final_orientation_error = float(
+                np.linalg.norm(np.asarray(_quaternion_error_vector(target_quat, current_quat), dtype=float))
+            )
+            info["position_error_m"] = final_position_error
+            info["orientation_error_rad"] = final_orientation_error
+            info["status"] = (
+                "solved"
+                if final_position_error <= max(0.012, IK_POSITION_TOLERANCE_M * 3.0)
+                else "best_effort"
+            )
+            return self._clamp_arm_targets(q.tolist()), info
+        finally:
+            self._mj_data.qpos[:] = qpos_snapshot
+            self._mj_data.qvel[:] = qvel_snapshot
+            self._mj_data.ctrl[:] = ctrl_snapshot
+            _mujoco.mj_forward(self._mj_model, self._mj_data)
+
+    def _resolve_arm_target_for_request_locked(
+        self,
+        request: StepRequest,
+        target_positions: list[float] | None,
+    ) -> list[float] | None:
+        ee_target = self._extract_ee_target_pose_locked(request)
+        if ee_target is None:
+            return target_positions
+
+        solved_target, ik_info = self._solve_ee_ik_locked(ee_target[0], ee_target[1])
+        if isinstance(self._last_normalized_input, dict):
+            self._last_normalized_input.update(
+                {
+                    "ik_active": 1,
+                    "ik_status": ik_info.get("status"),
+                    "ik_position_error_m": ik_info.get("position_error_m"),
+                    "ik_orientation_error_rad": ik_info.get("orientation_error_rad"),
+                }
+            )
+        else:
+            self._last_normalized_input = {
+                "ik_active": 1,
+                "ik_status": ik_info.get("status"),
+            }
+
+        if solved_target is not None:
+            return solved_target
+        if target_positions is not None:
+            return target_positions
+        return self._read_current_arm_qpos_locked()
 
     def _apply_arm_command(self, target_positions: list[float] | None, n_steps: int, source: str = "manual") -> None:
         if target_positions is None:
@@ -1460,10 +2073,11 @@ class SimulationCore:
         self._gripper_joints = self._map_gripper_joints(self._gripper_opening)
 
         if self._using_mujoco_model() and self._mj_data is not None:
-            if self._gripper_driver_actuator_id is not None:
-                self._mj_data.ctrl[self._gripper_driver_actuator_id] = float(
-                    self._gripper_joints["left_driver_joint"]
-                )
+            self._set_mujoco_gripper_kinematic_state_locked(
+                self._gripper_opening,
+                self._gripper_velocity,
+                forward=True,
+            )
             return
 
     def _map_gripper_joints(self, opening: float) -> dict[str, float]:
@@ -1488,7 +2102,7 @@ class SimulationCore:
                 continue
             objects[obj_id]["position"] = [float(v) for v in self._mj_data.xpos[body_id]]
             objects[obj_id]["quaternion"] = [float(v) for v in self._mj_data.xquat[body_id]]
-            objects[obj_id]["attached_to_gripper"] = False
+            objects[obj_id]["attached_to_gripper"] = obj_id == self._attached_object_id
         return objects
 
     def _compute_ee_pose_locked(self) -> dict[str, list[float]]:
@@ -1791,6 +2405,7 @@ class SimulationCore:
                     arm_qvel.append(float(self._mj_data.qvel[qvel_addr]))
             self._arm_qpos = arm_qpos
             self._arm_qvel = arm_qvel
+            self._update_grasp_assist_locked(forward=True)
             self._objects_state = self._collect_objects_state_locked()
 
             # Keep exported gripper state aligned with current MuJoCo qpos
@@ -1852,6 +2467,9 @@ class SimulationCore:
             "selected_joint_group": self._last_selected_joint_group,
             "raw_input": deepcopy(self._last_raw_input),
             "normalized_input": deepcopy(self._last_normalized_input),
+            "safety_status": self._safety_status,
+            "collision_blocked": bool(self._collision_blocked),
+            "collision_contacts": deepcopy(self._last_collision_contacts),
             "vr": deepcopy(self._vr_state),
             "stats": {
                 "steps": int(self._stats["steps"]),
@@ -1897,26 +2515,47 @@ class SimulationCore:
             finally:
                 self._command_queue.task_done()
 
-    def _is_stale_realtime_command(self, request: StepRequest) -> bool:
+    def _extract_realtime_command_seq(self, request: StepRequest) -> tuple[str, int] | None:
         """
-        Realtime control anti-replay:
-        if request.normalized_input.control_seq is older than the latest seen for
-        the same source, drop it to avoid delayed rollback.
+        Return (source, sequence) for Quest realtime commands that carry an
+        anti-replay sequence number.
         """
         source = str(getattr(request, "source", "") or "").strip().lower()
         if source not in {"quest3_controller", "quest3_hand"}:
-            return False
+            return None
 
         normalized = request.normalized_input
         if not isinstance(normalized, dict):
-            return False
+            return None
 
         seq_raw = normalized.get("control_seq")
         try:
             seq = int(seq_raw)
         except (TypeError, ValueError):
+            return None
+
+        return source, seq
+
+    def _remember_realtime_command_seq(self, request: StepRequest) -> None:
+        seq_info = self._extract_realtime_command_seq(request)
+        if seq_info is None:
+            return
+        source, seq = seq_info
+        latest = int(self._latest_realtime_seq_by_source.get(source, -1))
+        if seq > latest:
+            self._latest_realtime_seq_by_source[source] = seq
+
+    def _is_stale_realtime_command(self, request: StepRequest) -> bool:
+        """
+        Realtime control anti-replay:
+        if request.normalized_input.control_seq is older than the latest enqueued
+        command for the same source, drop it to avoid delayed rollback.
+        """
+        seq_info = self._extract_realtime_command_seq(request)
+        if seq_info is None:
             return False
 
+        source, seq = seq_info
         latest = int(self._latest_realtime_seq_by_source.get(source, -1))
         if seq < latest:
             return True

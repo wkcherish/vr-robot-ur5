@@ -108,6 +108,9 @@ Wayland 环境提示：
   - `reset`
   - `execute_task`
   - `stop_task`
+  - `control.data.target_ee_pose`
+  - `control.data.target_ee_delta`
+  - `control.data.expect_result`
 - 服务端 -> 客户端：
   - `welcome`
   - `state_update`

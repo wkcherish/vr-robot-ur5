@@ -69,18 +69,23 @@ class WebSocketManager {
   }
 
   // 发送消息
-  sendMessage(message) {
+  sendMessage(message, options = {}) {
+    const queueWhenUnavailable = options.queueWhenUnavailable !== false;
     if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
       try {
         this.websocket.send(JSON.stringify(message));
         return true;
       } catch (error) {
         console.error('发送 WebSocket 消息失败:', error);
-        this.messageQueue.push(message);
+        if (queueWhenUnavailable) {
+          this.messageQueue.push(message);
+        }
         return false;
       }
     } else {
-      this.messageQueue.push(message);
+      if (queueWhenUnavailable) {
+        this.messageQueue.push(message);
+      }
       return false;
     }
   }
@@ -97,6 +102,22 @@ class WebSocketManager {
       kd: options.kd,
       control_mode: options.control_mode || 'position'
     };
+
+    if (options.target_ee_pose && typeof options.target_ee_pose === 'object') {
+      payload.target_ee_pose = options.target_ee_pose;
+    }
+
+    if (Array.isArray(options.target_ee_delta)) {
+      payload.target_ee_delta = options.target_ee_delta.slice(0, 3).map((value) => Number(value));
+    }
+
+    if (typeof options.expect_result === 'boolean') {
+      payload.expect_result = options.expect_result;
+    }
+
+    if (typeof options.ack === 'boolean') {
+      payload.ack = options.ack;
+    }
 
     if (options.gripper_command && typeof options.gripper_command === 'object') {
       payload.gripper_command = options.gripper_command;
@@ -131,7 +152,7 @@ class WebSocketManager {
       timestamp: Date.now()
     };
 
-    return this.sendMessage(message);
+    return this.sendMessage(message, { queueWhenUnavailable: false });
   }
 
   sendExecuteTask(taskName = 'quest3_tool_sorting_v1') {
