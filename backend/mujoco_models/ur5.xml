@@ -51,27 +51,27 @@
       <geom quat="-1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="ur5_base"/>
       <body name="shoulder_link" pos="0 0 0.089159" quat="0 0 0 1">
         <inertial pos="0 0 0" mass="3.7" diaginertia="0.0149724 0.0149724 0.0104063"/>
-        <joint name="shoulder_pan_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-150 150" damping="1.6" ref="0"/>
+        <joint name="shoulder_pan_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-150 150" damping="1.9" armature="0.08" frictionloss="0.02" ref="0"/>
         <geom quat="0 0 0 1" type="mesh" rgba="0.7 0.7 0.7 1" mesh="shoulder"/>
         <body name="upper_arm_link" quat="0.5 0.5 0.5 -0.5">
           <inertial pos="-0.2125 0 0.136" mass="8.393" diaginertia="0.133886 0.133886 0.0151074"/>
-          <joint name="shoulder_lift_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-150 150" damping="1.8" ref="-1.5707963267948966"/>
+          <joint name="shoulder_lift_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-150 150" damping="2.2" armature="0.09" frictionloss="0.025" ref="-1.5707963267948966"/>
           <geom pos="0 0 0.13585" quat="0.5 0.5 -0.5 -0.5" type="mesh" rgba="0.7 0.7 0.7 1" mesh="upperarm"/>
           <body name="forearm_link" pos="-0.425 0 0" quat="0.707106781187 0 0 0.707106781187">
             <inertial pos="-0.196125 0 0.0165" mass="2.275" diaginertia="0.0312168 0.0312168 0.004095"/>
-            <joint name="elbow_joint" pos="0 0 0" axis="0 0 1" range="-3.14159 3.14159" actuatorfrcrange="-150 150" damping="1.4" ref="1.5707963267948966"/>
+            <joint name="elbow_joint" pos="0 0 0" axis="0 0 1" range="-3.14159 3.14159" actuatorfrcrange="-150 150" damping="1.8" armature="0.06" frictionloss="0.02" ref="1.5707963267948966"/>
             <geom pos="0 0 0.0165" quat="0.5 0.5 -0.5 -0.5" type="mesh" rgba="0.7 0.7 0.7 1" mesh="forearm"/>
             <body name="wrist_1_link" pos="-0.39225 0 0.10915" quat="0.707106781187 0 0 -0.707106781187">
               <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="1.219" diaginertia="0.0021942 0.00201389 0.00201389"/>
-              <joint name="wrist_1_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28" damping="0.8" ref="-1.5707963267948966"/>
+              <joint name="wrist_1_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28" damping="1.1" armature="0.025" frictionloss="0.01" ref="-1.5707963267948966"/>
               <geom pos="0 0 -0.093" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="wrist1"/>
               <body name="wrist_2_link" pos="0 -0.09465 -1.9413e-11" quat="0.5 0.5 0.5 -0.5">
                 <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="1.219" diaginertia="0.0021942 0.00183104 0.00183104"/>
-                <joint name="wrist_2_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28" damping="0.8" ref="-1.5707963267948966"/>
+                <joint name="wrist_2_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28" damping="1.1" armature="0.025" frictionloss="0.01" ref="-1.5707963267948966"/>
                 <geom pos="0 0 -0.095" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="wrist2"/>
                 <body name="wrist_3_link" pos="0 0.0823 -1.688e-11" quat="0.707107 -0.707107 0 0">
                   <inertial pos="0 -2.17763e-05 0.0255955" quat="1 0.000252812 0 0" mass="0.965341" diaginertia="0.00073016 0.000695256 0.000284825"/>
-                  <joint name="wrist_3_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28" damping="0.7" ref="0"/>
+                  <joint name="wrist_3_joint" pos="0 0 0" axis="0 0 1" range="-6.28319 6.28319" actuatorfrcrange="-28 28" damping="1.0" armature="0.02" frictionloss="0.008" ref="0"/>
                   <geom pos="0 0 -0.0818" quat="0.707107 0.707107 0 0" type="mesh" rgba="0.7 0.7 0.7 1" mesh="wrist3"/>
                   <geom pos="0 0 0.0108" quat="1 0 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="robotiq_base"/>
                   <geom pos="0 0 0.004" quat="0.707107 -0.707107 0 0" type="mesh" rgba="0.149 0.149 0.149 1" mesh="base_coupling"/>
@@ -164,6 +164,12 @@
     </body>
   </worldbody>
   <contact>
+    <exclude body1="ur5_root" body2="shoulder_link"/>
+    <exclude body1="shoulder_link" body2="upper_arm_link"/>
+    <exclude body1="upper_arm_link" body2="forearm_link"/>
+    <exclude body1="forearm_link" body2="wrist_1_link"/>
+    <exclude body1="wrist_1_link" body2="wrist_2_link"/>
+    <exclude body1="wrist_2_link" body2="wrist_3_link"/>
     <exclude body1="wrist_3_link" body2="left_driver_link"/>
     <exclude body1="wrist_3_link" body2="right_driver_link"/>
     <exclude body1="wrist_3_link" body2="left_spring_link"/>
@@ -177,12 +183,12 @@
     <joint joint1="right_driver_joint" joint2="left_driver_joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1"/>
   </equality>
   <actuator>
-    <general name="act_shoulder_pan" joint="shoulder_pan_joint" gainprm="150" biastype="affine" biasprm="0 -150 0" ctrlrange="-6.28319 6.28319" forcerange="-150 150"/>
-    <general name="act_shoulder_lift" joint="shoulder_lift_joint" gainprm="150" biastype="affine" biasprm="-235.619449019 -150 0" ctrlrange="-4.712393673 7.853986327" forcerange="-150 150"/>
-    <general name="act_elbow" joint="elbow_joint" gainprm="135" biastype="affine" biasprm="212.057504117 -135 0" ctrlrange="-4.712386327 1.570793673" forcerange="-150 150"/>
-    <general name="act_wrist_1" joint="wrist_1_joint" gainprm="95" biastype="affine" biasprm="-149.225651046 -95 0" ctrlrange="-4.712393673 7.853986327" forcerange="-28 28"/>
-    <general name="act_wrist_2" joint="wrist_2_joint" gainprm="95" biastype="affine" biasprm="-149.225651046 -95 0" ctrlrange="-4.712393673 7.853986327" forcerange="-28 28"/>
-    <general name="act_wrist_3" joint="wrist_3_joint" gainprm="95" biastype="affine" biasprm="0 -95 0" ctrlrange="-6.28319 6.28319" forcerange="-28 28"/>
-    <general name="act_gripper_driver" joint="left_driver_joint" gainprm="45" biastype="affine" biasprm="0 -45 0" ctrlrange="0 0.9" forcerange="-10 10"/>
+    <general name="act_shoulder_pan" joint="shoulder_pan_joint" gainprm="150" biastype="affine" biasprm="0 -150 -15" ctrlrange="-6.28319 6.28319" forcerange="-150 150"/>
+    <general name="act_shoulder_lift" joint="shoulder_lift_joint" gainprm="150" biastype="affine" biasprm="-235.619449019 -150 -15" ctrlrange="-4.712393673 7.853986327" forcerange="-150 150"/>
+    <general name="act_elbow" joint="elbow_joint" gainprm="135" biastype="affine" biasprm="212.057504117 -135 -12" ctrlrange="-4.712386327 1.570793673" forcerange="-150 150"/>
+    <general name="act_wrist_1" joint="wrist_1_joint" gainprm="95" biastype="affine" biasprm="-149.225651046 -95 -8" ctrlrange="-4.712393673 7.853986327" forcerange="-28 28"/>
+    <general name="act_wrist_2" joint="wrist_2_joint" gainprm="95" biastype="affine" biasprm="-149.225651046 -95 -8" ctrlrange="-4.712393673 7.853986327" forcerange="-28 28"/>
+    <general name="act_wrist_3" joint="wrist_3_joint" gainprm="95" biastype="affine" biasprm="0 -95 -6" ctrlrange="-6.28319 6.28319" forcerange="-28 28"/>
+    <general name="act_gripper_driver" joint="left_driver_joint" gainprm="45" biastype="affine" biasprm="0 -45 -4" ctrlrange="0 0.9" forcerange="-10 10"/>
   </actuator>
 </mujoco>

@@ -3,9 +3,10 @@
     <default class="wrench_contact">
       <geom
         type="mesh"
-        friction="1.1 0.02 0.002"
+        friction="1.45 0.04 0.004"
+        margin="0.001"
         solimp="0.95 0.99 0.001"
-        solref="0.004 1"
+        solref="0.006 1"
         condim="4"
       />
     </default>
@@ -37,8 +38,8 @@
         mesh="wrench_mesh_p01"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -47,8 +48,8 @@
         mesh="wrench_mesh_p02"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -57,8 +58,8 @@
         mesh="wrench_mesh_p03"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -67,8 +68,8 @@
         mesh="wrench_mesh_p04"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -77,8 +78,8 @@
         mesh="wrench_mesh_p05"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -87,8 +88,8 @@
         mesh="wrench_mesh_p06"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -97,8 +98,8 @@
         mesh="wrench_mesh_p07"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="wrench_contact"
@@ -107,18 +108,48 @@
         mesh="wrench_mesh_p08"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
+        contype="0"
+        conaffinity="0"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_handle_collision"
+        type="box"
+        pos="-0.020 0.001 0.0061"
+        size="0.052 0.010 0.0061"
+        rgba="0 0 0 0"
         contype="1"
         conaffinity="1"
       />
       <geom
         class="wrench_contact"
-        name="wrench_01_collision"
+        name="wrench_01_head_collision"
         type="box"
-        pos="0.0022 0.0010 0.0061"
-        size="0.0769 0.0251 0.0061"
+        pos="0.044 0.001 0.0061"
+        size="0.026 0.024 0.0061"
         rgba="0 0 0 0"
-        contype="0"
-        conaffinity="0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_upper_jaw_collision"
+        type="box"
+        pos="0.067 0.017 0.0061"
+        size="0.014 0.006 0.0061"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_lower_jaw_collision"
+        type="box"
+        pos="0.067 -0.015 0.0061"
+        size="0.014 0.006 0.0061"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
     </body>
   </worldbody>

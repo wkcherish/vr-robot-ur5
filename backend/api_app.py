@@ -28,7 +28,7 @@ from backend.sim import SimulationCore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
 SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "30"))
+STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "50"))
 STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
 
 simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)
@@ -97,6 +97,19 @@ def _guess_host_ip() -> str | None:
 def _error_payload(code: str, message: str, detail: str | None = None) -> dict[str, Any]:
     body = ErrorResponse(code=code, message=message, detail=detail, timestamp=time.time())
     return {"type": "error", "data": body.model_dump()}
+
+
+def _is_realtime_control_request(request: StepRequest) -> bool:
+    return request.source in {"quest3_controller", "quest3_hand"}
+
+
+def _consume_realtime_control_result(future: asyncio.Future[dict[str, Any]]) -> None:
+    try:
+        future.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        print(f"[sim/ws] realtime control failed: {exc}")
 
 
 async def _state_broadcast_loop() -> None:
@@ -285,6 +298,23 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             request = StepRequest.model_validate(message_data)
             if not getattr(request, "source", None):
                 request.source = "desktop_manual"
+            if _is_realtime_control_request(request):
+                future = simulation.queue_step(request, return_state=False)
+                future.add_done_callback(_consume_realtime_control_result)
+                expect_result = message_data.get("expect_result", message_data.get("ack", True))
+                if expect_result is False:
+                    return None
+                return {
+                    "type": "control_result",
+                    "data": {
+                        "status": "success",
+                        "message": "realtime control queued",
+                        "source": request.source,
+                        "selected_joint_group": request.selected_joint_group,
+                        "input_source": request.input_source,
+                        "realtime": True,
+                    },
+                }
             # Always return state so frontend can stay synchronized with backend physics.
             return_state = True
             state = await simulation.enqueue_step(request, return_state=return_state)

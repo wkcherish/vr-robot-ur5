@@ -14,13 +14,15 @@ export const state = {
   lastSnapshot: { ...DEFAULT_SNAPSHOT },
 };
 
-export async function ensureSession() {
+export async function ensureSession(options = {}) {
   if (state.session && state.referenceSpace) {
     state.status = { ready: true, reason: "ok" };
     return;
   }
 
-  const status = await ensureQuestXRSession();
+  const status = await ensureQuestXRSession({
+    preferHandTracking: options?.preferHandTracking === true,
+  });
   state.session = getQuestXRSession();
   state.referenceSpace = getQuestXRReferenceSpace();
   state.status = {

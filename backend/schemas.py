@@ -38,8 +38,18 @@ class GripperCommand(BaseModel):
         extra = "ignore"
 
 
+class TargetEEPose(BaseModel):
+    position: list[float] | None = None
+    quaternion: list[float] | None = None
+
+    class Config:
+        extra = "ignore"
+
+
 class StepRequest(BaseModel):
     target_positions: list[float] | None = None
+    target_ee_pose: TargetEEPose | None = None
+    target_ee_delta: list[float] | None = None
     n_steps: int = Field(default=10, ge=1, le=2000)
     control_mode: str = "position"
     kp: float | None = None
@@ -124,6 +134,13 @@ class SimState(BaseModel):
     camera_capture_ok: bool = False
     task_state: TaskState
     source: ControlSource
+    input_source: str | None = None
+    selected_joint_group: str | None = None
+    raw_input: dict[str, Any] | None = None
+    normalized_input: dict[str, Any] | None = None
+    safety_status: str = "normal"
+    collision_blocked: bool = False
+    collision_contacts: list[dict[str, Any]] = []
     vr: dict[str, Any]
     stats: dict[str, float | int]
 
@@ -160,6 +177,8 @@ class VRStateUpdateRequest(BaseModel):
     active_policy_path: str | None = None
     error_message: str | None = None
     source: ControlSource | None = None
+    raw_input: dict[str, Any] | None = None
+    normalized_input: dict[str, Any] | None = None
 
     class Config:
         extra = "ignore"

@@ -4,8 +4,11 @@
     timestep="0.001"
     gravity="0 0 -9.81"
     integrator="implicitfast"
-    iterations="100"
-    noslip_iterations="12"
+    solver="Newton"
+    cone="elliptic"
+    iterations="120"
+    noslip_iterations="16"
+    tolerance="1e-10"
   />
 
   <visual>
@@ -33,8 +36,9 @@
       size="0 0 0.05"
       material="ground_mat"
       friction="1.0 0.02 0.002"
+      margin="0.001"
       solimp="0.95 0.99 0.001"
-      solref="0.004 1"
+      solref="0.006 1"
       condim="4"
     />
   </worldbody>
