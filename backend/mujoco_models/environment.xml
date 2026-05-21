@@ -1,6 +1,15 @@
 <mujoco model="embossed_digital_twin_environment">
   <compiler angle="radian" autolimits="true" />
-  <option timestep="0.002" gravity="0 0 0" integrator="implicitfast" />
+  <option
+    timestep="0.001"
+    gravity="0 0 -9.81"
+    integrator="implicitfast"
+    solver="Newton"
+    cone="elliptic"
+    iterations="120"
+    noslip_iterations="16"
+    tolerance="1e-10"
+  />
 
   <visual>
     <headlight ambient="0.45 0.45 0.45" diffuse="0.55 0.55 0.55" specular="0.2 0.2 0.2" />
@@ -21,7 +30,17 @@
   </asset>
 
   <worldbody>
-    <geom name="floor" type="plane" size="0 0 0.05" material="ground_mat" />
+    <geom
+      name="floor"
+      type="plane"
+      size="0 0 0.05"
+      material="ground_mat"
+      friction="1.0 0.02 0.002"
+      margin="0.001"
+      solimp="0.95 0.99 0.001"
+      solref="0.006 1"
+      condim="4"
+    />
   </worldbody>
 
   <include file="ur5.xml" />
@@ -30,4 +49,12 @@
   <include file="wrench.xml" />
   <include file="screwdriver.xml" />
   <include file="pliers.xml" />
+
+  <keyframe>
+    <key
+      name="home"
+      qpos="0 -1.5707963267948966 1.5707963267948966 -1.5707963267948966 -1.5707963267948966 0 0 0 0 0 0 0 0.48 0.2 1 0.7071067811865476 0 0 -0.7071067811865475 0.08 -0.3 1.0240336800934793 0.7071067811865476 0.7071067811865475 0 0 0.2 -0.26 1 1 0 0 0 0.28 -0.12 1.0100852437109231 0.7071067811865476 0.7071067811865475 0 0"
+      ctrl="0 0 0 0 0 0 0"
+    />
+  </keyframe>
 </mujoco>

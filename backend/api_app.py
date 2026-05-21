@@ -28,7 +28,7 @@ from backend.sim import SimulationCore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
 SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "30"))
+STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "50"))
 STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
 
 simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)
@@ -99,11 +99,33 @@ def _error_payload(code: str, message: str, detail: str | None = None) -> dict[s
     return {"type": "error", "data": body.model_dump()}
 
 
+def _is_realtime_control_request(request: StepRequest) -> bool:
+    return request.source in {"quest3_controller", "quest3_hand"}
+
+
+def _consume_realtime_control_result(future: asyncio.Future[dict[str, Any]]) -> None:
+    try:
+        future.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        print(f"[sim/ws] realtime control failed: {exc}")
+
+
 async def _state_broadcast_loop() -> None:
+    last_tick = time.monotonic()
     while True:
+        now = time.monotonic()
+        elapsed_s = max(0.0, now - last_tick)
+        last_tick = now
         if manager.active_count > 0:
-            # Keep broadcast lightweight to reduce lock hold time and improve control responsiveness.
-            state = await simulation.get_state(refresh_camera=False)
+            # Keep broadcast lightweight while still advancing passive dynamics:
+            # objects that were bumped by the arm must continue falling/sliding
+            # between control commands.
+            state = await simulation.advance_and_get_state(
+                elapsed_s=elapsed_s,
+                refresh_camera=False,
+            )
             await manager.broadcast({"type": "state_broadcast", "data": state})
         await asyncio.sleep(STATE_BROADCAST_INTERVAL)
 
@@ -174,7 +196,8 @@ async def post_sim_step(request: StepRequest) -> CommandResult:
     try:
         state = await simulation.enqueue_step(request)
     except Exception as exc:
-        return CommandResult(status="error", message=f"step failed: {exc}")
+        state = await simulation.get_state(refresh_camera=False)
+        return CommandResult(status="error", message=f"step failed: {exc}", state=state)
 
     return CommandResult(status="success", message="step executed", state=state)
 
@@ -285,9 +308,25 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             request = StepRequest.model_validate(message_data)
             if not getattr(request, "source", None):
                 request.source = "desktop_manual"
-            # Keep VR control lightweight, but return state for desktop/manual edits so
-            # frontend can lock-step update and avoid stale broadcast pull-back.
-            return_state = request.source not in {"quest3_controller", "quest3_hand"}
+            if _is_realtime_control_request(request):
+                future = simulation.queue_step(request, return_state=False)
+                future.add_done_callback(_consume_realtime_control_result)
+                expect_result = message_data.get("expect_result", message_data.get("ack", True))
+                if expect_result is False:
+                    return None
+                return {
+                    "type": "control_result",
+                    "data": {
+                        "status": "success",
+                        "message": "realtime control queued",
+                        "source": request.source,
+                        "selected_joint_group": request.selected_joint_group,
+                        "input_source": request.input_source,
+                        "realtime": True,
+                    },
+                }
+            # Always return state so frontend can stay synchronized with backend physics.
+            return_state = True
             state = await simulation.enqueue_step(request, return_state=return_state)
             return {
                 "type": "control_result",
@@ -300,7 +339,15 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
         except ValidationError as exc:
             return _error_payload("CONTROL_VALIDATION_ERROR", "Invalid control payload", str(exc))
         except Exception as exc:
-            return _error_payload("CONTROL_EXECUTION_ERROR", "Control command failed", str(exc))
+            state = await simulation.get_state(refresh_camera=False)
+            return {
+                "type": "control_result",
+                "data": {
+                    "status": "error",
+                    "message": f"Control command failed: {exc}",
+                    "state": state,
+                },
+            }
 
     if message_type == "reset":
         try:

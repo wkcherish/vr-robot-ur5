@@ -1,4 +1,16 @@
 <mujoco model="rack">
+  <default>
+    <default class="rack_contact">
+      <geom
+        type="mesh"
+        friction="1.0 0.02 0.002"
+        solimp="0.95 0.99 0.001"
+        solref="0.004 1"
+        condim="4"
+      />
+    </default>
+  </default>
+
   <asset>
     <mesh name="rack_mesh" file="meshes/rack/base_link.STL" />
   </asset>
@@ -6,11 +18,21 @@
   <worldbody>
     <body name="rack" pos="0.5 0 0.5" euler="1.5707963267948966 0 0">
       <geom
+        class="rack_contact"
         name="rack_geom"
         type="mesh"
         mesh="rack_mesh"
         rgba="0.75 0.76 0.78 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
+      />
+      <geom
+        class="rack_contact"
+        name="rack_tabletop_collision"
+        type="box"
+        pos="0 0.49 0"
+        size="1.0 0.01 0.65"
+        rgba="0 0 0 0"
       />
     </body>
   </worldbody>

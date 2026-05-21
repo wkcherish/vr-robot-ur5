@@ -1,4 +1,17 @@
 <mujoco model="wrench">
+  <default>
+    <default class="wrench_contact">
+      <geom
+        type="mesh"
+        friction="1.45 0.04 0.004"
+        margin="0.001"
+        solimp="0.95 0.99 0.001"
+        solref="0.006 1"
+        condim="4"
+      />
+    </default>
+  </default>
+
   <asset>
     <mesh name="wrench_mesh_p01" content_type="model/stl" file="meshes/tools/wrench_part_01.stl" scale="0.13 0.13 0.13" />
     <mesh name="wrench_mesh_p02" content_type="model/stl" file="meshes/tools/wrench_part_02.stl" scale="0.13 0.13 0.13" />
@@ -16,69 +29,127 @@
       pos="0.08 -0.3 1.0240336800934792"
       euler="1.5707963267948966 0 0"
     >
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.16" diaginertia="0.00022 0.00022 0.00004"/>
       <geom
+        class="wrench_contact"
         name="wrench_01_geom"
         type="mesh"
         mesh="wrench_mesh_p01"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p02"
         type="mesh"
         mesh="wrench_mesh_p02"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p03"
         type="mesh"
         mesh="wrench_mesh_p03"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p04"
         type="mesh"
         mesh="wrench_mesh_p04"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p05"
         type="mesh"
         mesh="wrench_mesh_p05"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p06"
         type="mesh"
         mesh="wrench_mesh_p06"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p07"
         type="mesh"
         mesh="wrench_mesh_p07"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="wrench_contact"
         name="wrench_01_geom_p08"
         type="mesh"
         mesh="wrench_mesh_p08"
         pos="-0.00734085 -0.00342270 0"
         rgba="0.65 0.69 0.74 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_handle_collision"
+        type="box"
+        pos="-0.020 0.001 0.0061"
+        size="0.052 0.010 0.0061"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_head_collision"
+        type="box"
+        pos="0.044 0.001 0.0061"
+        size="0.026 0.024 0.0061"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_upper_jaw_collision"
+        type="box"
+        pos="0.067 0.017 0.0061"
+        size="0.014 0.006 0.0061"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="wrench_contact"
+        name="wrench_01_lower_jaw_collision"
+        type="box"
+        pos="0.067 -0.015 0.0061"
+        size="0.014 0.006 0.0061"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
     </body>
   </worldbody>

@@ -1,4 +1,17 @@
 <mujoco model="pliers">
+  <default>
+    <default class="pliers_contact">
+      <geom
+        type="mesh"
+        friction="1.4 0.035 0.0035"
+        margin="0.001"
+        solimp="0.95 0.99 0.001"
+        solref="0.006 1"
+        condim="4"
+      />
+    </default>
+  </default>
+
   <asset>
     <mesh name="pliers_mesh_p01" content_type="model/stl" file="meshes/tools/pliers_part_01.stl" scale="0.13 0.13 0.13" />
     <mesh name="pliers_mesh_p02" content_type="model/stl" file="meshes/tools/pliers_part_02.stl" scale="0.13 0.13 0.13" />
@@ -16,69 +29,137 @@
       pos="0.28 -0.12 1.0100852437109232"
       euler="1.5707963267948966 0 0"
     >
+      <freejoint/>
+      <inertial pos="0 0 0" mass="0.18" diaginertia="0.00024 0.00024 0.00005"/>
       <geom
+        class="pliers_contact"
         name="pliers_01_geom"
         type="mesh"
         mesh="pliers_mesh_p01"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p02"
         type="mesh"
         mesh="pliers_mesh_p02"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p03"
         type="mesh"
         mesh="pliers_mesh_p03"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p04"
         type="mesh"
         mesh="pliers_mesh_p04"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p05"
         type="mesh"
         mesh="pliers_mesh_p05"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p06"
         type="mesh"
         mesh="pliers_mesh_p06"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p07"
         type="mesh"
         mesh="pliers_mesh_p07"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
       />
       <geom
+        class="pliers_contact"
         name="pliers_01_geom_p08"
         type="mesh"
         mesh="pliers_mesh_p08"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        friction="0.9 0.1 0.01"
+        contype="0"
+        conaffinity="0"
+      />
+      <geom
+        class="pliers_contact"
+        name="pliers_01_left_handle_collision"
+        type="box"
+        pos="-0.018 -0.001 0.043"
+        size="0.009 0.008 0.044"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="pliers_contact"
+        name="pliers_01_right_handle_collision"
+        type="box"
+        pos="0.018 -0.001 0.043"
+        size="0.009 0.008 0.044"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="pliers_contact"
+        name="pliers_01_hinge_collision"
+        type="box"
+        pos="0 0.0001 0.088"
+        size="0.026 0.010 0.018"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="pliers_contact"
+        name="pliers_01_left_jaw_collision"
+        type="box"
+        pos="-0.013 0.0001 0.127"
+        size="0.010 0.007 0.032"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
+      />
+      <geom
+        class="pliers_contact"
+        name="pliers_01_right_jaw_collision"
+        type="box"
+        pos="0.013 0.0001 0.127"
+        size="0.010 0.007 0.032"
+        rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
     </body>
   </worldbody>
