@@ -125,29 +125,29 @@ export function createQuestHandTeleop(options = {}) {
   const cfg = {
     movement_deadzone: Number.isFinite(Number(options.movement_deadzone))
       ? Number(options.movement_deadzone)
-      : 0.006,
+      : 0.003,
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
-      : 0.28,
+      : 0.48,
     movement_gain: Number.isFinite(Number(options.sensitivity))
-      ? Number(options.sensitivity) * 1.05
-      : 1.05,
+      ? Number(options.sensitivity) * 1.9
+      : 1.9,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
-      : 0.54,
+      : 0.62,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
-      : 0.035,
+      : 0.065,
     anchor_reset_threshold_m: Number.isFinite(Number(options.anchor_reset_threshold_m))
       ? Number(options.anchor_reset_threshold_m)
-      : 0.18,
-    tracking_grace_ms: 450,
+      : 0.38,
+    tracking_grace_ms: 560,
     tracking_stable_enter_threshold: Number.isFinite(Number(options.tracking_stable_enter_threshold))
       ? Number(options.tracking_stable_enter_threshold)
-      : 0.30,
+      : 0.24,
     tracking_stable_exit_threshold: Number.isFinite(Number(options.tracking_stable_exit_threshold))
       ? Number(options.tracking_stable_exit_threshold)
-      : 0.18,
+      : 0.14,
     fist_engage_threshold: Number.isFinite(Number(options.fist_engage_threshold))
       ? Number(options.fist_engage_threshold)
       : 0.62,
@@ -158,7 +158,7 @@ export function createQuestHandTeleop(options = {}) {
     gripper_smoothing: 0.24,
     gripper_min: 0,
     gripper_max: 0.9,
-    ee_activity_epsilon_m: 0.0025,
+    ee_activity_epsilon_m: 0.0015,
     gripper_activity_epsilon: Number.isFinite(Number(options.gripper_activity_epsilon))
       ? Number(options.gripper_activity_epsilon)
       : 0.01,

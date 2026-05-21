@@ -523,6 +523,19 @@ const jointAngles = ref([]); // 新增用于存储关节角度的变量
 const setAnglesResponse = ref([]); // 用于存储设置的角度值的响应
 const gripperAngleDeg = ref(0);
 const sliderJointValues = computed(() => {
+  const draft = getFreshRealtimeSliderDraft();
+  if (draft && Array.isArray(draft.arm) && draft.arm.length >= ARM_JOINT_COUNT) {
+    const armAngles = draft.arm
+      .slice(0, ARM_JOINT_COUNT)
+      .map((value) => toDegrees(Number(value)));
+    if (armAngles.every((value) => Number.isFinite(value))) {
+      const gripperOpening = Number.isFinite(Number(draft.gripperOpening))
+        ? clamp(Number(draft.gripperOpening), 0, 1)
+        : getAuthoritativeGripperOpening();
+      return [...armAngles, toDegrees(gripperOpening * GRIPPER_MAX_RAD)];
+    }
+  }
+
   const armAngles =
     jointAngles.value.length >= ARM_JOINT_COUNT
       ? jointAngles.value.slice(0, ARM_JOINT_COUNT)
@@ -561,13 +574,15 @@ const QUEST_MAX_RENDER_PIXEL_RATIO = 1.0;
 const UI_SYNC_INTERVAL_MS = 66;
 const UI_POSE_SYNC_INTERVAL_MS = 100;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
-const VR_COMMAND_MIN_INTERVAL_MS = 20;
+const VR_COMMAND_MIN_INTERVAL_MS = 24;
 const VR_COMMAND_STEPS = 20;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
 const VR_CONTROL_WATCHDOG_INTERVAL_MS = 33;
 const VR_CONTROL_WATCHDOG_STALE_MS = 55;
 const VR_RENDER_SMOOTHING_ALPHA = 0.42;
-const QUEST_RENDER_PREVIEW_TTL_MS = 180;
+const QUEST_RENDER_PREVIEW_TTL_MS = 550;
+const QUEST_PREVIEW_ARM_ALIGN_THRESHOLD_RAD = 0.075;
+const QUEST_PREVIEW_GRIPPER_ALIGN_THRESHOLD_RAD = 0.08;
 const RENDER_ARM_EPSILON_RAD = 2e-4;
 const RENDER_GRIPPER_EPSILON_RAD = 2e-4;
 const DEBUG_VR_CONTROL_RESULTS = false;
@@ -653,8 +668,8 @@ const uiLastPoseSyncAt = ref(0);
 
 let questControllerTeleop = createQuestControllerTeleop({
   deadzone: questControllerDeadzone.value,
-  joint_step: 0.085 * clamp(questControllerSensitivity.value, 0.4, 1.8),
-  max_target_lead_rad: 0.45,
+  joint_step: 0.11 * clamp(questControllerSensitivity.value, 0.4, 1.8),
+  max_target_lead_rad: 0.62,
 });
 let questHandTeleop = createQuestHandTeleop({
   sensitivity: questHandSensitivity.value,
@@ -1541,8 +1556,8 @@ function isQuestHandModeActive() {
 function rebuildQuestControllerTeleop() {
   questControllerTeleop = createQuestControllerTeleop({
     deadzone: questControllerDeadzone.value,
-    joint_step: 0.085 * clamp(questControllerSensitivity.value, 0.4, 1.8),
-    max_target_lead_rad: 0.45,
+    joint_step: 0.11 * clamp(questControllerSensitivity.value, 0.4, 1.8),
+    max_target_lead_rad: 0.62,
   });
 }
 
@@ -1703,16 +1718,29 @@ function stageQuestRenderTarget(payload) {
     timestamp: Date.now(),
     arm,
     gripper: gripperOpening * GRIPPER_MAX_RAD,
+    controlSeq: Number(payload?.normalized_input?.control_seq) || null,
+    source: String(payload?.source || "").trim(),
   };
   questRenderPreviewTarget.value = target;
-  backendRenderTarget.value = target;
 }
 
 function applyQuestCommandLocally(payload = {}) {
-  clearPendingManualTarget();
   if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
+    clearPendingManualTarget();
     clearQuestRenderPreview();
     return;
+  }
+
+  const arm = Array.isArray(payload?.target_positions)
+    ? payload.target_positions.slice(0, ARM_JOINT_COUNT).map((value) => Number(value))
+    : null;
+  if (arm && arm.length >= ARM_JOINT_COUNT && arm.every((value) => Number.isFinite(value))) {
+    const opening = Number.isFinite(Number(payload?.gripper_command?.value))
+      ? clamp(Number(payload.gripper_command.value), 0, 1)
+      : getAuthoritativeGripperOpening();
+    rememberPendingManualTarget(arm, opening);
+  } else {
+    clearPendingManualTarget();
   }
   stageQuestRenderTarget(payload);
 }
@@ -2139,6 +2167,7 @@ function stopQuestControllerLoop() {
   questControllerGroupToast.value = "";
   questControllerGroupToastAt.value = 0;
   lastQuestControllerTickAt.value = 0;
+  clearPendingManualTarget();
   clearQuestRenderPreview();
 }
 
@@ -2159,6 +2188,7 @@ function stopQuestHandLoop() {
   questHandGroupToast.value = "";
   questHandGroupToastAt.value = 0;
   lastQuestHandTickAt.value = 0;
+  clearPendingManualTarget();
   clearQuestRenderPreview();
 }
 
@@ -2273,6 +2303,7 @@ function updateSafetyFeedbackFromState(state) {
   if (!state.collision_blocked) return;
 
   clearPendingManualTarget();
+  clearRealtimeSliderDraft();
   clearQuestRenderPreview();
   const contactText = formatCollisionContacts(state.collision_contacts);
   receivedText.value = contactText
@@ -2308,6 +2339,7 @@ function commitBackendStateSnapshot(state, options = {}) {
   applyBackendStateToScene(state, { immediate: true });
   if (options.clearPendingManualTarget === true) {
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
   }
   return true;
 }
@@ -2321,7 +2353,6 @@ function commitQuestControlStateSnapshot(state, nowMs = Date.now()) {
   if (!state || typeof state !== "object") return false;
   if (!acceptBackendStateTimestamp(state)) return false;
 
-  clearPendingManualTarget();
   simulationState.value = state;
   applyVrStateFromBackend(state);
   checkD405ObservationReady(state);
@@ -2329,11 +2360,65 @@ function commitQuestControlStateSnapshot(state, nowMs = Date.now()) {
   checkWebSocketReady();
   updateNetworkPrereq();
   updateSafetyFeedbackFromState(state);
-  clearQuestRenderPreview();
-  applyBackendStateToScene(state);
+  applyQuestBackendStateToScene(state);
 
   lastStateUpdate.value = nowMs;
   return true;
+}
+
+function isBackendStateAlignedWithQuestPreview(state) {
+  const preview = getFreshQuestRenderPreview();
+  if (!preview) return true;
+  if (!Array.isArray(preview.arm) || preview.arm.length < ARM_JOINT_COUNT) return true;
+
+  const arm = getBackendArmRadiansFromState(state);
+  if (!Array.isArray(arm) || arm.length < ARM_JOINT_COUNT) return false;
+
+  let maxArmError = 0;
+  for (let i = 0; i < ARM_JOINT_COUNT; i += 1) {
+    const err = Math.abs(Number(arm[i]) - Number(preview.arm?.[i]));
+    if (Number.isFinite(err) && err > maxArmError) {
+      maxArmError = err;
+    }
+  }
+
+  const backendGrip = getGripperRadiansFromBackendState(state);
+  const gripError =
+    backendGrip === null || !Number.isFinite(Number(preview.gripper))
+      ? 0
+      : Math.abs(Number(backendGrip) - Number(preview.gripper));
+
+  return (
+    maxArmError <= QUEST_PREVIEW_ARM_ALIGN_THRESHOLD_RAD &&
+    gripError <= QUEST_PREVIEW_GRIPPER_ALIGN_THRESHOLD_RAD
+  );
+}
+
+function isQuestBackendStateStaleForPreview(state) {
+  const preview = getFreshQuestRenderPreview();
+  if (!preview) return false;
+
+  const previewSeq = Number(preview.controlSeq);
+  const stateSeq = Number(state?.normalized_input?.control_seq);
+  if (Number.isFinite(previewSeq) && Number.isFinite(stateSeq)) {
+    return stateSeq < previewSeq;
+  }
+
+  return false;
+}
+
+function applyQuestBackendStateToScene(state) {
+  if (isQuestBackendStateStaleForPreview(state)) {
+    applySceneObjectsFromBackendState(state);
+    applySmoothedBackendPose();
+    return;
+  }
+
+  if (isBackendStateAlignedWithQuestPreview(state)) {
+    clearPendingManualTarget();
+    clearQuestRenderPreview();
+  }
+  applyBackendStateToScene(state);
 }
 
 function isBackendStateAlignedWithPendingTarget(state) {
@@ -2376,6 +2461,7 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
   if (!pending) return true;
   if (isQuestControlBackendState(state)) {
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
     return true;
   }
 
@@ -2395,6 +2481,7 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
     Number(backendStateTimestampMs) + BACKEND_STATE_STALE_TOLERANCE_MS >= Number(pending.sentAt)
   ) {
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
     return true;
   }
 
@@ -2404,11 +2491,13 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
 
   if (nowMs - Number(pending.sentAt) > guardMs) {
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
     return true;
   }
 
   if (isBackendStateAlignedWithPendingTarget(state)) {
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
     return true;
   }
 
@@ -2618,6 +2707,10 @@ function getAuthoritativeArmRadians() {
   if (Array.isArray(pending?.arm) && pending.arm.length >= ARM_JOINT_COUNT) {
     return pending.arm.slice(0, ARM_JOINT_COUNT);
   }
+  const preview = getFreshQuestRenderPreview();
+  if (Array.isArray(preview?.arm) && preview.arm.length >= ARM_JOINT_COUNT) {
+    return preview.arm.slice(0, ARM_JOINT_COUNT);
+  }
   const backendArm = getLatestBackendArmRadians();
   return backendArm || getCurrentSceneArmRadians();
 }
@@ -2631,6 +2724,10 @@ function getAuthoritativeGripperOpening() {
   const pending = pendingManualTarget.value;
   if (Number.isFinite(Number(pending?.gripper))) {
     return toGripperOpening(Number(pending.gripper));
+  }
+  const preview = getFreshQuestRenderPreview();
+  if (Number.isFinite(Number(preview?.gripper))) {
+    return toGripperOpening(Number(preview.gripper));
   }
   const backendGripper = getLatestBackendGripperRadians();
   if (backendGripper !== null) {
@@ -2955,6 +3052,7 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
 
     console.warn("WebSocket 已连接但命令发送失败，将回退到 HTTP /sim/step/");
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
   }
 
   // WS 不可用时直接 HTTP 下发，避免前端先动后被旧状态拉回
@@ -2971,6 +3069,7 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
     const status = String(resp?.data?.status || "").toLowerCase();
     if (status !== "success") {
       clearPendingManualTarget();
+      clearRealtimeSliderDraft();
       try {
         const latest = await get("/sim/state/", { timeout: 1500 });
         if (latest?.data) {
@@ -2987,6 +3086,7 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
     return { ok: true, message: resp.data?.message || "Command sent (HTTP)." };
   } catch (err) {
     clearPendingManualTarget();
+    clearRealtimeSliderDraft();
     return { ok: false, message: "命令发送失败: " + (err.message || err) };
   } finally {
     sendCommandPending.value = false;
@@ -3350,6 +3450,7 @@ function sendRealtimeSliderControl(options = {}) {
     !force &&
     now - Number(lastRealtimeSliderSendAt.value) < REALTIME_SLIDER_MIN_SEND_INTERVAL_MS
   ) {
+    scheduleRealtimeSliderSync();
     return;
   }
 
@@ -3370,6 +3471,7 @@ function sendRealtimeSliderControl(options = {}) {
     mode: "open_close",
     value: gripperOpening,
   };
+  rememberPendingManualTarget(armRadians, gripperOpening);
 
   const sent = websocketManager.isConnected
     ? websocketManager.sendControlCommand(armRadians, {
@@ -3395,13 +3497,21 @@ function sendRealtimeSliderControl(options = {}) {
       source: "desktop_manual",
     })
       .then((resp) => {
+        const status = String(resp?.data?.status || "").toLowerCase();
         if (resp?.data?.state) {
-          commitBackendStateSnapshot(resp.data.state);
+          commitBackendStateSnapshot(resp.data.state, { clearPendingManualTarget: true });
+        } else if (status !== "success") {
+          clearPendingManualTarget();
+          clearRealtimeSliderDraft();
+          if (websocketManager.isConnected) {
+            websocketManager.requestState();
+          }
         }
       })
       .catch((error) => {
         console.warn("实时滑条 HTTP 兜底失败:", error?.message || error);
         clearPendingManualTarget();
+        clearRealtimeSliderDraft();
       })
       .finally(() => {
         realtimeSliderFallbackInFlight.value = false;
@@ -3826,6 +3936,7 @@ const setupWebSocketStateSync = () => {
     }
     if (data?.status && String(data.status).toLowerCase() !== "success") {
       clearPendingManualTarget();
+      clearRealtimeSliderDraft();
       clearQuestRenderPreview();
       if (websocketManager.isConnected) {
         websocketManager.requestState();
@@ -3912,9 +4023,7 @@ const handleStateUpdate = (data) => {
 
   // 手动控制刚发出时，短时间忽略明显滞后的旧状态，避免前端“回弹到初始位”
   if (isQuestControlBackendState(data)) {
-    clearPendingManualTarget();
-    clearQuestRenderPreview();
-    applyBackendStateToScene(data);
+    applyQuestBackendStateToScene(data);
   } else if (shouldApplyIncomingBackendState(data, now)) {
     // 以后端回传状态为准，统一驱动机器人/夹爪/对象（带平滑）
     applyBackendStateToScene(data);

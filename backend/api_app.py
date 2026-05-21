@@ -113,10 +113,19 @@ def _consume_realtime_control_result(future: asyncio.Future[dict[str, Any]]) -> 
 
 
 async def _state_broadcast_loop() -> None:
+    last_tick = time.monotonic()
     while True:
+        now = time.monotonic()
+        elapsed_s = max(0.0, now - last_tick)
+        last_tick = now
         if manager.active_count > 0:
-            # Keep broadcast lightweight to reduce lock hold time and improve control responsiveness.
-            state = await simulation.get_state(refresh_camera=False)
+            # Keep broadcast lightweight while still advancing passive dynamics:
+            # objects that were bumped by the arm must continue falling/sliding
+            # between control commands.
+            state = await simulation.advance_and_get_state(
+                elapsed_s=elapsed_s,
+                refresh_camera=False,
+            )
             await manager.broadcast({"type": "state_broadcast", "data": state})
         await asyncio.sleep(STATE_BROADCAST_INTERVAL)
 
@@ -187,7 +196,8 @@ async def post_sim_step(request: StepRequest) -> CommandResult:
     try:
         state = await simulation.enqueue_step(request)
     except Exception as exc:
-        return CommandResult(status="error", message=f"step failed: {exc}")
+        state = await simulation.get_state(refresh_camera=False)
+        return CommandResult(status="error", message=f"step failed: {exc}", state=state)
 
     return CommandResult(status="success", message="step executed", state=state)
 
@@ -329,7 +339,15 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
         except ValidationError as exc:
             return _error_payload("CONTROL_VALIDATION_ERROR", "Invalid control payload", str(exc))
         except Exception as exc:
-            return _error_payload("CONTROL_EXECUTION_ERROR", "Control command failed", str(exc))
+            state = await simulation.get_state(refresh_camera=False)
+            return {
+                "type": "control_result",
+                "data": {
+                    "status": "error",
+                    "message": f"Control command failed: {exc}",
+                    "state": state,
+                },
+            }
 
     if message_type == "reset":
         try:

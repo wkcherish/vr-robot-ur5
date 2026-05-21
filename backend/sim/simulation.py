@@ -117,14 +117,15 @@ REALTIME_SOURCE_MIN_PHYSICS_HORIZON_S = 0.02
 REALTIME_COMMAND_BLEND_PER_STEP = 1.0
 REALTIME_ARM_MAX_DELTA_RAD = 0.12
 REALTIME_GRIPPER_MAX_DELTA_OPENING = 0.12
-REALTIME_EE_MAX_DELTA_M = 0.055
-IK_MAX_ITERATIONS = 8
+PASSIVE_ADVANCE_MAX_STEPS = 80
+REALTIME_EE_MAX_DELTA_M = 0.09
+IK_MAX_ITERATIONS = 10
 IK_POSITION_TOLERANCE_M = 0.003
 IK_ORIENTATION_TOLERANCE_RAD = 0.055
 IK_DAMPING = 0.08
-IK_MAX_STEP_RAD = 0.12
+IK_MAX_STEP_RAD = 0.16
 IK_POSITION_WEIGHT = 1.0
-IK_ORIENTATION_WEIGHT = 0.35
+IK_ORIENTATION_WEIGHT = 0.22
 GRIPPER_GRASP_ENGAGE_OPENING = 0.52
 GRIPPER_GRASP_RELEASE_OPENING = 0.18
 GRIPPER_GRASP_ATTACH_RADIUS_M = 0.20
@@ -589,6 +590,15 @@ class SimulationCore:
 
     async def get_state(self, refresh_camera: bool = True) -> dict[str, Any]:
         async with self._lock:
+            return self._build_state_locked(refresh_camera=refresh_camera)
+
+    async def advance_and_get_state(
+        self,
+        elapsed_s: float | None = None,
+        refresh_camera: bool = True,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            self._advance_passive_physics_locked(elapsed_s)
             return self._build_state_locked(refresh_camera=refresh_camera)
 
     async def get_camera_observation(self, include_data: bool = False) -> dict[str, Any]:
@@ -1162,12 +1172,16 @@ class SimulationCore:
         return False
 
     def _is_allowed_physics_contact(self, body_name_a: str, body_name_b: str) -> bool:
-        # Tool contacts are expected during grasping and placement.
+        # Tool/table/container contacts are part of the scene dynamics. They
+        # should be solved by MuJoCo and streamed to the frontend, not rejected
+        # as command errors.
         if body_name_a in TOOL_BODY_NAMES or body_name_b in TOOL_BODY_NAMES:
             return True
+
         # Gripper internal contacts can appear near full close and are not safety-critical.
         if body_name_a in GRIPPER_BODY_NAMES and body_name_b in GRIPPER_BODY_NAMES:
             return True
+
         return False
 
     def _collect_forbidden_contacts_locked(self) -> list[dict[str, Any]]:
@@ -2079,6 +2093,49 @@ class SimulationCore:
                 forward=True,
             )
             return
+
+    def _advance_passive_physics_locked(self, elapsed_s: float | None = None) -> int:
+        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
+            return 0
+
+        raw_elapsed = float(elapsed_s) if elapsed_s is not None else self._dt
+        if not math.isfinite(raw_elapsed) or raw_elapsed <= 0.0:
+            return 0
+
+        dt = max(self._dt, 1e-6)
+        steps = max(1, int(round(raw_elapsed / dt)))
+        steps = min(steps, PASSIVE_ADVANCE_MAX_STEPS)
+
+        for _ in range(steps):
+            self._set_mujoco_gripper_kinematic_state_locked(
+                self._gripper_opening,
+                0.0,
+            )
+            _mujoco.mj_step(self._mj_model, self._mj_data)
+            self._update_grasp_assist_locked(forward=False)
+
+        self._set_mujoco_gripper_kinematic_state_locked(
+            self._gripper_opening,
+            0.0,
+            forward=True,
+        )
+        self._sync_internal_state_from_mujoco_locked()
+        self._update_grasp_assist_locked(forward=True)
+
+        forbidden_contacts = self._collect_forbidden_contacts_locked()
+        if forbidden_contacts:
+            self._safety_status = "collision_blocked"
+            self._collision_blocked = True
+            self._last_collision_contacts = deepcopy(forbidden_contacts)
+        else:
+            self._safety_status = "normal"
+            self._collision_blocked = False
+            self._last_collision_contacts = []
+
+        self._sim_time += steps * self._dt
+        self._stats["steps"] += steps
+        self._objects_state = self._collect_objects_state_locked()
+        return steps
 
     def _map_gripper_joints(self, opening: float) -> dict[str, float]:
         driver = _clamp(opening, 0.0, 1.0) * GRIPPER_DRIVER_LIMIT
