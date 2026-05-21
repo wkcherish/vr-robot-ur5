@@ -555,7 +555,7 @@ const pendingManualTarget = ref(null);
 const realtimeSliderDraft = ref(null);
 const realtimeSliderFallbackInFlight = ref(false);
 const backendPoseSmoothingEnabled = ref(true);
-const backendPoseSmoothingAlpha = ref(0.26);
+const backendPoseSmoothingAlpha = ref(0.52);
 const backendRenderTarget = ref(null);
 const questRenderPreviewTarget = ref(null);
 
@@ -571,8 +571,8 @@ const ARM_STATE_MATCH_THRESHOLD_RAD = 0.08;
 const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.12;
 const MAX_RENDER_PIXEL_RATIO = 1.5;
 const QUEST_MAX_RENDER_PIXEL_RATIO = 1.0;
-const UI_SYNC_INTERVAL_MS = 66;
-const UI_POSE_SYNC_INTERVAL_MS = 100;
+const UI_SYNC_INTERVAL_MS = 33;
+const UI_POSE_SYNC_INTERVAL_MS = 50;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
 const VR_COMMAND_MIN_INTERVAL_MS = 24;
 const VR_COMMAND_STEPS = 20;
@@ -2366,6 +2366,29 @@ function commitQuestControlStateSnapshot(state, nowMs = Date.now()) {
   return true;
 }
 
+function commitDesktopControlStateSnapshot(state, nowMs = Date.now()) {
+  if (!state || typeof state !== "object") return false;
+  if (!acceptBackendStateTimestamp(state)) return false;
+
+  simulationState.value = state;
+  applyVrStateFromBackend(state);
+  checkD405ObservationReady(state);
+  checkRecordingBindingReady(state);
+  checkWebSocketReady();
+  updateNetworkPrereq();
+  updateSafetyFeedbackFromState(state);
+
+  if (shouldApplyIncomingBackendState(state, nowMs)) {
+    applyBackendStateToScene(state);
+  } else {
+    applySceneObjectsFromBackendState(state);
+    applySmoothedBackendPose();
+  }
+
+  lastStateUpdate.value = nowMs;
+  return true;
+}
+
 function isBackendStateAlignedWithQuestPreview(state) {
   const preview = getFreshQuestRenderPreview();
   if (!preview) return true;
@@ -2915,8 +2938,9 @@ function applyBackendStateToScene(state, options = {}) {
   try {
     applySceneObjectsFromBackendState(state);
     if (visualTarget) {
-      syncJointDisplayFromSceneIfNeeded(true);
-      syncEndEffectorPoseIfNeeded(true);
+      const forceUiSync = options.immediate === true;
+      syncJointDisplayFromSceneIfNeeded(forceUiSync);
+      syncEndEffectorPoseIfNeeded(forceUiSync);
     }
   } finally {
     isApplyingBackendState.value = false;
@@ -3080,7 +3104,7 @@ const sendArmCommandToBackend = async (armRadians, options = {}) => {
     }
 
     if (resp?.data?.state?.qpos && Array.isArray(resp.data.state.qpos)) {
-      commitBackendStateSnapshot(resp.data.state, { clearPendingManualTarget: true });
+      commitDesktopControlStateSnapshot(resp.data.state);
     }
 
     return { ok: true, message: resp.data?.message || "Command sent (HTTP)." };
@@ -3439,6 +3463,12 @@ function updateRealtimeSliderDraft(name, value) {
     gripperOpening,
   };
   realtimeSliderDraft.value = nextDraft;
+  backendRenderTarget.value = {
+    timestamp: nextDraft.updatedAt,
+    arm: arm.slice(0, ARM_JOINT_COUNT),
+    gripper: gripperOpening * GRIPPER_MAX_RAD,
+  };
+  applySmoothedBackendPose({ immediate: true });
   return nextDraft;
 }
 
@@ -3499,7 +3529,7 @@ function sendRealtimeSliderControl(options = {}) {
       .then((resp) => {
         const status = String(resp?.data?.status || "").toLowerCase();
         if (resp?.data?.state) {
-          commitBackendStateSnapshot(resp.data.state, { clearPendingManualTarget: true });
+          commitDesktopControlStateSnapshot(resp.data.state);
         } else if (status !== "success") {
           clearPendingManualTarget();
           clearRealtimeSliderDraft();
@@ -3922,7 +3952,7 @@ const setupWebSocketStateSync = () => {
       if (isQuestControlBackendState(data.state)) {
         commitQuestControlStateSnapshot(data.state);
       } else {
-        commitBackendStateSnapshot(data.state, { clearPendingManualTarget: true });
+        commitDesktopControlStateSnapshot(data.state);
       }
     }
     if (isQuestControllerModeActive()) {
