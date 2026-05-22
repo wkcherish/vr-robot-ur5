@@ -36,7 +36,8 @@
       "notes": [
         "MuJoCo cameras use local -Z as the optical axis.",
         "Use explicit focalpixel/principalpixel intrinsics instead of the older 4:3 640x480 crop.",
-        "MuJoCo principalpixel is an offset from the image center in pixels, not an OpenCV-style absolute principal point."
+        "MuJoCo principalpixel is an offset from the image center in pixels, not an OpenCV-style absolute principal point.",
+        "Current values are nominal placeholders until backend/d405_intrinsics.py --apply is run on the physical D405 host."
       ]
     },
     "mount": {

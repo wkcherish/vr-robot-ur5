@@ -4,6 +4,8 @@
 
 本文件用于冻结 `S1.5` 的主视觉传感器、挂载方式、仿真接口、标定版本与录制字段规范。
 
+真实 D405 内参与 MuJoCo 光轴的实测验证步骤，见 [docs/d405_real_intrinsics_validation.md](d405_real_intrinsics_validation.md)。
+
 ## 1. 主传感器角色冻结
 
 - 主视觉设备：`Intel RealSense D405`
@@ -80,6 +82,12 @@
   - `camera_intrinsics/<intrinsics_version>.json`
   - `camera_extrinsics/<extrinsics_version>.json`
   - `mounts/<mount_name>.json`
+
+真实内参写回流程：
+
+- 先用 `backend/d405_intrinsics.py` 连接真实 D405 读取 `fx/fy/ppx/ppy`
+- 再用 `--apply` 写回 MuJoCo XML 与配置
+- 详细操作见 [D405 真实内参与 MuJoCo 光轴验证步骤](d405_real_intrinsics_validation.md)
 
 ## 5. 录制前置字段冻结
 
