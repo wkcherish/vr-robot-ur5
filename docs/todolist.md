@@ -467,7 +467,7 @@
 
 - [x] `P0` 文档层已经把主任务切换为 `quest3_safe_handover_v1`
 - [x] `P0` 所有后续未开始任务都围绕安全交接时机理解展开
-- [x] `P0` 已明确现有工具场景、VR 控制、D405 和物理边界如何服务新任务
+- [x] `P0` 已明确现有工具场景、VR 控制、D405 和物理边界如何服务新任务后
 - [x] `P0` 已明确 VLA 和协作记忆模型的职责边界
 
 ---
@@ -478,48 +478,50 @@
 
 协作数据的主视觉观测必须来自机械臂末端 D405，而不是 Quest3 页面画面、Three.js 外部观察相机或调试相机。本阶段可以先于 human hand 开发启动：第一轮先验证夹爪、工具和 handover zone 是否在末端相机视野内；等 S7 的 human hand 接入后，再复测人手进入、犹豫、后撤和 release 前后的可见性。
 
+本轮落地产物：后端 D405 观测状态字段、`/sim/observation/` RGB-D 验证、前端 `D405ObservationPanel`、`shared/handover_scene_config.json`。
+
 ### S6.1 视觉来源边界冻结
 
-- [ ] `P0` 明确 `d405_rgb / d405_depth` 是 `quest3_safe_handover_v1` 的唯一训练主视觉来源
-- [ ] `P0` 明确 Quest3 页面画面、Three.js 观察相机、`camera / camera_base` 只能用于调试和展示
-- [ ] `P0` 在 episode metadata 中记录 `camera_device=intel_realsense_d405`
-- [ ] `P0` 在 episode metadata 中记录 `camera_mount_name`、`camera_intrinsics_version`、`camera_extrinsics_version`
-- [ ] `P0` 在 `validation_summary.json` 中增加 `camera_source_ok`，确认没有使用非 D405 图像
+- [x] `P0` 明确 `d405_rgb / d405_depth` 是 `quest3_safe_handover_v1` 的唯一训练主视觉来源
+- [x] `P0` 明确 Quest3 页面画面、Three.js 观察相机、`camera / camera_base` 只能用于调试和展示
+- [x] `P0` 在 episode metadata 中记录 `camera_device=intel_realsense_d405`
+- [x] `P0` 在 episode metadata 中记录 `camera_mount_name`、`camera_intrinsics_version`、`camera_extrinsics_version`
+- [x] `P0` 在 `validation_summary.json` 中增加 `camera_source_ok`，确认没有使用非 D405 图像
 
 ### S6.2 MuJoCo D405 挂载与第一轮渲染验证
 
-- [ ] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
-- [ ] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和 handover zone
-- [ ] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
+- [x] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
+- [x] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和 handover zone
+- [x] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
 - [ ] `P0` 确认 D405 在 `robot_grasp` 阶段能看到夹爪和目标工具
 - [ ] `P0` 确认 D405 在 `robot_offer` 阶段能看到工具和 handover zone
-- [ ] `P0` 在没有 human hand 前，先用 handover zone 标记或简化接收占位体检查未来人手进入区域是否在视野内
+- [x] `P0` 在没有 human hand 前，先用 handover zone 标记或简化接收占位体检查未来人手进入区域是否在视野内
 - [ ] `P0` 记录不同递送姿态下的遮挡情况，优先找出能同时看到夹爪、工具和接收区域的姿态
 
 ### S6.3 RGB-D 接口与落盘
 
-- [ ] `P0` 验证 `GET /sim/observation/` 返回 D405 观测摘要
-- [ ] `P0` 验证 `GET /sim/camera/rgb/` 返回有效 D405 RGB 图像
-- [ ] `P0` 验证 `GET /sim/camera/depth/` 返回有效 D405 Depth 图像
-- [ ] `P0` WebSocket 状态广播包含最近一帧 `d405_frame_id`、时间戳、有效性和错误原因
+- [x] `P0` 验证 `GET /sim/observation/` 返回 D405 观测摘要
+- [x] `P0` 验证 `GET /sim/camera/rgb/` 返回有效 D405 RGB 图像
+- [x] `P0` 验证 `GET /sim/camera/depth/` 返回有效 D405 Depth 图像
+- [x] `P0` WebSocket 状态广播包含最近一帧 `d405_frame_id`、时间戳、有效性和错误原因
 - [ ] `P0` 录制器写入 `visuals.jsonl`，包含 RGB 路径、Depth 路径、时间戳、相机位姿和有效性
-- [ ] `P0` Depth 使用无损格式保存，禁止把 JPG 或普通 MP4 帧作为训练主深度数据
-- [ ] `P0` MP4 预览仅用于人工检查，不作为训练主数据
+- [x] `P0` Depth 使用无损格式保存，禁止把 JPG 或普通 MP4 帧作为训练主深度数据
+- [x] `P0` MP4 预览仅用于人工检查，不作为训练主数据
 
 ### S6.4 前端 D405 观测面板
 
-- [ ] `P0` 前端新增或复用 D405 观测面板，显示当前 RGB 画面
-- [ ] `P0` 前端显示 Depth 原图或伪彩深度图
-- [ ] `P0` 前端显示帧号、时间戳、帧率和最近错误
-- [ ] `P0` 前端显示 `camera_capture_ok`、`rgb_valid`、`depth_valid`、`frame_aligned`
-- [ ] `P0` 前端明确标记当前视觉源是 D405，而不是 Quest3 页面画面或外部观察相机
+- [x] `P0` 前端新增或复用 D405 观测面板，显示当前 RGB 画面
+- [x] `P0` 前端显示 Depth 原图或伪彩深度图
+- [x] `P0` 前端显示帧号、时间戳、帧率和最近错误
+- [x] `P0` 前端显示 `camera_capture_ok`、`rgb_valid`、`depth_valid`、`frame_aligned`
+- [x] `P0` 前端明确标记当前视觉源是 D405，而不是 Quest3 页面画面或外部观察相机
 - [ ] `P1` 在观测面板中叠加 handover zone 或关键区域提示，辅助采集前检查
 
 ### S6.5 摄像头阶段验收
 
 - [ ] `P0` 第一轮 camera-only smoke test 中，D405 能稳定看到夹爪、目标工具和 handover zone
-- [ ] `P0` D405 Depth 不出现全零、全 NaN、严重错位或明显尺度错误
-- [ ] `P0` `validation_summary.json` 能报告 `camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
+- [x] `P0` D405 Depth 不出现全零、全 NaN、严重错位或明显尺度错误
+- [x] `P0` `validation_summary.json` 能报告 `camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
 - [ ] `P0` S7 接入 human hand 后，必须复测 `human_approach/hesitation/retreat/release` 阶段的人手可见性
 - [ ] `P0` 未通过 D405 观测验证和 human hand 可见性复测前，不允许进入批量协作数据采集
 - [ ] `P0` 若 D405 看不到交接关键区域，优先调整 handover zone、机器人递送姿态或相机挂载角度
@@ -960,14 +962,14 @@
 
 本周建议完成：
 
-- [ ] `P0` 确认 `d405_rgb / d405_depth` 是唯一训练主视觉来源
-- [ ] `P0` 确认 D405 末端挂载视角随机械臂运动，并朝向夹爪、工具和 handover zone
+- [x] `P0` 确认 `d405_rgb / d405_depth` 是唯一训练主视觉来源
+- [x] `P0` 确认 D405 末端挂载视角随机械臂运动，并朝向夹爪、工具和 handover zone
 - [ ] `P0` 验证 `robot_grasp / robot_offer` 阶段的 D405 画面
-- [ ] `P0` 使用 handover zone 标记或简化接收占位体检查未来人手区域是否在视野内
-- [ ] `P0` 验证 RGB、Depth 接口均返回有效帧，且不是 stub / fallback
-- [ ] `P0` 前端观测面板能显示 D405 RGB、Depth、帧号、时间戳和有效性
+- [x] `P0` 使用 handover zone 标记或简化接收占位体检查未来人手区域是否在视野内
+- [x] `P0` 验证 RGB、Depth 接口均返回有效帧，且不是 stub / fallback
+- [x] `P0` 前端观测面板能显示 D405 RGB、Depth、帧号、时间戳和有效性
 - [ ] `P0` 录制器能把 RGB、Depth 和 `visuals.jsonl` 一起落盘
-- [ ] `P0` `validation_summary.json` 增加 `camera_source_ok`、`camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
+- [x] `P0` `validation_summary.json` 增加 `camera_source_ok`、`camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
 
 周验收：
 

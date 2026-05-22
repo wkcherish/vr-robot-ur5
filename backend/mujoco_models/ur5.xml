@@ -150,8 +150,26 @@
                         contype="0"
                         conaffinity="0"
                       />
-                      <camera name="d405_rgb" pos="0 0 0" quat="1 0 0 0" fovy="58"/>
-                      <camera name="d405_depth" pos="0 0 0" quat="1 0 0 0" fovy="58"/>
+                      <!-- MuJoCo fixed cameras render along local -Z. principalpixel is the
+                           principal point offset from image center in pixels. -->
+                      <camera
+                        name="d405_rgb"
+                        pos="0 0 0.022"
+                        quat="0 1 0 0"
+                        resolution="1280 720"
+                        sensorsize="1 1"
+                        focalpixel="674.419 649.457"
+                        principalpixel="0 0"
+                      />
+                      <camera
+                        name="d405_depth"
+                        pos="0 0 0.022"
+                        quat="0 1 0 0"
+                        resolution="1280 720"
+                        sensorsize="1 1"
+                        focalpixel="674.419 649.457"
+                        principalpixel="0 0"
+                      />
                     </body>
                   </body>
                   <site name="tool0" pos="0 0 0" size="0.003" rgba="1 0.1 0.1 1"/>

@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "config_version": "quest3_safe_handover_v1_s6",
+  "updated_at": "2026-05-22T00:00:00+08:00",
+  "task_id": "quest3_safe_handover_v1",
+  "handover_zones": [
+    {
+      "id": "handover_zone_primary",
+      "frame": "backend",
+      "center": [0.18, -0.18, 1.08],
+      "size": [0.18, 0.16, 0.14],
+      "purpose": "safe_handover_reception",
+      "visible_in_d405_smoke_test": true,
+      "notes": "Camera-only S6 placeholder for the future human hand receiving region."
+    }
+  ],
+  "camera_smoke_test": {
+    "primary_visual_source": "d405_rgb+d405_depth",
+    "forbidden_training_sources": [
+      "quest3_page_capture",
+      "threejs_observer_camera",
+      "camera_base",
+      "camera",
+      "stub_frame"
+    ],
+    "required_visible_targets": [
+      "gripper",
+      "target_tool",
+      "handover_zone_primary"
+    ],
+    "scenarios": [
+      {
+        "id": "robot_grasp",
+        "target": "D405 sees gripper and selected tool before lift."
+      },
+      {
+        "id": "robot_offer",
+        "target": "D405 sees carried tool and handover_zone_primary."
+      },
+      {
+        "id": "handover_zone_placeholder",
+        "target": "D405 sees the simplified receiving region before human_hand exists."
+      }
+    ],
+    "validation_summary_fields": [
+      "camera_source_ok",
+      "camera_capture_ok",
+      "camera_view_ok",
+      "frame_alignment_ok"
+    ]
+  }
+}

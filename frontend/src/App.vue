@@ -128,6 +128,12 @@
           <div class="progress-text">任务进度: {{ taskProgress }}%</div>
         </div>
 
+        <D405ObservationPanel
+          v-if="showD405Panel"
+          :snapshot="simulationState"
+          @close="showD405Panel = false"
+        />
+
         <div class="vr-control-panel" :class="{ 'quest-device': isQuest3Device }" v-if="showVrControlPanel">
           <div class="vr-control-header">
             <h4>VR控制中心</h4>
@@ -417,6 +423,13 @@
             <span class="panel-icon">📊</span> 任务进度
           </button>
           <button
+            @click="togglePanel('d405')"
+            class="panel-control-button"
+            :class="{ active: showD405Panel }"
+          >
+            <span class="panel-icon">▣</span> D405观测
+          </button>
+          <button
             @click="togglePanel('vr-control')"
             class="panel-control-button"
             :class="{ active: showVrControlPanel }"
@@ -433,6 +446,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from "vue";
 const Menu = defineAsyncComponent(() => import("./components/robot.vue"));
 const Control = defineAsyncComponent(() => import("./components/control.vue"));
+const D405ObservationPanel = defineAsyncComponent(() => import("./components/D405ObservationPanel.vue"));
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
@@ -468,6 +482,7 @@ const showControlPanel = ref(false); // 仿真控制面板默认不显示
 const showViewControls = ref(true); // 视角控制默认显示
 const showTaskProgress = ref(true); // 任务进度默认显示
 const showVrControlPanel = ref(false); // VR控制中心默认不显示
+const showD405Panel = ref(false); // D405 观测面板默认不显示
 const ARM_JOINT_COUNT = 6;
 const TOTAL_INPUT_JOINT_COUNT = 7;
 const GRIPPER_MIN_RAD = 0;
@@ -927,25 +942,27 @@ function updateHandTrackingFromBackend(state) {
 }
 
 function checkD405ObservationReady(state) {
-  const camera = state?.camera;
-  const cameraDevice = String(camera?.device || "");
+  const camera = state?.camera || state;
+  const cameraDevice = String(camera?.device || camera?.camera_device || "");
   const rgbName = String(camera?.rgb?.interface_name || "");
   const depthName = String(camera?.depth?.interface_name || "");
   const captureOk = Boolean(state?.camera_capture_ok ?? camera?.camera_capture_ok);
   const frameAligned = Boolean(camera?.frame_aligned);
   const recordable = Boolean(camera?.recordable_training_observation);
+  const sourceOk = Boolean(camera?.camera_source_ok ?? true);
+  const stubFrameUsed = Boolean(camera?.stub_frame_used);
 
   const isD405 = cameraDevice === "intel_realsense_d405";
   const hasStreams = rgbName.length > 0 && depthName.length > 0;
 
-  if (isD405 && hasStreams && captureOk && frameAligned && recordable) {
+  if (isD405 && hasStreams && captureOk && frameAligned && recordable && sourceOk && !stubFrameUsed) {
     d405CheckStatus.value = "ok";
     d405CheckMessage.value = "D405 RGB-D 已就绪";
     return;
   }
 
   d405CheckStatus.value = "error";
-  d405CheckMessage.value = "D405 观测链未就绪";
+  d405CheckMessage.value = camera?.last_error || "D405 观测链未就绪";
 }
 
 function checkRecordingBindingReady(state) {
@@ -3372,6 +3389,9 @@ function togglePanel(panel) {
       break;
     case "progress":
       showTaskProgress.value = !showTaskProgress.value;
+      break;
+    case "d405":
+      showD405Panel.value = !showD405Panel.value;
       break;
     case "vr-control":
       showVrControlPanel.value = !showVrControlPanel.value;

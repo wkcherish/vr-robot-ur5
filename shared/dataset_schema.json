@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0.0",
-  "dataset_schema_version": "quest3_tool_sorting_v1_s1_5",
-  "updated_at": "2026-04-12T20:30:00+08:00",
-  "task_id": "quest3_tool_sorting_v1",
+  "dataset_schema_version": "quest3_safe_handover_v1_s6",
+  "updated_at": "2026-05-22T00:00:00+08:00",
+  "task_id": "quest3_safe_handover_v1",
   "required_modalities": [
     "rgb",
     "depth",
@@ -15,9 +15,28 @@
     "language_file": "language.json",
     "rgb_dir": "rgb",
     "depth_dir": "depth",
+    "visuals_file": "visuals.jsonl",
     "states_file": "states.jsonl",
     "actions_file": "actions.jsonl",
-    "result_file": "result.json"
+    "relations_file": "relations.jsonl",
+    "events_file": "events.jsonl",
+    "phase_labels_file": "phase_labels.jsonl",
+    "result_file": "result.json",
+    "validation_summary_file": "validation_summary.json"
+  },
+  "camera_source_policy": {
+    "primary_visual_source": "intel_realsense_d405",
+    "required_rgb_camera_name": "d405_rgb",
+    "required_depth_camera_name": "d405_depth",
+    "forbidden_training_sources": [
+      "quest3_page_capture",
+      "threejs_observer_camera",
+      "camera_base",
+      "camera",
+      "stub_frame"
+    ],
+    "mp4_preview_only": true,
+    "stub_frame_for_training_forbidden": true
   },
   "image_storage": {
     "rgb": {
@@ -47,6 +66,11 @@
     "input_source",
     "runtime_target",
     "instruction_text",
+    "collection_stage",
+    "episode_type",
+    "handover_object_id",
+    "handover_object_class",
+    "handover_zone_id",
     "camera_device",
     "camera_mount_name",
     "camera_intrinsics_version",
@@ -55,6 +79,7 @@
   "visual_sample_required_fields": [
     "timestamp",
     "frame_id",
+    "d405_frame_id",
     "rgb_path",
     "depth_path",
     "rgb_timestamp",
@@ -64,6 +89,10 @@
     "camera_pose_in_base",
     "rgb_missing",
     "depth_missing",
+    "rgb_valid",
+    "depth_valid",
+    "camera_source_ok",
+    "stub_frame_used",
     "visual_valid"
   ],
   "state_sample_required_fields": [
@@ -75,6 +104,8 @@
     "gripper_opening",
     "objects",
     "camera_capture_ok",
+    "d405_frame_id",
+    "camera_observation",
     "instruction_text"
   ],
   "action_sample_required_fields": [
@@ -86,6 +117,15 @@
     "runtime_target",
     "paired_frame_id",
     "instruction_text"
+  ],
+  "validation_summary_required_fields": [
+    "camera_source_ok",
+    "camera_capture_ok",
+    "camera_view_ok",
+    "frame_alignment_ok",
+    "rgb_valid",
+    "depth_valid",
+    "stub_frame_used"
   ],
   "alignment_rules": {
     "paired_frame_required_for_each_action": true,

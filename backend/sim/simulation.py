@@ -84,17 +84,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
 DEFAULT_CAMERA_SENSOR_CONFIG_PATH = REPO_ROOT / "shared" / "camera_sensor_config.json"
 DEFAULT_DATASET_SCHEMA_PATH = REPO_ROOT / "shared" / "dataset_schema.json"
+DEFAULT_HANDOVER_SCENE_CONFIG_PATH = REPO_ROOT / "shared" / "handover_scene_config.json"
 BACKEND_FRAME_Z_OFFSET = 0.5
 BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
 MAX_ALLOWED_PENETRATION_M = 8e-4
 MAX_COLLISION_REPORTS = 3
-DEFAULT_CAMERA_MOUNT_POSITION = [0.0, -0.077929684, 0.055]
-DEFAULT_CAMERA_MOUNT_QUATERNION = [1.0, 0.0, 0.0, 0.0]
+EXPECTED_CAMERA_DEVICE = "intel_realsense_d405"
+EXPECTED_RGB_CAMERA_NAME = "d405_rgb"
+EXPECTED_DEPTH_CAMERA_NAME = "d405_depth"
+DEFAULT_CAMERA_MOUNT_POSITION = [0.0, -0.077929684, 0.077]
+DEFAULT_CAMERA_MOUNT_QUATERNION = [0.0, 1.0, 0.0, 0.0]
 DEFAULT_RGB_STREAM = {
     "interface_name": "sim_camera_rgb",
     "camera_name": "d405_rgb",
-    "width": 640,
-    "height": 480,
+    "width": 1280,
+    "height": 720,
     "fps": 30.0,
     "pixel_format": "rgb8",
     "dataset_storage_format": "jpg",
@@ -102,8 +106,8 @@ DEFAULT_RGB_STREAM = {
 DEFAULT_DEPTH_STREAM = {
     "interface_name": "sim_camera_depth",
     "camera_name": "d405_depth",
-    "width": 640,
-    "height": 480,
+    "width": 1280,
+    "height": 720,
     "fps": 30.0,
     "pixel_format": "depth16",
     "dataset_storage_format": "png16",
@@ -309,7 +313,10 @@ class SimulationCore:
         self._spawn_regions: dict[str, dict[str, Any]] = {}
         self._camera_sensor_config_path: str | None = None
         self._dataset_schema_path: str | None = None
+        self._handover_scene_config_path: str | None = None
         self._dataset_schema: dict[str, Any] = {}
+        self._handover_zones: list[dict[str, Any]] = []
+        self._camera_smoke_test_plan: dict[str, Any] = {}
         self._camera_device = "intel_realsense_d405"
         self._camera_mount_name = "wrist_d405_v1"
         self._camera_mount_parent_frame = "wrist_3_link"
@@ -614,9 +621,15 @@ class SimulationCore:
             payload: dict[str, Any] = {
                 "timestamp": time.time(),
                 "frame_id": observation.get("frame_id"),
+                "d405_frame_id": observation.get("d405_frame_id"),
                 "camera_device": observation.get("camera_device"),
                 "camera_mount_name": observation.get("camera_mount_name"),
+                "camera_source_ok": observation.get("camera_source_ok", False),
                 "camera_capture_ok": observation.get("camera_capture_ok", False),
+                "rgb_valid": observation.get("rgb_valid", False),
+                "depth_valid": observation.get("depth_valid", False),
+                "stub_frame_used": observation.get("stub_frame_used", False),
+                "last_error": observation.get("last_error"),
                 "stream_name": stream_name,
                 "stream": stream_state,
             }
@@ -761,6 +774,7 @@ class SimulationCore:
         self._load_spawn_regions_from_tool_catalog()
         self._load_camera_sensor_config()
         self._load_dataset_schema()
+        self._load_handover_scene_config()
 
     def _register_spawn_region(self, region: Any) -> None:
         if not isinstance(region, dict):
@@ -962,6 +976,71 @@ class SimulationCore:
 
         if isinstance(parsed, dict):
             self._dataset_schema = parsed
+
+    def _load_handover_scene_config(self) -> None:
+        config_path = self._resolve_repo_path(self._manifest_data.get("handover_scene_config_path"))
+        if config_path is None:
+            config_path = DEFAULT_HANDOVER_SCENE_CONFIG_PATH
+        self._handover_scene_config_path = str(config_path)
+        self._handover_zones = []
+        self._camera_smoke_test_plan = {}
+        if not config_path.exists():
+            return
+
+        try:
+            raw = config_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+        except Exception:
+            return
+        if not isinstance(parsed, dict):
+            return
+
+        zones_raw = parsed.get("handover_zones", [])
+        if isinstance(zones_raw, list):
+            for zone_raw in zones_raw:
+                zone = self._parse_handover_zone(zone_raw)
+                if zone is not None:
+                    self._handover_zones.append(zone)
+
+        smoke_plan = parsed.get("camera_smoke_test", {})
+        if isinstance(smoke_plan, dict):
+            self._camera_smoke_test_plan = deepcopy(smoke_plan)
+
+    def _parse_handover_zone(self, zone_raw: Any) -> dict[str, Any] | None:
+        if not isinstance(zone_raw, dict):
+            return None
+        zone_id = str(zone_raw.get("id", "")).strip()
+        if not zone_id:
+            return None
+
+        center_raw = zone_raw.get("center", zone_raw.get("position", [0.0, 0.0, 0.0]))
+        size_raw = zone_raw.get("size", [0.12, 0.12, 0.12])
+        if not isinstance(center_raw, list) or len(center_raw) < 3:
+            return None
+        if not isinstance(size_raw, list) or len(size_raw) < 3:
+            return None
+
+        try:
+            center = [float(center_raw[0]), float(center_raw[1]), float(center_raw[2])]
+            size = [max(0.0, float(size_raw[0])), max(0.0, float(size_raw[1])), max(0.0, float(size_raw[2]))]
+        except (TypeError, ValueError):
+            return None
+
+        frame = str(zone_raw.get("frame", "backend")).strip().lower()
+        if frame not in {"frontend", "backend"}:
+            frame = "backend"
+        backend_center = self._frontend_to_backend_position(center) if frame == "frontend" else list(center)
+
+        return {
+            "id": zone_id,
+            "frame": frame,
+            "center": center,
+            "backend_center": backend_center,
+            "size": size,
+            "purpose": str(zone_raw.get("purpose", "safe_handover_reception")),
+            "visible_in_d405_smoke_test": bool(zone_raw.get("visible_in_d405_smoke_test", True)),
+            "notes": str(zone_raw.get("notes", "")),
+        }
 
     def _frontend_to_backend_position(self, frontend_position: list[float]) -> list[float]:
         x_frontend, y_frontend, z_frontend = frontend_position
@@ -2230,6 +2309,115 @@ class SimulationCore:
         depth_mm = np.full((depth_h, depth_w), 900, dtype=np.uint16)
         return rgb, depth_mm
 
+    def _validate_rgb_frame(self, frame: Any | None, missing: bool) -> tuple[bool, str | None]:
+        if missing or frame is None:
+            return False, "rgb_render_missing"
+        if np is None:
+            return False, "numpy_unavailable"
+        arr = np.asarray(frame)
+        expected_height = int(self._rgb_stream["height"])
+        expected_width = int(self._rgb_stream["width"])
+        if arr.ndim != 3 or arr.shape[2] < 3:
+            return False, "rgb_shape_invalid"
+        if arr.shape[0] != expected_height or arr.shape[1] != expected_width:
+            return False, "rgb_resolution_mismatch"
+        if arr.size == 0:
+            return False, "rgb_empty"
+        return True, None
+
+    def _validate_depth_frame(self, frame: Any | None, missing: bool) -> tuple[bool, str | None]:
+        if missing or frame is None:
+            return False, "depth_render_missing"
+        if np is None:
+            return False, "numpy_unavailable"
+        arr = np.asarray(frame)
+        expected_height = int(self._depth_stream["height"])
+        expected_width = int(self._depth_stream["width"])
+        if arr.ndim != 2:
+            return False, "depth_shape_invalid"
+        if arr.shape[0] != expected_height or arr.shape[1] != expected_width:
+            return False, "depth_resolution_mismatch"
+        if arr.size == 0:
+            return False, "depth_empty"
+        if not np.isfinite(arr.astype(np.float32)).all():
+            return False, "depth_non_finite"
+        if int(np.max(arr)) <= 0:
+            return False, "depth_all_zero"
+        return True, None
+
+    def _camera_source_ok(self) -> bool:
+        return bool(
+            self._camera_device == EXPECTED_CAMERA_DEVICE
+            and str(self._rgb_stream.get("camera_name")) == EXPECTED_RGB_CAMERA_NAME
+            and str(self._depth_stream.get("camera_name")) == EXPECTED_DEPTH_CAMERA_NAME
+            and bool(self._camera_recordable_training_observation)
+        )
+
+    def _depth_storage_lossless_ok(self) -> bool:
+        depth_format = str(self._depth_stream.get("dataset_storage_format", "")).strip().lower()
+        image_storage_raw = self._dataset_schema.get("image_storage", {})
+        image_storage = image_storage_raw if isinstance(image_storage_raw, dict) else {}
+        depth_storage_raw = image_storage.get("depth", {})
+        depth_storage = depth_storage_raw if isinstance(depth_storage_raw, dict) else {}
+        allowed_depth_formats = depth_storage.get("allowed_formats", ["png16", "npy"])
+        if not isinstance(allowed_depth_formats, list):
+            allowed_depth_formats = ["png16", "npy"]
+        allowed = {str(item).strip().lower() for item in allowed_depth_formats}
+        return depth_format in allowed and depth_format not in {"jpg", "jpeg", "mp4"}
+
+    def _build_camera_validation_summary(self, camera_state: dict[str, Any]) -> dict[str, Any]:
+        camera_capture_ok = bool(camera_state.get("camera_capture_ok", False))
+        camera_source_ok = bool(camera_state.get("camera_source_ok", False))
+        frame_alignment_ok = bool(camera_state.get("frame_aligned", False))
+        rgb_valid = bool(camera_state.get("rgb_valid", False))
+        depth_valid = bool(camera_state.get("depth_valid", False))
+        stub_frame_used = bool(camera_state.get("stub_frame_used", False))
+        camera_view_ok = bool(camera_state.get("camera_view_ok", False))
+        camera_view_status = str(camera_state.get("camera_view_status", "unchecked"))
+        pending_human_hand_retest = True
+        return {
+            "camera_source_ok": camera_source_ok,
+            "camera_capture_ok": camera_capture_ok,
+            "camera_view_ok": camera_view_ok,
+            "camera_view_status": camera_view_status,
+            "frame_alignment_ok": frame_alignment_ok,
+            "rgb_valid": rgb_valid,
+            "depth_valid": depth_valid,
+            "stub_frame_used": stub_frame_used,
+            "depth_lossless_storage_ok": self._depth_storage_lossless_ok(),
+            "mp4_preview_only": True,
+            "ready_for_camera_only_smoke_test": bool(
+                camera_source_ok and camera_capture_ok and frame_alignment_ok and not stub_frame_used
+            ),
+            "pending_human_hand_retest": pending_human_hand_retest,
+            "last_error": camera_state.get("last_error"),
+        }
+
+    def _build_visuals_record_template(self, camera_state: dict[str, Any]) -> dict[str, Any]:
+        frame_id = str(camera_state.get("d405_frame_id") or camera_state.get("frame_id") or "d405_000000")
+        rgb_format = str(self._rgb_stream.get("dataset_storage_format", "jpg")).strip().lower() or "jpg"
+        depth_format = str(self._depth_stream.get("dataset_storage_format", "png16")).strip().lower() or "png16"
+        depth_ext = "png" if depth_format == "png16" else depth_format
+        return {
+            "timestamp": camera_state.get("timestamp"),
+            "frame_id": frame_id,
+            "d405_frame_id": frame_id,
+            "rgb_path": f"rgb/{frame_id}.{rgb_format}",
+            "depth_path": f"depth/{frame_id}.{depth_ext}",
+            "rgb_timestamp": camera_state.get("rgb", {}).get("timestamp"),
+            "depth_timestamp": camera_state.get("depth", {}).get("timestamp"),
+            "frame_aligned": bool(camera_state.get("frame_aligned", False)),
+            "camera_pose_in_ee": deepcopy(camera_state.get("camera_pose_in_ee", {})),
+            "camera_pose_in_base": deepcopy(camera_state.get("camera_pose_in_base", {})),
+            "rgb_missing": bool(camera_state.get("rgb", {}).get("missing", True)),
+            "depth_missing": bool(camera_state.get("depth", {}).get("missing", True)),
+            "rgb_valid": bool(camera_state.get("rgb_valid", False)),
+            "depth_valid": bool(camera_state.get("depth_valid", False)),
+            "camera_source_ok": bool(camera_state.get("camera_source_ok", False)),
+            "stub_frame_used": bool(camera_state.get("stub_frame_used", False)),
+            "visual_valid": bool(camera_state.get("camera_capture_ok", False)),
+        }
+
     def _render_camera_frames_locked(self) -> tuple[Any | None, Any | None]:
         if (
             not self._using_mujoco_model()
@@ -2298,6 +2486,9 @@ class SimulationCore:
         rgb_rendered, depth_rendered = self._render_camera_frames_locked()
         rgb_missing = rgb_rendered is None
         depth_missing = depth_rendered is None
+        rgb_valid, rgb_error = self._validate_rgb_frame(rgb_rendered, rgb_missing)
+        depth_valid, depth_error = self._validate_depth_frame(depth_rendered, depth_missing)
+        stub_frame_used = bool(rgb_missing or depth_missing)
         if rgb_missing or depth_missing:
             stub_rgb, stub_depth = self._build_stub_camera_frames_locked()
             if rgb_rendered is None:
@@ -2319,7 +2510,7 @@ class SimulationCore:
         frame_aligned = alignment_error_ms <= self._camera_alignment_max_delta_ms
 
         self._camera_frame_counter += 1
-        frame_id = f"frame_{self._camera_frame_counter:06d}"
+        frame_id = f"d405_{self._camera_frame_counter:06d}"
         self._stats["camera_frames"] = int(self._stats.get("camera_frames", 0)) + 1
 
         if np is not None and rgb_rendered is not None:
@@ -2332,27 +2523,46 @@ class SimulationCore:
         else:
             self._camera_last_depth_frame = None
 
-        camera_capture_ok = bool(
-            (not rgb_missing)
-            and (not depth_missing)
-            and frame_aligned
-            and self._camera_recordable_training_observation
-        )
+        camera_source_ok = self._camera_source_ok()
+        camera_capture_ok = bool(camera_source_ok and rgb_valid and depth_valid and frame_aligned and not stub_frame_used)
         if not camera_capture_ok:
             self._stats["camera_drops"] = int(self._stats.get("camera_drops", 0)) + 1
+        error_reasons = [
+            reason
+            for reason in [
+                None if camera_source_ok else "camera_source_not_d405_primary",
+                rgb_error,
+                depth_error,
+                None if frame_aligned else "rgb_depth_frame_misaligned",
+                "stub_frame_used" if stub_frame_used else None,
+                None if self._camera_recordable_training_observation else "camera_not_recordable",
+            ]
+            if reason
+        ]
+        last_error = ";".join(error_reasons) if error_reasons else None
+        camera_view_status = "pending_camera_only_smoke_test" if camera_capture_ok else "capture_invalid"
 
         camera_state: dict[str, Any] = {
+            "timestamp": float(now),
             "device": self._camera_device,
             "mount_name": self._camera_mount_name,
             "mount_parent_frame": self._camera_mount_parent_frame,
             "camera_intrinsics_version": self._camera_intrinsics_version,
             "camera_extrinsics_version": self._camera_extrinsics_version,
             "frame_id": frame_id,
+            "d405_frame_id": frame_id,
             "frame_aligned": frame_aligned,
             "alignment_mode": self._camera_alignment_mode,
             "max_alignment_error_ms": float(self._camera_alignment_max_delta_ms),
             "recordable_training_observation": bool(self._camera_recordable_training_observation),
             "camera_capture_ok": camera_capture_ok,
+            "camera_source_ok": camera_source_ok,
+            "rgb_valid": rgb_valid,
+            "depth_valid": depth_valid,
+            "stub_frame_used": stub_frame_used,
+            "camera_view_ok": False,
+            "camera_view_status": camera_view_status,
+            "last_error": last_error,
             "debug_only_objects": list(self._camera_debug_only_objects),
             "camera_pose_in_ee": {
                 "position": [float(v) for v in self._camera_pose_in_ee["position"]],
@@ -2372,6 +2582,8 @@ class SimulationCore:
                 "dataset_storage_format": str(self._rgb_stream["dataset_storage_format"]),
                 "timestamp": rgb_timestamp,
                 "missing": bool(rgb_missing),
+                "valid": rgb_valid,
+                "error_reason": rgb_error,
             },
             "depth": {
                 "interface_name": str(self._depth_stream["interface_name"]),
@@ -2383,6 +2595,8 @@ class SimulationCore:
                 "dataset_storage_format": str(self._depth_stream["dataset_storage_format"]),
                 "timestamp": depth_timestamp,
                 "missing": bool(depth_missing),
+                "valid": depth_valid,
+                "error_reason": depth_error,
                 "depth_unit": str(self._depth_stream.get("depth_unit", "millimeter")),
                 "depth_scale": float(self._depth_stream.get("depth_scale", 1.0)),
             },
@@ -2418,21 +2632,35 @@ class SimulationCore:
         camera_state = self._capture_camera_state_locked(force_capture=include_data)
         alignment_rules_raw = self._dataset_schema.get("alignment_rules", {})
         alignment_rules = alignment_rules_raw if isinstance(alignment_rules_raw, dict) else {}
+        validation_summary = self._build_camera_validation_summary(camera_state)
+        visuals_record_template = self._build_visuals_record_template(camera_state)
         observation: dict[str, Any] = {
             "timestamp": time.time(),
             "frame_id": camera_state.get("frame_id"),
+            "d405_frame_id": camera_state.get("d405_frame_id"),
             "camera_device": camera_state.get("device"),
             "camera_mount_name": camera_state.get("mount_name"),
             "camera_intrinsics_version": camera_state.get("camera_intrinsics_version"),
             "camera_extrinsics_version": camera_state.get("camera_extrinsics_version"),
+            "camera_source_ok": camera_state.get("camera_source_ok", False),
             "camera_capture_ok": camera_state.get("camera_capture_ok", False),
             "frame_aligned": camera_state.get("frame_aligned", False),
             "recordable_training_observation": camera_state.get("recordable_training_observation", False),
+            "rgb_valid": camera_state.get("rgb_valid", False),
+            "depth_valid": camera_state.get("depth_valid", False),
+            "stub_frame_used": camera_state.get("stub_frame_used", False),
+            "camera_view_ok": camera_state.get("camera_view_ok", False),
+            "camera_view_status": camera_state.get("camera_view_status", "unchecked"),
+            "last_error": camera_state.get("last_error"),
             "rgb": dict(camera_state.get("rgb", {})),
             "depth": dict(camera_state.get("depth", {})),
             "camera_pose_in_ee": deepcopy(camera_state.get("camera_pose_in_ee", {})),
             "camera_pose_in_base": deepcopy(camera_state.get("camera_pose_in_base", {})),
             "dataset_schema_version": self._dataset_schema.get("dataset_schema_version"),
+            "handover_zones": deepcopy(self._handover_zones),
+            "camera_smoke_test_plan": deepcopy(self._camera_smoke_test_plan),
+            "validation_summary": validation_summary,
+            "visuals_record_template": visuals_record_template,
             "paired_frame_required_for_each_action": bool(
                 alignment_rules.get("paired_frame_required_for_each_action", True)
             ),
@@ -2502,6 +2730,23 @@ class SimulationCore:
         else:
             # Initialize camera snapshot once so lightweight broadcasts can reuse it.
             camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
+        camera_validation_summary = self._build_camera_validation_summary(camera_state)
+        camera_observation = {
+            "d405_frame_id": camera_state.get("d405_frame_id"),
+            "timestamp": camera_state.get("timestamp"),
+            "camera_device": camera_state.get("device"),
+            "camera_mount_name": camera_state.get("mount_name"),
+            "camera_source_ok": bool(camera_state.get("camera_source_ok", False)),
+            "camera_capture_ok": bool(camera_state.get("camera_capture_ok", False)),
+            "rgb_valid": bool(camera_state.get("rgb_valid", False)),
+            "depth_valid": bool(camera_state.get("depth_valid", False)),
+            "frame_aligned": bool(camera_state.get("frame_aligned", False)),
+            "stub_frame_used": bool(camera_state.get("stub_frame_used", False)),
+            "camera_view_ok": bool(camera_state.get("camera_view_ok", False)),
+            "camera_view_status": str(camera_state.get("camera_view_status", "unchecked")),
+            "last_error": camera_state.get("last_error"),
+            "validation_summary": camera_validation_summary,
+        }
         return {
             "timestamp": time.time(),
             "sim_time": self._sim_time,
@@ -2516,8 +2761,11 @@ class SimulationCore:
             "gripper_opening": self._gripper_opening,
             "gripper_joints": dict(self._gripper_joints),
             "objects": deepcopy(self._objects_state),
+            "handover_zones": deepcopy(self._handover_zones),
             "camera": camera_state,
             "camera_capture_ok": bool(camera_state.get("camera_capture_ok", False)),
+            "d405_frame_id": camera_state.get("d405_frame_id"),
+            "camera_observation": camera_observation,
             "task_state": dict(self._task_state),
             "source": self._source,
             "input_source": self._last_input_source,
