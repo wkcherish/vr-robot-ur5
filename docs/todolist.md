@@ -240,6 +240,7 @@
 - [x] `P0` 冻结相机相对末端的安装方案命名，例如 `wrist_d405_v1`
 - [x] `P0` 明确 `data/calibration/` 下相机标定文件的组织方式
 - [x] `P0` 明确 episode 元数据中必须记录 `camera_device`、`camera_intrinsics_version`、`camera_extrinsics_version`
+- [ ] `P0` 按 `docs/d405_real_intrinsics_validation.md` 连接真实 D405，读取实测 `fx/fy/ppx/ppy`，并写回 MuJoCo `focalpixel/principalpixel`
 - [ ] `P1` 预留后续真实 D405 与仿真相机的误差分析字段
 
 ### S1.5.4 数据录制前置条件
@@ -493,6 +494,7 @@
 - [x] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
 - [x] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和 handover zone
 - [x] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
+- [ ] `P0` 确认 MuJoCo D405 内参来自真实 D405 实测值，而不是只用图像中心光轴占位
 - [ ] `P0` 确认 D405 在 `robot_grasp` 阶段能看到夹爪和目标工具
 - [ ] `P0` 确认 D405 在 `robot_offer` 阶段能看到工具和 handover zone
 - [x] `P0` 在没有 human hand 前，先用 handover zone 标记或简化接收占位体检查未来人手进入区域是否在视野内

@@ -150,8 +150,9 @@
                         contype="0"
                         conaffinity="0"
                       />
-                      <!-- MuJoCo fixed cameras render along local -Z. principalpixel is the
-                           principal point offset from image center in pixels. -->
+                      <!-- MuJoCo fixed cameras render along local -Z. Replace these
+                           nominal intrinsics by running backend/d405_intrinsics.py with apply
+                           on the physical D405 host before claiming real-camera match. -->
                       <camera
                         name="d405_rgb"
                         pos="0 0 0.022"
