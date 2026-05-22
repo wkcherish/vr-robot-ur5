@@ -125,4 +125,7 @@ npm run dev
 ## 相关文档
 
 - [backend/README.md](backend/README.md)
+- [docs/task.md](docs/task.md)
+- [docs/todolist.md](docs/todolist.md)
+- [docs/s5_safe_handover_freeze.md](docs/s5_safe_handover_freeze.md)
 - [docs/vr_control_and_performance_update_2026-04-24.md](docs/vr_control_and_performance_update_2026-04-24.md)

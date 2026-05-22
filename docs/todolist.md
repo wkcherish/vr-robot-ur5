@@ -433,40 +433,42 @@
 
 把后续主链路从“工具抓取入箱”升级为“人机协作安全交接时机理解”。已完成的工具、工具箱、UR5、VR 控制和物理边界能力作为基础资产继续复用；新的核心问题是：机器人在递送工具时，如何根据人手行为的历史变化判断当前是否已经形成稳定可信的交接关系。
 
+本轮落地产物：`docs/s5_safe_handover_freeze.md`。
+
 ### S5.1 研究问题与任务名称冻结
 
-- [ ] `P0` 将新主任务名冻结为 `quest3_safe_handover_v1`
-- [ ] `P0` 明确主问题不是单纯抓取、避障或碰撞检测，而是“什么时候适合释放工具”
-- [ ] `P0` 明确系统输出不只是 `ready/not_ready`，还要能识别 `approach/stabilization/hesitation/retreat/ready/release`
-- [ ] `P0` 明确 `quest3_tool_sorting_v1` 保留为工具场景和机器人操作基线，不再作为最终主任务
-- [ ] `P0` 明确工具箱在新任务中可作为初始工具收纳/场景资产，不再是最终放置目标
-- [ ] `P0` 明确第一版交接对象仍使用已建好的 `wrench/screwdriver/pliers`，避免重新处理资产
-- [ ] `P0` 明确第一版 human hand 是仿真人手，由 Quest3 手势模式控制，不依赖真实人手硬件接入
+- [x] `P0` 将新主任务名冻结为 `quest3_safe_handover_v1`
+- [x] `P0` 明确主问题不是单纯抓取、避障或碰撞检测，而是“什么时候适合释放工具”
+- [x] `P0` 明确系统输出不只是 `ready/not_ready`，还要能识别 `approach/stabilization/hesitation/retreat/ready/release`
+- [x] `P0` 明确 `quest3_tool_sorting_v1` 保留为工具场景和机器人操作基线，不再作为最终主任务
+- [x] `P0` 明确工具箱在新任务中可作为初始工具收纳/场景资产，不再是最终放置目标
+- [x] `P0` 明确第一版交接对象仍使用已建好的 `wrench/screwdriver/pliers`，避免重新处理资产
+- [x] `P0` 明确第一版 human hand 是仿真人手，由 Quest3 手势模式控制，不依赖真实人手硬件接入
 
 ### S5.2 双层协作架构冻结
 
-- [ ] `P0` 冻结总体架构：`pi0.5/VLA manipulation layer + collaboration memory layer + interaction gating`
-- [ ] `P0` 明确 `pi0.5` 负责“怎么递”：抓取工具、移动到交接区域、对齐人手、保持稳定姿态
-- [ ] `P0` 明确 `collaboration memory` 负责“什么时候递”：根据关系序列判断是否允许 release
-- [ ] `P0` 明确 `interaction gating` 是 release 的硬闸门：memory 未判定 `ready` 时禁止释放
-- [ ] `P0` 明确 `hesitation`、`retreat`、`unstable` 状态下必须保持夹持或进入安全等待
-- [ ] `P0` 明确 VLA 候选动作和 gating 输出都需要写入日志，便于复盘“模型想释放但被拦截”的样本
+- [x] `P0` 冻结总体架构：`pi0.5/VLA manipulation layer + collaboration memory layer + interaction gating`
+- [x] `P0` 明确 `pi0.5` 负责“怎么递”：抓取工具、移动到交接区域、对齐人手、保持稳定姿态
+- [x] `P0` 明确 `collaboration memory` 负责“什么时候递”：根据关系序列判断是否允许 release
+- [x] `P0` 明确 `interaction gating` 是 release 的硬闸门：memory 未判定 `ready` 时禁止释放
+- [x] `P0` 明确 `hesitation`、`retreat`、`unstable` 状态下必须保持夹持或进入安全等待
+- [x] `P0` 明确 VLA 候选动作和 gating 输出都需要写入日志，便于复盘“模型想释放但被拦截”的样本
 
 ### S5.3 交接任务状态机冻结
 
-- [ ] `P0` 定义 episode 阶段：`reset -> robot_grasp -> robot_offer -> human_approach -> stabilization/hesitation/retreat -> ready -> release -> result`
-- [ ] `P0` 定义 `handover_phase` 枚举：`approach/stabilization/hesitation/retreat/ready/release/fail`
-- [ ] `P0` 定义 `handover_gate` 枚举：`blocked_by_memory/blocked_by_safety/allowed_release/manual_override`
-- [ ] `P0` 定义 `release_decision` 字段，记录每一帧是否允许释放以及原因
-- [ ] `P0` 定义交接成功条件：工具从夹爪释放后由人手稳定接住，且短时间内无掉落、无危险接触
-- [ ] `P0` 定义危险交接条件：提前松手、人在后撤时松手、人手晃动未稳定时松手、工具掉落、夹爪碰撞人手
+- [x] `P0` 定义 episode 阶段：`reset -> robot_grasp -> robot_offer -> human_approach -> stabilization/hesitation/retreat -> ready -> release -> result`
+- [x] `P0` 定义 `handover_phase` 枚举：`approach/stabilization/hesitation/retreat/ready/release/fail`
+- [x] `P0` 定义 `handover_gate` 枚举：`blocked_by_memory/blocked_by_safety/allowed_release/manual_override`
+- [x] `P0` 定义 `release_decision` 字段，记录每一帧是否允许释放以及原因
+- [x] `P0` 定义交接成功条件：工具从夹爪释放后由人手稳定接住，且短时间内无掉落、无危险接触
+- [x] `P0` 定义危险交接条件：提前松手、人在后撤时松手、人手晃动未稳定时松手、工具掉落、夹爪碰撞人手
 
 ### S5.4 验收
 
-- [ ] `P0` 文档层已经把主任务切换为 `quest3_safe_handover_v1`
-- [ ] `P0` 所有后续未开始任务都围绕安全交接时机理解展开
-- [ ] `P0` 已明确现有工具场景、VR 控制、D405 和物理边界如何服务新任务
-- [ ] `P0` 已明确 VLA 和协作记忆模型的职责边界
+- [x] `P0` 文档层已经把主任务切换为 `quest3_safe_handover_v1`
+- [x] `P0` 所有后续未开始任务都围绕安全交接时机理解展开
+- [x] `P0` 已明确现有工具场景、VR 控制、D405 和物理边界如何服务新任务
+- [x] `P0` 已明确 VLA 和协作记忆模型的职责边界
 
 ---
 
@@ -936,17 +938,17 @@
 
 本周建议完成：
 
-- [ ] `P0` 冻结 `quest3_safe_handover_v1` 任务名
-- [ ] `P0` 写清楚“VLA 负责怎么递，memory 负责什么时候递”
-- [ ] `P0` 冻结 interaction phase 枚举
-- [ ] `P0` 冻结 release gate 的基本语义
+- [x] `P0` 冻结 `quest3_safe_handover_v1` 任务名
+- [x] `P0` 写清楚“VLA 负责怎么递，memory 负责什么时候递”
+- [x] `P0` 冻结 interaction phase 枚举
+- [x] `P0` 冻结 release gate 的基本语义
 - [x] `P0` 前后端已完成 `tools + toolbox` 场景替换
 - [x] `P0` 已完成 S4.5 物理边界与 reset 合法性基线
 
 周验收：
 
-- [ ] `P0` 新任务目标不再和工具入库混淆
-- [ ] `P0` 后续所有未开始任务都围绕安全交接展开
+- [x] `P0` 新任务目标不再和工具入库混淆
+- [x] `P0` 后续所有未开始任务都围绕安全交接展开
 
 ### 第 2 周：末端 D405 MuJoCo 观测验证周
 
