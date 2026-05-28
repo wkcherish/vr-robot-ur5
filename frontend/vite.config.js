@@ -10,6 +10,11 @@ import vue from '@vitejs/plugin-vue';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const FRONTEND_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(FRONTEND_ROOT, '..');
+const BACKEND_RUNTIME_PATH = path.join(REPO_ROOT, 'shared', 'runtime', 'backend-dev.json');
 
 function resolveIfExists(rawPath) {
   if (!rawPath || String(rawPath).trim().length === 0) return null;
@@ -47,14 +52,74 @@ function normalizeProxyTarget(rawValue) {
   return 'http://' + value.replace(/\/$/, '');
 }
 
-const backendProxyTarget = normalizeProxyTarget(
-  process.env.VITE_BACKEND_PROXY_TARGET || process.env.VITE_BACKEND_HTTP_ORIGIN
-);
+function readBackendRuntimeConfig() {
+  if (!fs.existsSync(BACKEND_RUNTIME_PATH)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(BACKEND_RUNTIME_PATH, 'utf-8'));
+  } catch (error) {
+    console.warn('[vite] failed to read backend runtime config:', error);
+  }
+  return null;
+}
+
+function resolveBackendProxyTarget() {
+  if (process.env.VITE_BACKEND_PROXY_TARGET) {
+    return {
+      target: normalizeProxyTarget(process.env.VITE_BACKEND_PROXY_TARGET),
+      source: 'env:VITE_BACKEND_PROXY_TARGET',
+    };
+  }
+
+  if (process.env.VITE_BACKEND_HTTP_ORIGIN) {
+    return {
+      target: normalizeProxyTarget(process.env.VITE_BACKEND_HTTP_ORIGIN),
+      source: 'env:VITE_BACKEND_HTTP_ORIGIN',
+    };
+  }
+
+  const runtimeConfig = readBackendRuntimeConfig();
+  if (runtimeConfig && typeof runtimeConfig.proxy_target === 'string' && runtimeConfig.proxy_target.trim()) {
+    return {
+      target: normalizeProxyTarget(runtimeConfig.proxy_target),
+      source: `runtime:${path.relative(FRONTEND_ROOT, BACKEND_RUNTIME_PATH)}`,
+    };
+  }
+
+  return {
+    target: 'http://127.0.0.1:8000',
+    source: 'default:127.0.0.1:8000',
+  };
+}
+
+function scrubProxyAuthChallenge(proxy) {
+  proxy.on('proxyRes', (proxyRes, req) => {
+    const authHeader = proxyRes?.headers?.['www-authenticate'];
+    if (!authHeader) return;
+    delete proxyRes.headers['www-authenticate'];
+    console.warn(`[vite] stripped proxied auth challenge for ${req.method || 'GET'} ${req.url || ''}`);
+  });
+}
+
+function createBackendProxyOptions(enableWs = false) {
+  const initialTarget = resolveBackendProxyTarget();
+  return {
+    target: initialTarget.target,
+    changeOrigin: true,
+    secure: false,
+    ...(enableWs ? { ws: true } : {}),
+    router: () => resolveBackendProxyTarget().target,
+    configure: scrubProxyAuthChallenge,
+  };
+}
 
 function keepSingleLocalAndNetworkUrl() {
   return {
     name: 'keep-single-local-and-network-url',
     configureServer(server) {
+      const backendProxyTarget = resolveBackendProxyTarget();
+      console.log(
+        `[vite] backend proxy target -> ${backendProxyTarget.target} (${backendProxyTarget.source})`
+      );
       if (typeof server.printUrls !== 'function') return;
       const originalPrintUrls = server.printUrls.bind(server);
       server.printUrls = () => {
@@ -101,22 +166,9 @@ export default defineConfig({
     strictPort: true,
     https: httpsServerOption,
     proxy: {
-      '/health/': {
-        target: backendProxyTarget,
-        changeOrigin: true,
-        secure: false,
-      },
-      '/sim': {
-        target: backendProxyTarget,
-        changeOrigin: true,
-        secure: false,
-        ws: true,
-      },
-      '/data/': {
-        target: backendProxyTarget,
-        changeOrigin: true,
-        secure: false,
-      },
+      '/health/': createBackendProxyOptions(),
+      '/sim': createBackendProxyOptions(true),
+      '/data/': createBackendProxyOptions(),
     },
   },
 });

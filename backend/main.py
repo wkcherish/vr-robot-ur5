@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -17,6 +18,8 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
+BACKEND_RUNTIME_DIR = REPO_ROOT / "shared" / "runtime"
+BACKEND_RUNTIME_PATH = BACKEND_RUNTIME_DIR / "backend-dev.json"
 GRIPPER_DRIVER_LIMIT = 0.87
 GRIPPER_JOINT_NAMES = [
     "left_driver_joint",
@@ -65,6 +68,96 @@ SCENE_SETTLE_STEPS = 1000
 # Keep viewer state polling tolerant to transient backend jitter.
 MIN_STATE_FETCH_TIMEOUT_S = 0.10
 MAX_STATE_FETCH_TIMEOUT_S = 1.00
+
+
+def _resolve_bind_target(host: str, port: int) -> tuple[int, tuple[object, ...]]:
+    if host in {"", "0.0.0.0"}:
+        return socket.AF_INET, ("0.0.0.0", int(port))
+    if host == "::":
+        return socket.AF_INET6, ("::", int(port), 0, 0)
+
+    try:
+        addrinfo = socket.getaddrinfo(
+            host,
+            int(port),
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror as exc:
+        raise ValueError(f"Unable to resolve backend host {host!r}: {exc}") from exc
+
+    if not addrinfo:
+        raise ValueError(f"Unable to resolve backend host {host!r}.")
+
+    family, socktype, proto, _, sockaddr = addrinfo[0]
+    if socktype != socket.SOCK_STREAM or proto != socket.IPPROTO_TCP:
+        raise ValueError(f"Unsupported backend bind target for host {host!r}.")
+    return family, tuple(sockaddr)
+
+
+def _is_port_available(host: str, port: int) -> bool:
+    try:
+        family, sockaddr = _resolve_bind_target(host, port)
+    except ValueError:
+        return False
+
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(sockaddr)
+        except OSError:
+            return False
+    return True
+
+
+def _allocate_ephemeral_port(host: str) -> int:
+    family, sockaddr = _resolve_bind_target(host, 0)
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(sockaddr)
+        bound = sock.getsockname()
+    return int(bound[1])
+
+
+def _select_backend_port(host: str, requested_port: int, search_window: int = 32) -> tuple[int, bool]:
+    if not 1 <= int(requested_port) <= 65535:
+        raise ValueError(f"Backend port must be between 1 and 65535, got {requested_port}.")
+
+    preferred_port = int(requested_port)
+    if _is_port_available(host, preferred_port):
+        return preferred_port, False
+
+    upper_bound = min(65535, preferred_port + max(1, int(search_window)))
+    for candidate_port in range(preferred_port + 1, upper_bound + 1):
+        if _is_port_available(host, candidate_port):
+            return candidate_port, True
+
+    return _allocate_ephemeral_port(host), True
+
+
+def _write_backend_runtime_file(
+    host: str,
+    port: int,
+    requested_port: int,
+    ssl_enabled: bool,
+) -> None:
+    scheme = "https" if ssl_enabled else "http"
+    proxy_host = _health_check_host(host)
+    payload = {
+        "listen_host": host,
+        "port": int(port),
+        "requested_port": int(requested_port),
+        "scheme": scheme,
+        "proxy_target": f"{scheme}://{proxy_host}:{int(port)}",
+        "health_url": f"{scheme}://{proxy_host}:{int(port)}/health/",
+        "sim_ws_url": f"{'wss' if ssl_enabled else 'ws'}://{proxy_host}:{int(port)}/sim/ws",
+        "updated_at": time.time(),
+    }
+    BACKEND_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    BACKEND_RUNTIME_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _resolve_path(raw: str | None, default_path: Path) -> Path:
@@ -1315,12 +1408,18 @@ def main() -> None:
 
     model_path = _resolve_path(args.model, DEFAULT_MODEL)
     manifest_path = _resolve_path(args.manifest, DEFAULT_MANIFEST)
+    selected_port, auto_switched_port = _select_backend_port(args.host, args.port)
+    if auto_switched_port:
+        print(
+            f"[backend] port {args.port} is unavailable; switching to available port {selected_port}.",
+            flush=True,
+        )
 
     backend_process: subprocess.Popen[bytes] | None = None
     try:
         backend_process = _start_backend(
             host=args.host,
-            port=args.port,
+            port=selected_port,
             reload_enabled=not args.no_reload,
             ssl_certfile=args.ssl_certfile,
             ssl_keyfile=args.ssl_keyfile,
@@ -1328,9 +1427,16 @@ def main() -> None:
         _wait_backend_ready(
             process=backend_process,
             host=args.host,
-            port=args.port,
+            port=selected_port,
             timeout_s=max(3.0, args.backend_timeout),
         )
+        _write_backend_runtime_file(
+            host=args.host,
+            port=selected_port,
+            requested_port=args.port,
+            ssl_enabled=bool(args.ssl_certfile and args.ssl_keyfile),
+        )
+        print(f"[backend] runtime target saved to {BACKEND_RUNTIME_PATH}", flush=True)
 
         if args.open_viewer == "yes":
             should_open_viewer = True
@@ -1346,11 +1452,11 @@ def main() -> None:
                 raise FileNotFoundError(f"Model file not found: {model_path}")
             check_host = _health_check_host(args.host)
             scheme = "https" if args.ssl_certfile and args.ssl_keyfile else "http"
-            state_url = f"{scheme}://{check_host}:{args.port}/sim/state/"
-            step_url = f"{scheme}://{check_host}:{args.port}/sim/step/"
+            state_url = f"{scheme}://{check_host}:{selected_port}/sim/state/"
+            step_url = f"{scheme}://{check_host}:{selected_port}/sim/step/"
             camera_preview_process: subprocess.Popen[bytes] | None = None
             if args.camera_preview_window == "yes":
-                camera_url = f"{scheme}://{check_host}:{args.port}/sim/camera/rgb/?include_data=true"
+                camera_url = f"{scheme}://{check_host}:{selected_port}/sim/camera/rgb/?include_data=true"
                 camera_preview_process = _start_camera_preview_window(
                     camera_url=camera_url,
                     fps=args.camera_preview_fps,
