@@ -199,6 +199,14 @@ class WebSocketManager {
     return this.sendMessage(message);
   }
 
+  requestObservation(includeData = false) {
+    return this.sendMessage({
+      type: 'get_observation',
+      data: { include_data: Boolean(includeData) },
+      timestamp: Date.now()
+    });
+  }
+
   // 事件监听
   on(event, callback) {
     if (!this.eventListeners.has(event)) {
@@ -304,6 +312,18 @@ class WebSocketManager {
 
       case 'vr_state_result':
         this.emit('vrStateResult', data);
+        break;
+
+      case 'observation_update':
+        this.emit('observationUpdate', data);
+        break;
+
+      case 'camera_rgb_update':
+        this.emit('cameraRgbUpdate', data);
+        break;
+
+      case 'camera_depth_update':
+        this.emit('cameraDepthUpdate', data);
         break;
 
       case 'error':

@@ -240,6 +240,7 @@
 - [x] `P0` 冻结相机相对末端的安装方案命名，例如 `wrist_d405_v1`
 - [x] `P0` 明确 `data/calibration/` 下相机标定文件的组织方式
 - [x] `P0` 明确 episode 元数据中必须记录 `camera_device`、`camera_intrinsics_version`、`camera_extrinsics_version`
+- [ ] `P0` 按 `docs/d405_real_intrinsics_validation.md` 连接真实 D405，读取实测 `fx/fy/ppx/ppy`，并写回 MuJoCo `focalpixel/principalpixel`
 - [ ] `P1` 预留后续真实 D405 与仿真相机的误差分析字段
 
 ### S1.5.4 数据录制前置条件
@@ -433,40 +434,42 @@
 
 把后续主链路从“工具抓取入箱”升级为“人机协作安全交接时机理解”。已完成的工具、工具箱、UR5、VR 控制和物理边界能力作为基础资产继续复用；新的核心问题是：机器人在递送工具时，如何根据人手行为的历史变化判断当前是否已经形成稳定可信的交接关系。
 
+本轮落地产物：`docs/s5_safe_handover_freeze.md`。
+
 ### S5.1 研究问题与任务名称冻结
 
-- [ ] `P0` 将新主任务名冻结为 `quest3_safe_handover_v1`
-- [ ] `P0` 明确主问题不是单纯抓取、避障或碰撞检测，而是“什么时候适合释放工具”
-- [ ] `P0` 明确系统输出不只是 `ready/not_ready`，还要能识别 `approach/stabilization/hesitation/retreat/ready/release`
-- [ ] `P0` 明确 `quest3_tool_sorting_v1` 保留为工具场景和机器人操作基线，不再作为最终主任务
-- [ ] `P0` 明确工具箱在新任务中可作为初始工具收纳/场景资产，不再是最终放置目标
-- [ ] `P0` 明确第一版交接对象仍使用已建好的 `wrench/screwdriver/pliers`，避免重新处理资产
-- [ ] `P0` 明确第一版 human hand 是仿真人手，由 Quest3 手势模式控制，不依赖真实人手硬件接入
+- [x] `P0` 将新主任务名冻结为 `quest3_safe_handover_v1`
+- [x] `P0` 明确主问题不是单纯抓取、避障或碰撞检测，而是“什么时候适合释放工具”
+- [x] `P0` 明确系统输出不只是 `ready/not_ready`，还要能识别 `approach/stabilization/hesitation/retreat/ready/release`
+- [x] `P0` 明确 `quest3_tool_sorting_v1` 保留为工具场景和机器人操作基线，不再作为最终主任务
+- [x] `P0` 明确工具箱在新任务中可作为初始工具收纳/场景资产，不再是最终放置目标
+- [x] `P0` 明确第一版交接对象仍使用已建好的 `wrench/screwdriver/pliers`，避免重新处理资产
+- [x] `P0` 明确第一版 human hand 是仿真人手，由 Quest3 手势模式控制，不依赖真实人手硬件接入
 
 ### S5.2 双层协作架构冻结
 
-- [ ] `P0` 冻结总体架构：`pi0.5/VLA manipulation layer + collaboration memory layer + interaction gating`
-- [ ] `P0` 明确 `pi0.5` 负责“怎么递”：抓取工具、移动到交接区域、对齐人手、保持稳定姿态
-- [ ] `P0` 明确 `collaboration memory` 负责“什么时候递”：根据关系序列判断是否允许 release
-- [ ] `P0` 明确 `interaction gating` 是 release 的硬闸门：memory 未判定 `ready` 时禁止释放
-- [ ] `P0` 明确 `hesitation`、`retreat`、`unstable` 状态下必须保持夹持或进入安全等待
-- [ ] `P0` 明确 VLA 候选动作和 gating 输出都需要写入日志，便于复盘“模型想释放但被拦截”的样本
+- [x] `P0` 冻结总体架构：`pi0.5/VLA manipulation layer + collaboration memory layer + interaction gating`
+- [x] `P0` 明确 `pi0.5` 负责“怎么递”：抓取工具、移动到交接区域、对齐人手、保持稳定姿态
+- [x] `P0` 明确 `collaboration memory` 负责“什么时候递”：根据关系序列判断是否允许 release
+- [x] `P0` 明确 `interaction gating` 是 release 的硬闸门：memory 未判定 `ready` 时禁止释放
+- [x] `P0` 明确 `hesitation`、`retreat`、`unstable` 状态下必须保持夹持或进入安全等待
+- [x] `P0` 明确 VLA 候选动作和 gating 输出都需要写入日志，便于复盘“模型想释放但被拦截”的样本
 
 ### S5.3 交接任务状态机冻结
 
-- [ ] `P0` 定义 episode 阶段：`reset -> robot_grasp -> robot_offer -> human_approach -> stabilization/hesitation/retreat -> ready -> release -> result`
-- [ ] `P0` 定义 `handover_phase` 枚举：`approach/stabilization/hesitation/retreat/ready/release/fail`
-- [ ] `P0` 定义 `handover_gate` 枚举：`blocked_by_memory/blocked_by_safety/allowed_release/manual_override`
-- [ ] `P0` 定义 `release_decision` 字段，记录每一帧是否允许释放以及原因
-- [ ] `P0` 定义交接成功条件：工具从夹爪释放后由人手稳定接住，且短时间内无掉落、无危险接触
-- [ ] `P0` 定义危险交接条件：提前松手、人在后撤时松手、人手晃动未稳定时松手、工具掉落、夹爪碰撞人手
+- [x] `P0` 定义 episode 阶段：`reset -> robot_grasp -> robot_offer -> human_approach -> stabilization/hesitation/retreat -> ready -> release -> result`
+- [x] `P0` 定义 `handover_phase` 枚举：`approach/stabilization/hesitation/retreat/ready/release/fail`
+- [x] `P0` 定义 `handover_gate` 枚举：`blocked_by_memory/blocked_by_safety/allowed_release/manual_override`
+- [x] `P0` 定义 `release_decision` 字段，记录每一帧是否允许释放以及原因
+- [x] `P0` 定义交接成功条件：工具从夹爪释放后由人手稳定接住，且短时间内无掉落、无危险接触
+- [x] `P0` 定义危险交接条件：提前松手、人在后撤时松手、人手晃动未稳定时松手、工具掉落、夹爪碰撞人手
 
 ### S5.4 验收
 
-- [ ] `P0` 文档层已经把主任务切换为 `quest3_safe_handover_v1`
-- [ ] `P0` 所有后续未开始任务都围绕安全交接时机理解展开
-- [ ] `P0` 已明确现有工具场景、VR 控制、D405 和物理边界如何服务新任务
-- [ ] `P0` 已明确 VLA 和协作记忆模型的职责边界
+- [x] `P0` 文档层已经把主任务切换为 `quest3_safe_handover_v1`
+- [x] `P0` 所有后续未开始任务都围绕安全交接时机理解展开
+- [x] `P0` 已明确现有工具场景、VR 控制、D405 和物理边界如何服务新任务后
+- [x] `P0` 已明确 VLA 和协作记忆模型的职责边界
 
 ---
 
@@ -476,48 +479,51 @@
 
 协作数据的主视觉观测必须来自机械臂末端 D405，而不是 Quest3 页面画面、Three.js 外部观察相机或调试相机。本阶段可以先于 human hand 开发启动：第一轮先验证夹爪、工具和 handover zone 是否在末端相机视野内；等 S7 的 human hand 接入后，再复测人手进入、犹豫、后撤和 release 前后的可见性。
 
+本轮落地产物：后端 D405 观测状态字段、`/sim/observation/` RGB-D 验证、前端 `D405ObservationPanel`、`shared/handover_scene_config.json`。
+
 ### S6.1 视觉来源边界冻结
 
-- [ ] `P0` 明确 `d405_rgb / d405_depth` 是 `quest3_safe_handover_v1` 的唯一训练主视觉来源
-- [ ] `P0` 明确 Quest3 页面画面、Three.js 观察相机、`camera / camera_base` 只能用于调试和展示
-- [ ] `P0` 在 episode metadata 中记录 `camera_device=intel_realsense_d405`
-- [ ] `P0` 在 episode metadata 中记录 `camera_mount_name`、`camera_intrinsics_version`、`camera_extrinsics_version`
-- [ ] `P0` 在 `validation_summary.json` 中增加 `camera_source_ok`，确认没有使用非 D405 图像
+- [x] `P0` 明确 `d405_rgb / d405_depth` 是 `quest3_safe_handover_v1` 的唯一训练主视觉来源
+- [x] `P0` 明确 Quest3 页面画面、Three.js 观察相机、`camera / camera_base` 只能用于调试和展示
+- [x] `P0` 在 episode metadata 中记录 `camera_device=intel_realsense_d405`
+- [x] `P0` 在 episode metadata 中记录 `camera_mount_name`、`camera_intrinsics_version`、`camera_extrinsics_version`
+- [x] `P0` 在 `validation_summary.json` 中增加 `camera_source_ok`，确认没有使用非 D405 图像
 
 ### S6.2 MuJoCo D405 挂载与第一轮渲染验证
 
-- [ ] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
-- [ ] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和 handover zone
-- [ ] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
+- [x] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
+- [x] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和 handover zone
+- [x] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
+- [ ] `P0` 确认 MuJoCo D405 内参来自真实 D405 实测值，而不是只用图像中心光轴占位
 - [ ] `P0` 确认 D405 在 `robot_grasp` 阶段能看到夹爪和目标工具
 - [ ] `P0` 确认 D405 在 `robot_offer` 阶段能看到工具和 handover zone
-- [ ] `P0` 在没有 human hand 前，先用 handover zone 标记或简化接收占位体检查未来人手进入区域是否在视野内
+- [x] `P0` 在没有 human hand 前，先用 handover zone 标记或简化接收占位体检查未来人手进入区域是否在视野内
 - [ ] `P0` 记录不同递送姿态下的遮挡情况，优先找出能同时看到夹爪、工具和接收区域的姿态
 
 ### S6.3 RGB-D 接口与落盘
 
-- [ ] `P0` 验证 `GET /sim/observation/` 返回 D405 观测摘要
-- [ ] `P0` 验证 `GET /sim/camera/rgb/` 返回有效 D405 RGB 图像
-- [ ] `P0` 验证 `GET /sim/camera/depth/` 返回有效 D405 Depth 图像
-- [ ] `P0` WebSocket 状态广播包含最近一帧 `d405_frame_id`、时间戳、有效性和错误原因
+- [x] `P0` 验证 `GET /sim/observation/` 返回 D405 观测摘要
+- [x] `P0` 验证 `GET /sim/camera/rgb/` 返回有效 D405 RGB 图像
+- [x] `P0` 验证 `GET /sim/camera/depth/` 返回有效 D405 Depth 图像
+- [x] `P0` WebSocket 状态广播包含最近一帧 `d405_frame_id`、时间戳、有效性和错误原因
 - [ ] `P0` 录制器写入 `visuals.jsonl`，包含 RGB 路径、Depth 路径、时间戳、相机位姿和有效性
-- [ ] `P0` Depth 使用无损格式保存，禁止把 JPG 或普通 MP4 帧作为训练主深度数据
-- [ ] `P0` MP4 预览仅用于人工检查，不作为训练主数据
+- [x] `P0` Depth 使用无损格式保存，禁止把 JPG 或普通 MP4 帧作为训练主深度数据
+- [x] `P0` MP4 预览仅用于人工检查，不作为训练主数据
 
 ### S6.4 前端 D405 观测面板
 
-- [ ] `P0` 前端新增或复用 D405 观测面板，显示当前 RGB 画面
-- [ ] `P0` 前端显示 Depth 原图或伪彩深度图
-- [ ] `P0` 前端显示帧号、时间戳、帧率和最近错误
-- [ ] `P0` 前端显示 `camera_capture_ok`、`rgb_valid`、`depth_valid`、`frame_aligned`
-- [ ] `P0` 前端明确标记当前视觉源是 D405，而不是 Quest3 页面画面或外部观察相机
+- [x] `P0` 前端新增或复用 D405 观测面板，显示当前 RGB 画面
+- [x] `P0` 前端显示 Depth 原图或伪彩深度图
+- [x] `P0` 前端显示帧号、时间戳、帧率和最近错误
+- [x] `P0` 前端显示 `camera_capture_ok`、`rgb_valid`、`depth_valid`、`frame_aligned`
+- [x] `P0` 前端明确标记当前视觉源是 D405，而不是 Quest3 页面画面或外部观察相机
 - [ ] `P1` 在观测面板中叠加 handover zone 或关键区域提示，辅助采集前检查
 
 ### S6.5 摄像头阶段验收
 
 - [ ] `P0` 第一轮 camera-only smoke test 中，D405 能稳定看到夹爪、目标工具和 handover zone
-- [ ] `P0` D405 Depth 不出现全零、全 NaN、严重错位或明显尺度错误
-- [ ] `P0` `validation_summary.json` 能报告 `camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
+- [x] `P0` D405 Depth 不出现全零、全 NaN、严重错位或明显尺度错误
+- [x] `P0` `validation_summary.json` 能报告 `camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
 - [ ] `P0` S7 接入 human hand 后，必须复测 `human_approach/hesitation/retreat/release` 阶段的人手可见性
 - [ ] `P0` 未通过 D405 观测验证和 human hand 可见性复测前，不允许进入批量协作数据采集
 - [ ] `P0` 若 D405 看不到交接关键区域，优先调整 handover zone、机器人递送姿态或相机挂载角度
@@ -936,17 +942,17 @@
 
 本周建议完成：
 
-- [ ] `P0` 冻结 `quest3_safe_handover_v1` 任务名
-- [ ] `P0` 写清楚“VLA 负责怎么递，memory 负责什么时候递”
-- [ ] `P0` 冻结 interaction phase 枚举
-- [ ] `P0` 冻结 release gate 的基本语义
+- [x] `P0` 冻结 `quest3_safe_handover_v1` 任务名
+- [x] `P0` 写清楚“VLA 负责怎么递，memory 负责什么时候递”
+- [x] `P0` 冻结 interaction phase 枚举
+- [x] `P0` 冻结 release gate 的基本语义
 - [x] `P0` 前后端已完成 `tools + toolbox` 场景替换
 - [x] `P0` 已完成 S4.5 物理边界与 reset 合法性基线
 
 周验收：
 
-- [ ] `P0` 新任务目标不再和工具入库混淆
-- [ ] `P0` 后续所有未开始任务都围绕安全交接展开
+- [x] `P0` 新任务目标不再和工具入库混淆
+- [x] `P0` 后续所有未开始任务都围绕安全交接展开
 
 ### 第 2 周：末端 D405 MuJoCo 观测验证周
 
@@ -958,14 +964,14 @@
 
 本周建议完成：
 
-- [ ] `P0` 确认 `d405_rgb / d405_depth` 是唯一训练主视觉来源
-- [ ] `P0` 确认 D405 末端挂载视角随机械臂运动，并朝向夹爪、工具和 handover zone
+- [x] `P0` 确认 `d405_rgb / d405_depth` 是唯一训练主视觉来源
+- [x] `P0` 确认 D405 末端挂载视角随机械臂运动，并朝向夹爪、工具和 handover zone
 - [ ] `P0` 验证 `robot_grasp / robot_offer` 阶段的 D405 画面
-- [ ] `P0` 使用 handover zone 标记或简化接收占位体检查未来人手区域是否在视野内
-- [ ] `P0` 验证 RGB、Depth 接口均返回有效帧，且不是 stub / fallback
-- [ ] `P0` 前端观测面板能显示 D405 RGB、Depth、帧号、时间戳和有效性
+- [x] `P0` 使用 handover zone 标记或简化接收占位体检查未来人手区域是否在视野内
+- [x] `P0` 验证 RGB、Depth 接口均返回有效帧，且不是 stub / fallback
+- [x] `P0` 前端观测面板能显示 D405 RGB、Depth、帧号、时间戳和有效性
 - [ ] `P0` 录制器能把 RGB、Depth 和 `visuals.jsonl` 一起落盘
-- [ ] `P0` `validation_summary.json` 增加 `camera_source_ok`、`camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
+- [x] `P0` `validation_summary.json` 增加 `camera_source_ok`、`camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
 
 周验收：
 

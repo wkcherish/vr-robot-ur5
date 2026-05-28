@@ -43,6 +43,15 @@ python ./main.py
 
 默认监听 `0.0.0.0:8000`，并启动 FastAPI 服务。
 
+输入 `yes` 打开 MuJoCo viewer 后，会同时打开一个独立的 `D405 RGB Preview` 窗口。这个窗口可拖动、可按需移到旁边，不会遮挡 MuJoCo 主场景。如果要把 MuJoCo 主视角也切到 D405：
+
+```bash
+cd backend
+python ./main.py --open-viewer yes --viewer-camera d405_rgb
+```
+
+`Sensor` 面板显示的是传感器数值，不是 RGB-D 相机画面。D405 固定相机名称为 `d405_rgb` / `d405_depth`。独立窗口可用 `--camera-preview-window no` 关闭；如需旧的 MuJoCo 内嵌贴图调试，可用 `--viewer-camera-overlay d405_rgb`。训练画面也可从前端 D405 面板或 `/sim/camera/rgb/`、`/sim/camera/depth/` 接口查看。
+
 ### 3. 启动前端（按当前约定）
 
 新开终端，回到项目目录后执行：
@@ -125,4 +134,7 @@ npm run dev
 ## 相关文档
 
 - [backend/README.md](backend/README.md)
+- [docs/task.md](docs/task.md)
+- [docs/todolist.md](docs/todolist.md)
+- [docs/s5_safe_handover_freeze.md](docs/s5_safe_handover_freeze.md)
 - [docs/vr_control_and_performance_update_2026-04-24.md](docs/vr_control_and_performance_update_2026-04-24.md)

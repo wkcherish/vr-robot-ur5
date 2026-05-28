@@ -99,6 +99,10 @@ class CameraStreamState(BaseModel):
     dataset_storage_format: str
     timestamp: float | None = None
     missing: bool = False
+    valid: bool = False
+    error_reason: str | None = None
+    depth_unit: str | None = None
+    depth_scale: float | None = None
 
 
 class CameraState(BaseModel):
@@ -108,11 +112,20 @@ class CameraState(BaseModel):
     camera_intrinsics_version: str
     camera_extrinsics_version: str
     frame_id: str
+    d405_frame_id: str
+    timestamp: float
     frame_aligned: bool
     alignment_mode: str
     max_alignment_error_ms: float
     recordable_training_observation: bool
     camera_capture_ok: bool
+    camera_source_ok: bool = False
+    rgb_valid: bool = False
+    depth_valid: bool = False
+    stub_frame_used: bool = False
+    camera_view_ok: bool = False
+    camera_view_status: str = "unchecked"
+    last_error: str | None = None
     debug_only_objects: list[str]
     camera_pose_in_ee: EEPose
     camera_pose_in_base: EEPose
@@ -130,8 +143,11 @@ class SimState(BaseModel):
     gripper_opening: float
     gripper_joints: dict[str, float]
     objects: dict[str, ObjectPose]
+    handover_zones: list[dict[str, Any]] = Field(default_factory=list)
     camera: CameraState | None = None
     camera_capture_ok: bool = False
+    d405_frame_id: str | None = None
+    camera_observation: dict[str, Any] | None = None
     task_state: TaskState
     source: ControlSource
     input_source: str | None = None
