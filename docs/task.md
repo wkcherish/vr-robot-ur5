@@ -217,6 +217,8 @@ D405 在 MuJoCo 中不是一个普通装饰模型，而是训练观测源。它�
 
 ### 6.2 MuJoCo 视觉效果验证
 
+在做视觉 smoke test 前，必须先完成真实 D405 内参与 MuJoCo 光轴验证。操作步骤见 [docs/d405_real_intrinsics_validation.md](d405_real_intrinsics_validation.md)。不能只用 `principalpixel="0 0"` 强制居中来替代真实 `ppx/ppy`；真实 D405 的 `fx/fy/ppx/ppy` 需要通过 `pyrealsense2` 读取并写回 MuJoCo 配置。
+
 正式录制前必须在 MuJoCo 中做视觉 smoke test，至少覆盖以下场景：
 
 | 场景 | 检查目标 |

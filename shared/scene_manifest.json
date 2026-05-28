@@ -6,6 +6,7 @@
   "tool_catalog_path": "shared/tool_catalog.json",
   "camera_sensor_config_path": "shared/camera_sensor_config.json",
   "dataset_schema_path": "shared/dataset_schema.json",
+  "handover_scene_config_path": "shared/handover_scene_config.json",
   "units": {
     "position": "meter",
     "rotation": "radian"

@@ -9,17 +9,48 @@
       "rgb",
       "depth"
     ],
+    "intrinsics_reference": {
+      "source": "intel_realsense_d405_specs",
+      "depth_fov_degrees_hv": [
+        87.0,
+        58.0
+      ],
+      "sim_fovy_degrees": 58.0,
+      "sim_aspect_ratio": "16:9",
+      "sim_resolution": [
+        1280,
+        720
+      ],
+      "sim_focalpixel": [
+        674.419,
+        649.457
+      ],
+      "sim_principalpixel": [
+        0.0,
+        0.0
+      ],
+      "sim_fov_degrees_hv_approx": [
+        87.0,
+        58.0
+      ],
+      "notes": [
+        "MuJoCo cameras use local -Z as the optical axis.",
+        "Use explicit focalpixel/principalpixel intrinsics instead of the older 4:3 640x480 crop.",
+        "MuJoCo principalpixel is an offset from the image center in pixels, not an OpenCV-style absolute principal point.",
+        "Current values are nominal placeholders until backend/d405_intrinsics.py --apply is run on the physical D405 host."
+      ]
+    },
     "mount": {
       "name": "wrist_d405_v1",
       "parent_frame": "tool0",
       "position": [
         0.0,
         -0.077929684,
-        0.055
+        0.077
       ],
       "quaternion_wxyz": [
-        1.0,
         0.0,
+        1.0,
         0.0,
         0.0
       ],
@@ -27,6 +58,7 @@
       "orientation_notes": [
         "Front and rear clamp halves wrap around wrist_3 cylindrical housing.",
         "Plate section extends from the clamp and D405 is mounted under the red-marked plate area.",
+        "Optical center is on the D405 front face, not at the visual mesh center.",
         "Optical axis points to the tabletop workspace and cable exits from side/back."
       ],
       "mount_asset_roles": {
@@ -40,8 +72,8 @@
         "interface_name": "sim_camera_rgb",
         "api_endpoint": "/sim/camera/rgb/",
         "camera_name": "d405_rgb",
-        "width": 640,
-        "height": 480,
+        "width": 1280,
+        "height": 720,
         "fps": 30,
         "pixel_format": "rgb8",
         "dataset_storage_format": "jpg"
@@ -50,8 +82,8 @@
         "interface_name": "sim_camera_depth",
         "api_endpoint": "/sim/camera/depth/",
         "camera_name": "d405_depth",
-        "width": 640,
-        "height": 480,
+        "width": 1280,
+        "height": 720,
         "fps": 30,
         "pixel_format": "depth16",
         "depth_unit": "millimeter",

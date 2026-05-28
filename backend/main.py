@@ -11,6 +11,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import mujoco
+import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,15 @@ DEFAULT_ARM_ACTUATOR_NAMES = [
     "act_wrist_3",
 ]
 DEFAULT_GRIPPER_ACTUATOR_NAME = "act_gripper_driver"
+DEFAULT_VIEWER_CAMERA_OVERLAY = None
+DEFAULT_CAMERA_PREVIEW_FPS = 15.0
+VIEWER_FREE_CAMERA_NAMES = {"", "free", "none", "off"}
+VIEWER_CAMERA_OVERLAY_ASPECT = 4.0 / 3.0
+VIEWER_CAMERA_OVERLAY_FRACTION = 0.45
+VIEWER_CAMERA_OVERLAY_MARGIN_PX = 16
+VIEWER_CAMERA_OVERLAY_MIN_WIDTH_PX = 220
+VIEWER_CAMERA_OVERLAY_MAX_WIDTH_PX = 520
+VIEWER_CAMERA_OVERLAY_FPS = 12.0
 VIEWER_BRIDGE_EDIT_THRESHOLD_RAD = 0.02
 VIEWER_BRIDGE_MATCH_THRESHOLD_RAD = 0.06
 VIEWER_BRIDGE_GUARD_S = 0.35
@@ -590,6 +600,138 @@ def _resolve_actuator_ids(model: mujoco.MjModel) -> tuple[list[int | None], int 
     return arm_ids, (int(gripper_id) if gripper_id >= 0 else None)
 
 
+def _normalize_viewer_camera_name(raw: str | None) -> str | None:
+    value = str(raw or "").strip()
+    if value.lower() in VIEWER_FREE_CAMERA_NAMES:
+        return None
+    return value
+
+
+def _apply_fixed_viewer_camera(viewer: object, model: mujoco.MjModel, camera_name: str | None) -> bool:
+    normalized = _normalize_viewer_camera_name(camera_name)
+    if normalized is None:
+        return False
+
+    camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, normalized)
+    if camera_id < 0:
+        print(f"[viewer] warning: fixed camera '{normalized}' was not found; using free camera.")
+        return False
+
+    viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+    viewer.cam.fixedcamid = int(camera_id)
+    print(f"[viewer] fixed camera: {normalized}")
+    return True
+
+
+def _build_camera_overlay_rect(viewport: mujoco.MjrRect | None) -> mujoco.MjrRect | None:
+    if viewport is None:
+        return None
+
+    viewport_width = max(0, int(viewport.width))
+    viewport_height = max(0, int(viewport.height))
+    if viewport_width <= 0 or viewport_height <= 0:
+        return None
+
+    margin = min(VIEWER_CAMERA_OVERLAY_MARGIN_PX, max(0, viewport_width // 20), max(0, viewport_height // 20))
+    max_width = max(1, viewport_width - 2 * margin)
+    max_height = max(1, viewport_height - 2 * margin)
+    target_width = int(min(VIEWER_CAMERA_OVERLAY_MAX_WIDTH_PX, max_width))
+    target_width = min(
+        target_width,
+        max(VIEWER_CAMERA_OVERLAY_MIN_WIDTH_PX, int(viewport_width * VIEWER_CAMERA_OVERLAY_FRACTION)),
+    )
+    target_width = max(1, min(target_width, max_width))
+    target_height = max(1, int(round(target_width / VIEWER_CAMERA_OVERLAY_ASPECT)))
+
+    if target_height > max_height:
+        target_height = max(1, max_height)
+        target_width = max(1, int(round(target_height * VIEWER_CAMERA_OVERLAY_ASPECT)))
+
+    left = int(viewport.left) + max(0, viewport_width - target_width - margin)
+    bottom = int(viewport.bottom) + max(0, viewport_height - target_height - margin)
+    return mujoco.MjrRect(left, bottom, target_width, target_height)
+
+
+class ViewerCameraOverlay:
+    def __init__(self, camera_name: str | None, fps: float) -> None:
+        self._camera_name = _normalize_viewer_camera_name(camera_name)
+        self._frame_interval_s = 1.0 / max(1.0, float(fps))
+        self._next_frame_at = 0.0
+        self._camera_checked = False
+        self._disabled = self._camera_name is None
+        self._warned = False
+        self._renderer: mujoco.Renderer | None = None
+        self._renderer_size: tuple[int, int] = (0, 0)
+
+    @property
+    def camera_name(self) -> str | None:
+        return self._camera_name
+
+    @property
+    def enabled(self) -> bool:
+        return not self._disabled
+
+    def close(self) -> None:
+        if self._renderer is None:
+            return
+        try:
+            self._renderer.close()
+        finally:
+            self._renderer = None
+            self._renderer_size = (0, 0)
+
+    def _ensure_camera_exists(self, model: mujoco.MjModel) -> bool:
+        if self._camera_checked:
+            return not self._disabled
+        self._camera_checked = True
+        if self._camera_name is None:
+            self._disabled = True
+            return False
+
+        camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera_name)
+        if camera_id < 0:
+            print(f"[viewer] warning: camera overlay '{self._camera_name}' was not found; overlay disabled.")
+            self._disabled = True
+            return False
+        return True
+
+    def _ensure_renderer(self, model: mujoco.MjModel, width: int, height: int) -> mujoco.Renderer:
+        requested_size = (int(width), int(height))
+        if self._renderer is not None and self._renderer_size == requested_size:
+            return self._renderer
+
+        self.close()
+        self._renderer = mujoco.Renderer(model, height=requested_size[1], width=requested_size[0])
+        self._renderer_size = requested_size
+        return self._renderer
+
+    def update(self, viewer: object, model: mujoco.MjModel, data: mujoco.MjData, now: float) -> None:
+        if self._disabled or now < self._next_frame_at:
+            return
+        if not self._ensure_camera_exists(model):
+            return
+
+        rect = _build_camera_overlay_rect(viewer.viewport)
+        if rect is None:
+            return
+
+        try:
+            renderer = self._ensure_renderer(model, int(rect.width), int(rect.height))
+            renderer.update_scene(data, camera=self._camera_name)
+            image = renderer.render()
+            if image.ndim != 3 or image.shape[2] < 3:
+                raise RuntimeError(f"unexpected camera image shape: {image.shape}")
+            rgb = np.ascontiguousarray(image[:, :, :3], dtype=np.uint8)
+            viewer.set_images((rect, rgb))
+            self._next_frame_at = now + self._frame_interval_s
+        except Exception as exc:
+            if not self._warned:
+                print(f"[viewer] warning: failed to render camera overlay '{self._camera_name}': {exc}")
+                self._warned = True
+            self._disabled = True
+            self.close()
+
+
 def _capture_viewer_target_pose_from_ctrl(
     model: mujoco.MjModel,
     data: mujoco.MjData,
@@ -732,7 +874,16 @@ def _push_viewer_pose_to_backend(
         return False
 
 
-def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str, step_url: str) -> None:
+def run_viewer(
+    model_path: Path,
+    manifest_path: Path,
+    fps: float,
+    state_url: str,
+    step_url: str,
+    viewer_camera: str | None = None,
+    viewer_camera_overlay: str | None = DEFAULT_VIEWER_CAMERA_OVERLAY,
+    viewer_camera_overlay_fps: float = VIEWER_CAMERA_OVERLAY_FPS,
+) -> None:
     # On Wayland, prefer X11 backend when available to reduce libdecor warnings.
     # Leave room for manual override by respecting existing env values.
     if (
@@ -779,158 +930,187 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
     print(f"[viewer] forwarding local edits to: {step_url}")
     print(f"[viewer] local control physics substeps/frame: {local_physics_substeps}")
     print("[viewer] controls: left-drag rotate, right-drag pan, wheel zoom")
+    print("[viewer] camera view: D405 preview opens in a separate draggable window by default")
+    print("[viewer] camera view: pass --viewer-camera d405_rgb to make D405 the main MuJoCo view")
     print("[viewer] close the window to return to backend console")
 
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        while viewer.is_running():
-            start = time.perf_counter()
-            current_pose = _capture_viewer_pose(model, data)
-            ctrl_target_pose = _capture_viewer_target_pose_from_ctrl(model, data, arm_actuator_ids, gripper_actuator_id)
-            current_ctrl_snapshot = _extract_ctrl_vector(data, arm_actuator_ids, gripper_actuator_id)
-            ctrl_changed = _ctrl_changed(
-                current=current_ctrl_snapshot,
-                previous=last_ctrl_snapshot,
-                threshold=VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD,
-            )
-            joint_pose_changed = (
-                current_pose is not None
-                and last_physics_pose is not None
-                and _pose_max_error(current_pose, last_physics_pose) > VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD
-            )
+    camera_overlay = ViewerCameraOverlay(
+        camera_name=viewer_camera_overlay,
+        fps=viewer_camera_overlay_fps,
+    )
+    if camera_overlay.enabled:
+        print(f"[viewer] camera overlay: {camera_overlay.camera_name}")
 
-            pending_kind = (
-                str(pending_viewer_push.get("kind", "pose"))
-                if isinstance(pending_viewer_push, dict)
-                else ""
-            )
-            ctrl_pending_active = pending_kind == "ctrl"
-            edit_pose: dict[str, object] | None = None
-            edit_kind = "pose"
-            edit_source = ""
-            step_local_physics = False
-
-            if joint_pose_changed and current_pose is not None:
-                # Joint sliders write qpos directly. Reinterpret them as a physical target
-                # and integrate toward it instead of letting the arm teleport through contacts.
-                edit_pose = current_pose
-                edit_kind = "ctrl"
-                edit_source = "joint"
-                joint_drag_until = max(joint_drag_until, start + VIEWER_BRIDGE_CTRL_IDLE_S)
-            elif (
-                ctrl_changed
-                and ctrl_target_pose is not None
-                and last_applied_backend_pose is not None
-                and _pose_max_error(ctrl_target_pose, last_applied_backend_pose) > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD
-            ):
-                # Prefer ctrl-target pose when user drags the MuJoCo Control panel sliders.
-                edit_pose = ctrl_target_pose
-                edit_kind = "ctrl"
-                edit_source = "ctrl"
-            elif current_pose is not None and last_applied_backend_pose is not None:
-                local_edit_error = _pose_max_error(current_pose, last_applied_backend_pose)
-                if (not ctrl_pending_active) and local_edit_error > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD:
-                    edit_pose = current_pose
-
-            if edit_pose is not None:
-                if edit_kind == "ctrl":
-                    # Control-panel sliders edit actuator targets. Let MuJoCo
-                    # integrate toward them so contacts constrain the motion.
-                    if edit_source == "joint" and last_physics_qpos is not None and last_physics_qvel is not None:
-                        data.qpos[:] = last_physics_qpos
-                        data.qvel[:] = last_physics_qvel
-                        mujoco.mj_forward(model, data)
-                    if current_pose is not None:
-                        arm_values, driver_value = _parse_viewer_pose_targets(edit_pose)
-                        if arm_values is not None:
-                            _apply_pose_targets_to_viewer(model, data, arm_values, driver_value)
-                    step_local_physics = True
-                    if edit_source == "ctrl":
-                        ctrl_drag_until = max(ctrl_drag_until, start + VIEWER_BRIDGE_CTRL_IDLE_S)
-                else:
-                    # Keep any residual pose mismatch visible while it is bridged
-                    # to the backend.
-                    _apply_pose_to_viewer(model, data, edit_pose)
-                local_override_until = max(local_override_until, start + VIEWER_BRIDGE_GUARD_S)
-
-                replace_pending = True
-                if pending_viewer_push is not None:
-                    pending_pose_raw = pending_viewer_push.get("pose")
-                    if isinstance(pending_pose_raw, dict):
-                        delta_to_pending = _pose_max_error(edit_pose, pending_pose_raw)
-                        replace_pending = delta_to_pending > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD
-                if replace_pending:
-                    pending_viewer_push = {
-                        "pose": edit_pose,
-                        "kind": edit_kind,
-                        "mode": edit_source or "pose",
-                        "created_at": start,
-                        "last_attempt_at": 0.0,
-                    }
-
-            if pending_viewer_push is not None:
-                last_attempt_at_raw = pending_viewer_push.get("last_attempt_at", 0.0)
-                last_attempt_at = float(last_attempt_at_raw) if isinstance(last_attempt_at_raw, (int, float)) else 0.0
-                pending_kind = str(pending_viewer_push.get("kind", "pose"))
-                pending_mode = str(pending_viewer_push.get("mode", "pose"))
-                ctrl_drag_active = pending_kind == "ctrl" and (
-                    start < ctrl_drag_until or (pending_mode == "joint" and start < joint_drag_until)
+    try:
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            _apply_fixed_viewer_camera(viewer, model, viewer_camera)
+            while viewer.is_running():
+                start = time.perf_counter()
+                current_pose = _capture_viewer_pose(model, data)
+                ctrl_target_pose = _capture_viewer_target_pose_from_ctrl(
+                    model,
+                    data,
+                    arm_actuator_ids,
+                    gripper_actuator_id,
                 )
-                if (not ctrl_drag_active) and (start - last_attempt_at) >= VIEWER_BRIDGE_MIN_PUSH_INTERVAL_S:
+                current_ctrl_snapshot = _extract_ctrl_vector(data, arm_actuator_ids, gripper_actuator_id)
+                ctrl_changed = _ctrl_changed(
+                    current=current_ctrl_snapshot,
+                    previous=last_ctrl_snapshot,
+                    threshold=VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD,
+                )
+                joint_pose_changed = (
+                    current_pose is not None
+                    and last_physics_pose is not None
+                    and _pose_max_error(current_pose, last_physics_pose) > VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD
+                )
+
+                pending_kind = (
+                    str(pending_viewer_push.get("kind", "pose"))
+                    if isinstance(pending_viewer_push, dict)
+                    else ""
+                )
+                ctrl_pending_active = pending_kind == "ctrl"
+                edit_pose: dict[str, object] | None = None
+                edit_kind = "pose"
+                edit_source = ""
+                step_local_physics = False
+
+                if joint_pose_changed and current_pose is not None:
+                    # Joint sliders write qpos directly. Reinterpret them as a physical target
+                    # and integrate toward it instead of letting the arm teleport through contacts.
+                    edit_pose = current_pose
+                    edit_kind = "ctrl"
+                    edit_source = "joint"
+                    joint_drag_until = max(joint_drag_until, start + VIEWER_BRIDGE_CTRL_IDLE_S)
+                elif (
+                    ctrl_changed
+                    and ctrl_target_pose is not None
+                    and last_applied_backend_pose is not None
+                    and _pose_max_error(ctrl_target_pose, last_applied_backend_pose) > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD
+                ):
+                    # Prefer ctrl-target pose when user drags the MuJoCo Control panel sliders.
+                    edit_pose = ctrl_target_pose
+                    edit_kind = "ctrl"
+                    edit_source = "ctrl"
+                elif current_pose is not None and last_applied_backend_pose is not None:
+                    local_edit_error = _pose_max_error(current_pose, last_applied_backend_pose)
+                    if (not ctrl_pending_active) and local_edit_error > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD:
+                        edit_pose = current_pose
+
+                if edit_pose is not None:
+                    if edit_kind == "ctrl":
+                        # Control-panel sliders edit actuator targets. Let MuJoCo
+                        # integrate toward them so contacts constrain the motion.
+                        if edit_source == "joint" and last_physics_qpos is not None and last_physics_qvel is not None:
+                            data.qpos[:] = last_physics_qpos
+                            data.qvel[:] = last_physics_qvel
+                            mujoco.mj_forward(model, data)
+                        if current_pose is not None:
+                            arm_values, driver_value = _parse_viewer_pose_targets(edit_pose)
+                            if arm_values is not None:
+                                _apply_pose_targets_to_viewer(model, data, arm_values, driver_value)
+                        step_local_physics = True
+                        if edit_source == "ctrl":
+                            ctrl_drag_until = max(ctrl_drag_until, start + VIEWER_BRIDGE_CTRL_IDLE_S)
+                    else:
+                        # Keep any residual pose mismatch visible while it is bridged
+                        # to the backend.
+                        _apply_pose_to_viewer(model, data, edit_pose)
+                    local_override_until = max(local_override_until, start + VIEWER_BRIDGE_GUARD_S)
+
+                    replace_pending = True
+                    if pending_viewer_push is not None:
+                        pending_pose_raw = pending_viewer_push.get("pose")
+                        if isinstance(pending_pose_raw, dict):
+                            delta_to_pending = _pose_max_error(edit_pose, pending_pose_raw)
+                            replace_pending = delta_to_pending > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD
+                    if replace_pending:
+                        pending_viewer_push = {
+                            "pose": edit_pose,
+                            "kind": edit_kind,
+                            "mode": edit_source or "pose",
+                            "created_at": start,
+                            "last_attempt_at": 0.0,
+                        }
+
+                if pending_viewer_push is not None:
+                    last_attempt_at_raw = pending_viewer_push.get("last_attempt_at", 0.0)
+                    last_attempt_at = (
+                        float(last_attempt_at_raw)
+                        if isinstance(last_attempt_at_raw, (int, float))
+                        else 0.0
+                    )
+                    pending_kind = str(pending_viewer_push.get("kind", "pose"))
+                    pending_mode = str(pending_viewer_push.get("mode", "pose"))
+                    ctrl_drag_active = pending_kind == "ctrl" and (
+                        start < ctrl_drag_until or (pending_mode == "joint" and start < joint_drag_until)
+                    )
+                    if (not ctrl_drag_active) and (start - last_attempt_at) >= VIEWER_BRIDGE_MIN_PUSH_INTERVAL_S:
+                        pending_pose_raw = pending_viewer_push.get("pose")
+                        if isinstance(pending_pose_raw, dict):
+                            pushed = _push_viewer_pose_to_backend(
+                                step_url=step_url,
+                                pose=pending_pose_raw,
+                                timeout_s=min(0.8, max(0.35, 2.0 * dt)),
+                            )
+                            pending_viewer_push["last_attempt_at"] = start
+                            if pushed:
+                                pending_viewer_push["sent_at"] = start
+                                last_manual_push_at = start
+
+                ctrl_sync_paused = (start < ctrl_drag_until) or (start < joint_drag_until)
+                if (not ctrl_sync_paused) and (start - last_poll_at) >= state_poll_interval:
+                    fetched = _fetch_backend_state(state_url=state_url, timeout_s=state_fetch_timeout)
+                    last_poll_at = start
+                    if fetched is not None:
+                        last_state = fetched
+                        if poll_failures > 0:
+                            print("[viewer] backend state stream recovered.")
+                        poll_failures = 0
+                    else:
+                        poll_failures += 1
+                        if poll_failures in {1, 60, 300}:
+                            print("[viewer] warning: failed to fetch backend state, keeping last rendered pose.")
+
+                should_apply_backend = True
+                if ctrl_sync_paused:
+                    should_apply_backend = False
+                if pending_viewer_push is not None and last_state is not None:
                     pending_pose_raw = pending_viewer_push.get("pose")
-                    if isinstance(pending_pose_raw, dict):
-                        pushed = _push_viewer_pose_to_backend(
-                            step_url=step_url,
-                            pose=pending_pose_raw,
-                            timeout_s=min(0.8, max(0.35, 2.0 * dt)),
-                        )
-                        pending_viewer_push["last_attempt_at"] = start
-                        if pushed:
-                            pending_viewer_push["sent_at"] = start
-                            last_manual_push_at = start
-
-            ctrl_sync_paused = (start < ctrl_drag_until) or (start < joint_drag_until)
-            if (not ctrl_sync_paused) and (start - last_poll_at) >= state_poll_interval:
-                fetched = _fetch_backend_state(state_url=state_url, timeout_s=state_fetch_timeout)
-                last_poll_at = start
-                if fetched is not None:
-                    last_state = fetched
-                    if poll_failures > 0:
-                        print("[viewer] backend state stream recovered.")
-                    poll_failures = 0
-                else:
-                    poll_failures += 1
-                    if poll_failures in {1, 60, 300}:
-                        print("[viewer] warning: failed to fetch backend state, keeping last rendered pose.")
-
-            should_apply_backend = True
-            if ctrl_sync_paused:
-                should_apply_backend = False
-            if pending_viewer_push is not None and last_state is not None:
-                pending_pose_raw = pending_viewer_push.get("pose")
-                created_at_raw = pending_viewer_push.get("created_at", start)
-                created_at = float(created_at_raw) if isinstance(created_at_raw, (int, float)) else start
-                backend_pose = _extract_pose_from_backend_state(last_state)
-                if isinstance(pending_pose_raw, dict) and backend_pose is not None:
-                    backend_err = _pose_max_error(backend_pose, pending_pose_raw)
-                    if backend_err <= VIEWER_BRIDGE_MATCH_THRESHOLD_RAD:
-                        pending_viewer_push = None
-                    elif (start < local_override_until) or ((start - created_at) < VIEWER_BRIDGE_PENDING_TIMEOUT_S):
-                        # Keep local interaction visible while backend catches up.
-                        should_apply_backend = False
+                    created_at_raw = pending_viewer_push.get("created_at", start)
+                    created_at = float(created_at_raw) if isinstance(created_at_raw, (int, float)) else start
+                    backend_pose = _extract_pose_from_backend_state(last_state)
+                    if isinstance(pending_pose_raw, dict) and backend_pose is not None:
+                        backend_err = _pose_max_error(backend_pose, pending_pose_raw)
+                        if backend_err <= VIEWER_BRIDGE_MATCH_THRESHOLD_RAD:
+                            pending_viewer_push = None
+                        elif (start < local_override_until) or ((start - created_at) < VIEWER_BRIDGE_PENDING_TIMEOUT_S):
+                            # Keep local interaction visible while backend catches up.
+                            should_apply_backend = False
+                        else:
+                            pending_viewer_push = None
                     else:
                         pending_viewer_push = None
-                else:
-                    pending_viewer_push = None
-            elif start < local_override_until:
-                should_apply_backend = False
+                elif start < local_override_until:
+                    should_apply_backend = False
 
-            if last_state is not None:
-                if should_apply_backend:
-                    applied = _apply_backend_state_to_viewer(model, data, last_state)
-                    if applied:
-                        backend_pose = _extract_pose_from_backend_state(last_state)
-                        if backend_pose is not None:
-                            last_applied_backend_pose = backend_pose
+                if last_state is not None:
+                    if should_apply_backend:
+                        applied = _apply_backend_state_to_viewer(model, data, last_state)
+                        if applied:
+                            backend_pose = _extract_pose_from_backend_state(last_state)
+                            if backend_pose is not None:
+                                last_applied_backend_pose = backend_pose
+                    else:
+                        if step_local_physics or (
+                            isinstance(pending_viewer_push, dict)
+                            and str(pending_viewer_push.get("kind", "")) == "ctrl"
+                        ):
+                            for _ in range(local_physics_substeps):
+                                mujoco.mj_step(model, data)
+                        else:
+                            mujoco.mj_forward(model, data)
                 else:
                     if step_local_physics or (
                         isinstance(pending_viewer_push, dict)
@@ -940,26 +1120,20 @@ def run_viewer(model_path: Path, manifest_path: Path, fps: float, state_url: str
                             mujoco.mj_step(model, data)
                     else:
                         mujoco.mj_forward(model, data)
-            else:
-                if step_local_physics or (
-                    isinstance(pending_viewer_push, dict)
-                    and str(pending_viewer_push.get("kind", "")) == "ctrl"
-                ):
-                    for _ in range(local_physics_substeps):
-                        mujoco.mj_step(model, data)
-                else:
-                    mujoco.mj_forward(model, data)
 
-            last_physics_pose = _capture_viewer_pose(model, data)
-            last_physics_qpos = data.qpos.copy()
-            last_physics_qvel = data.qvel.copy()
-            viewer.sync()
-            # Keep the pre-sync ctrl snapshot as baseline so UI edits applied during
-            # viewer.sync() are detected on the next loop instead of being swallowed.
-            last_ctrl_snapshot = list(current_ctrl_snapshot)
-            sleep_time = dt - (time.perf_counter() - start)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                last_physics_pose = _capture_viewer_pose(model, data)
+                last_physics_qpos = data.qpos.copy()
+                last_physics_qvel = data.qvel.copy()
+                camera_overlay.update(viewer, model, data, start)
+                viewer.sync()
+                # Keep the pre-sync ctrl snapshot as baseline so UI edits applied during
+                # viewer.sync() are detected on the next loop instead of being swallowed.
+                last_ctrl_snapshot = list(current_ctrl_snapshot)
+                sleep_time = dt - (time.perf_counter() - start)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+    finally:
+        camera_overlay.close()
 
 
 def _start_backend(
@@ -1040,6 +1214,20 @@ def _stop_backend(process: subprocess.Popen[bytes] | None) -> None:
         process.wait(timeout=5.0)
 
 
+def _start_camera_preview_window(camera_url: str, fps: float) -> subprocess.Popen[bytes]:
+    script_path = REPO_ROOT / "backend" / "camera_preview.py"
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--url",
+        camera_url,
+        "--fps",
+        str(max(1.0, float(fps))),
+    ]
+    print("[viewer] starting D405 preview:", " ".join(cmd))
+    return subprocess.Popen(cmd, cwd=str(REPO_ROOT))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Start FastAPI backend and optionally open MuJoCo desktop viewer."
@@ -1089,6 +1277,36 @@ def main() -> None:
         help="Open MuJoCo viewer after backend starts: ask|yes|no (default: ask).",
     )
     parser.add_argument(
+        "--viewer-camera",
+        type=str,
+        default=None,
+        help="Open MuJoCo viewer with a fixed camera name such as d405_rgb; use free/none to keep the free camera.",
+    )
+    parser.add_argument(
+        "--viewer-camera-overlay",
+        type=str,
+        default=DEFAULT_VIEWER_CAMERA_OVERLAY,
+        help="Show a fixed camera inset inside the MuJoCo viewer. Default is off; use d405_rgb to enable.",
+    )
+    parser.add_argument(
+        "--viewer-camera-overlay-fps",
+        type=float,
+        default=VIEWER_CAMERA_OVERLAY_FPS,
+        help="Target FPS for the MuJoCo camera inset (default: 12).",
+    )
+    parser.add_argument(
+        "--camera-preview-window",
+        choices=["yes", "no"],
+        default="yes",
+        help="Open a separate draggable D405 RGB preview window when MuJoCo viewer opens (default: yes).",
+    )
+    parser.add_argument(
+        "--camera-preview-fps",
+        type=float,
+        default=DEFAULT_CAMERA_PREVIEW_FPS,
+        help="Target FPS for the separate D405 RGB preview window (default: 15).",
+    )
+    parser.add_argument(
         "--no-reload",
         action="store_true",
         help="Disable uvicorn --reload (enabled by default to match current dev command).",
@@ -1130,13 +1348,26 @@ def main() -> None:
             scheme = "https" if args.ssl_certfile and args.ssl_keyfile else "http"
             state_url = f"{scheme}://{check_host}:{args.port}/sim/state/"
             step_url = f"{scheme}://{check_host}:{args.port}/sim/step/"
-            run_viewer(
-                model_path=model_path,
-                manifest_path=manifest_path,
-                fps=args.fps,
-                state_url=state_url,
-                step_url=step_url,
-            )
+            camera_preview_process: subprocess.Popen[bytes] | None = None
+            if args.camera_preview_window == "yes":
+                camera_url = f"{scheme}://{check_host}:{args.port}/sim/camera/rgb/?include_data=true"
+                camera_preview_process = _start_camera_preview_window(
+                    camera_url=camera_url,
+                    fps=args.camera_preview_fps,
+                )
+            try:
+                run_viewer(
+                    model_path=model_path,
+                    manifest_path=manifest_path,
+                    fps=args.fps,
+                    state_url=state_url,
+                    step_url=step_url,
+                    viewer_camera=args.viewer_camera,
+                    viewer_camera_overlay=args.viewer_camera_overlay,
+                    viewer_camera_overlay_fps=args.viewer_camera_overlay_fps,
+                )
+            finally:
+                _stop_backend(camera_preview_process)
 
         print("[backend] running. Press Ctrl+C to stop backend.")
         while backend_process.poll() is None:
