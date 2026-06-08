@@ -165,6 +165,9 @@ export default defineConfig({
     // another non-TLS service and hit ERR_SSL_VERSION_OR_CIPHER_MISMATCH.
     strictPort: true,
     https: httpsServerOption,
+    fs: {
+      allow: [REPO_ROOT],
+    },
     proxy: {
       '/health/': createBackendProxyOptions(),
       '/sim': createBackendProxyOptions(true),

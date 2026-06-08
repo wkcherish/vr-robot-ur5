@@ -137,8 +137,13 @@ class SimState(BaseModel):
     timestamp: float
     sim_time: float
     joint_names: list[str]
+    joint_limits: dict[str, list[float]] = Field(default_factory=dict)
     qpos: list[float]
     qvel: list[float]
+    arm_target_qpos: list[float] | None = None
+    arm_ctrl_qpos: list[float] | None = None
+    gripper_target_opening: float | None = None
+    gripper_ctrl_opening: float | None = None
     ee_pose: EEPose
     gripper_opening: float
     gripper_joints: dict[str, float]
