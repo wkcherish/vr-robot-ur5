@@ -65,6 +65,7 @@ VIEWER_BRIDGE_MIN_PUSH_INTERVAL_S = 0.10
 VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD = 0.003
 VIEWER_BRIDGE_PENDING_TIMEOUT_S = 8.0
 VIEWER_BRIDGE_CTRL_IDLE_S = 0.45
+VIEWER_BRIDGE_REMOTE_CONTROL_GUARD_S = 2.0
 VIEWER_BRIDGE_PUSH_PHYSICS_STEPS = 24
 VIEWER_BRIDGE_PUSH_TIMEOUT_S = 0.08
 VIEWER_BRIDGE_PENDING_POLL_INTERVAL_S = 0.12
@@ -1155,6 +1156,35 @@ def _pose_max_error(pose_a: dict[str, object], pose_b: dict[str, object]) -> flo
     return max_err
 
 
+def _state_was_pushed_by_viewer(state: dict[str, object] | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    raw_input = state.get("raw_input")
+    return isinstance(raw_input, dict) and str(raw_input.get("origin", "")).strip() == "mujoco_viewer"
+
+
+def _state_is_remote_desktop_slider(state: dict[str, object] | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    if _state_was_pushed_by_viewer(state):
+        return False
+    source = str(state.get("source", "")).strip()
+    input_source = str(state.get("input_source", "")).strip()
+    return source == "desktop_manual" and input_source in {"slider", "joint_slider", "slider_commit"}
+
+
+def _state_command_count(state: dict[str, object] | None) -> int:
+    if not isinstance(state, dict):
+        return -1
+    stats = state.get("stats")
+    if not isinstance(stats, dict):
+        return -1
+    try:
+        return int(stats.get("commands", -1))
+    except (TypeError, ValueError):
+        return -1
+
+
 def _push_viewer_pose_to_backend(
     step_url: str,
     pose: dict[str, object],
@@ -1177,6 +1207,10 @@ def _push_viewer_pose_to_backend(
         "control_mode": "position",
         "source": "desktop_manual",
         "input_source": input_source,
+        "raw_input": {
+            "origin": "mujoco_viewer",
+            "input_source": input_source,
+        },
     }
 
     driver_raw = pose.get("driver")
@@ -1252,6 +1286,8 @@ def run_viewer(
     local_override_until = 0.0
     ctrl_drag_until = 0.0
     joint_drag_until = 0.0
+    remote_control_guard_until = 0.0
+    last_remote_slider_command_count = -1
     poll_failures = 0
     push_executor: concurrent.futures.ThreadPoolExecutor | None = None
     pending_push_future: concurrent.futures.Future[bool] | None = None
@@ -1314,6 +1350,22 @@ def run_viewer(
                     if fetched is not None:
                         last_state = fetched
                         backend_state_dirty = True
+                        fetched_command_count = _state_command_count(fetched)
+                        is_new_remote_slider_state = (
+                            _state_is_remote_desktop_slider(fetched)
+                            and fetched_command_count > last_remote_slider_command_count
+                        )
+                        if is_new_remote_slider_state:
+                            last_remote_slider_command_count = fetched_command_count
+                            remote_control_guard_until = max(
+                                remote_control_guard_until,
+                                time.perf_counter() + VIEWER_BRIDGE_REMOTE_CONTROL_GUARD_S,
+                            )
+                            pending_viewer_push = None
+                            pending_ctrl_edit_pose = None
+                            local_override_until = 0.0
+                            ctrl_drag_until = 0.0
+                            joint_drag_until = 0.0
                         if poll_failures > 0:
                             print("[viewer] backend state stream recovered.")
                         poll_failures = 0
@@ -1328,6 +1380,17 @@ def run_viewer(
                     and last_physics_pose is not None
                     and _pose_max_error(current_pose, last_physics_pose) > VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD
                 )
+                pre_sync_ctrl_snapshot = _extract_ctrl_vector(data, arm_actuator_ids, gripper_actuator_id)
+                ui_ctrl_changed_pre_sync = _ctrl_changed(
+                    current=pre_sync_ctrl_snapshot,
+                    previous=last_ui_ctrl_snapshot,
+                    threshold=VIEWER_BRIDGE_CTRL_DELTA_THRESHOLD,
+                )
+                if ui_ctrl_changed_pre_sync:
+                    remote_control_guard_until = 0.0
+                    local_override_until = max(local_override_until, start + VIEWER_BRIDGE_GUARD_S)
+                if joint_pose_changed:
+                    remote_control_guard_until = 0.0
 
                 pending_kind = (
                     str(pending_viewer_push.get("kind", "pose"))
@@ -1339,8 +1402,13 @@ def run_viewer(
                 edit_kind = "pose"
                 edit_source = ""
                 step_local_physics = False
+                remote_control_active = start < remote_control_guard_until
+                last_state_is_remote_slider = _state_is_remote_desktop_slider(last_state)
+                allow_viewer_pose_edit = (not remote_control_active) and (
+                    ui_ctrl_changed_pre_sync or joint_pose_changed or not last_state_is_remote_slider
+                )
 
-                if joint_pose_changed and current_pose is not None:
+                if allow_viewer_pose_edit and joint_pose_changed and current_pose is not None:
                     # MuJoCo joint sliders are direct qpos editors. Keep that local
                     # interaction immediate in the viewer, and bridge it to the
                     # backend asynchronously so the render loop does not stutter.
@@ -1349,6 +1417,8 @@ def run_viewer(
                     edit_source = "joint"
                     joint_drag_until = max(joint_drag_until, start + VIEWER_BRIDGE_CTRL_IDLE_S)
                 elif (
+                    (not remote_control_active)
+                    and
                     pending_ctrl_edit_pose is not None
                     and last_applied_backend_pose is not None
                     and _pose_max_error(pending_ctrl_edit_pose, last_applied_backend_pose)
@@ -1358,7 +1428,7 @@ def run_viewer(
                     edit_pose = pending_ctrl_edit_pose
                     edit_kind = "ctrl"
                     edit_source = "ctrl"
-                elif current_pose is not None and last_applied_backend_pose is not None:
+                elif allow_viewer_pose_edit and current_pose is not None and last_applied_backend_pose is not None:
                     local_edit_error = _pose_max_error(current_pose, last_applied_backend_pose)
                     if (not ctrl_pending_active) and local_edit_error > VIEWER_BRIDGE_EDIT_THRESHOLD_RAD:
                         edit_pose = current_pose
@@ -1554,7 +1624,6 @@ def run_viewer(
 
                 last_physics_pose = _capture_viewer_pose(model, data)
                 camera_overlay.update(viewer, model, data, start)
-                pre_sync_ctrl_snapshot = _extract_ctrl_vector(data, arm_actuator_ids, gripper_actuator_id)
                 viewer.sync()
                 post_sync_ctrl_snapshot = _extract_ctrl_vector(data, arm_actuator_ids, gripper_actuator_id)
                 if _ctrl_changed(

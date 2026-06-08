@@ -126,6 +126,7 @@ PASSIVE_ADVANCE_MAX_STEPS = 80
 INTERACTIVE_SOURCE_MAX_BLOCKING_STEPS = 4
 SLIDER_COMMIT_MAX_BLOCKING_STEPS = 24
 STREAMING_CONTROL_HOLD_TIMEOUT_S = 0.18
+FRONTEND_SLIDER_OVERWRITE_GUARD_S = 2.0
 SERVO_HOLD_ARM_ERROR_RAD = 0.006
 SERVO_HOLD_GRIPPER_ERROR_OPENING = 0.008
 SERVO_BRAKE_ARM_ERROR_RAD = 0.022
@@ -146,7 +147,6 @@ IK_POSITION_WEIGHT = 1.0
 IK_ORIENTATION_WEIGHT = 0.22
 GRIPPER_GRASP_ENGAGE_OPENING = 0.52
 GRIPPER_GRASP_RELEASE_OPENING = 0.18
-GRIPPER_GRASP_ATTACH_RADIUS_M = 0.20
 GRIPPER_GRASP_CONTACT_MARGIN_M = 0.015
 GRIPPER_GRASP_PAD_BODY_NAMES = ("left_pad_link", "right_pad_link")
 SCENE_SETTLE_STEPS = 1000
@@ -212,6 +212,11 @@ def _should_limit_realtime_target_delta(source: str, input_source: str | None = 
     return normalized in {"quest3_controller", "quest3_hand"}
 
 
+def _should_hold_stale_streaming_source(source: str, input_source: str | None = None) -> bool:
+    normalized = _normalize_control_source(source, input_source=input_source)
+    return normalized in {"quest3_controller", "quest3_hand"}
+
+
 def _is_interactive_source(source: str, input_source: str | None = None) -> bool:
     normalized = _normalize_control_source(source, input_source=input_source)
     return normalized in {
@@ -253,6 +258,22 @@ def _should_servo_snap_to_target(
 
 def _is_slider_commit_input(input_source: str | None) -> bool:
     return str(input_source or "").strip().lower() == "slider_commit"
+
+
+def _is_desktop_slider_input(source: str | None, input_source: str | None) -> bool:
+    normalized_source = str(source or "").strip().lower()
+    normalized_input = str(input_source or "").strip().lower()
+    return normalized_source in {"manual", "desktop_manual"} and normalized_input in {
+        "slider",
+        "joint_slider",
+        "slider_commit",
+    }
+
+
+def _request_origin(raw_input: dict[str, Any] | None) -> str:
+    if not isinstance(raw_input, dict):
+        return ""
+    return str(raw_input.get("origin", "") or "").strip().lower()
 
 
 def _move_toward(value: float, target: float, max_delta: float) -> float:
@@ -515,6 +536,7 @@ class SimulationCore:
         }
         self._latest_realtime_seq_by_source: dict[str, int] = {}
         self._last_streaming_command_at: float | None = None
+        self._frontend_slider_guard_until: float = 0.0
 
         self._load_scene_manifest()
         self._load_model(None)
@@ -566,6 +588,30 @@ class SimulationCore:
     async def step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
         async with self._lock:
             started_at = perf_counter()
+            request_input_source = str(request.input_source).strip() if request.input_source is not None else None
+            request_raw_input = dict(request.raw_input) if isinstance(request.raw_input, dict) else None
+            request_origin = _request_origin(request_raw_input)
+            is_desktop_slider_request = _is_desktop_slider_input(request.source, request_input_source)
+            if (
+                is_desktop_slider_request
+                and request_origin in {"", "mujoco_viewer"}
+                and perf_counter() < self._frontend_slider_guard_until
+            ):
+                if return_state:
+                    return self._build_state_locked(refresh_camera=False)
+                return {
+                    "timestamp": time.time(),
+                    "sim_time": self._sim_time,
+                    "source": self._source,
+                    "selected_joint_group": self._last_selected_joint_group,
+                    "input_source": self._last_input_source,
+                    "status": "ignored_frontend_slider_guard",
+                }
+            if is_desktop_slider_request and request_origin in {"", "frontend"}:
+                self._frontend_slider_guard_until = max(
+                    self._frontend_slider_guard_until,
+                    perf_counter() + FRONTEND_SLIDER_OVERWRITE_GUARD_S,
+                )
 
             target_positions = request.target_positions
 
@@ -602,14 +648,14 @@ class SimulationCore:
 
             self._source = request.source
             self._last_input_source = (
-                str(request.input_source).strip() if request.input_source is not None else None
+                request_input_source
             )
             self._last_selected_joint_group = (
                 str(request.selected_joint_group).strip()
                 if request.selected_joint_group is not None
                 else None
             )
-            self._last_raw_input = dict(request.raw_input) if isinstance(request.raw_input, dict) else None
+            self._last_raw_input = request_raw_input
             self._last_normalized_input = (
                 dict(request.normalized_input) if isinstance(request.normalized_input, dict) else None
             )
@@ -1818,31 +1864,6 @@ class SimulationCore:
         self._attached_object_rel_position = None
         self._attached_object_rel_quaternion = None
 
-    def _find_nearest_graspable_object_locked(
-        self,
-        grasp_pose: dict[str, list[float]],
-    ) -> tuple[str | None, float]:
-        grasp_position = grasp_pose.get("position", [0.0, 0.0, 0.0])
-        nearest_id: str | None = None
-        nearest_distance = float("inf")
-        for obj_id in GRASPABLE_TOOL_BODY_NAMES:
-            pose = self._get_object_pose_locked(obj_id)
-            if pose is None:
-                continue
-            position = pose["position"]
-            distance = math.sqrt(
-                (position[0] - grasp_position[0]) ** 2
-                + (position[1] - grasp_position[1]) ** 2
-                + (position[2] - grasp_position[2]) ** 2
-            )
-            if distance < nearest_distance:
-                nearest_id = obj_id
-                nearest_distance = distance
-
-        if nearest_distance > GRIPPER_GRASP_ATTACH_RADIUS_M:
-            return None, nearest_distance
-        return nearest_id, nearest_distance
-
     def _find_contacted_graspable_object_locked(self) -> str | None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
             return None
@@ -1867,9 +1888,9 @@ class SimulationCore:
                 else ""
             )
 
-            if body_name_a in GRASPABLE_TOOL_BODY_NAMES and body_name_b in GRIPPER_BODY_NAMES:
+            if body_name_a in GRASPABLE_TOOL_BODY_NAMES and body_name_b in GRIPPER_GRASP_PAD_BODY_NAMES:
                 return body_name_a
-            if body_name_b in GRASPABLE_TOOL_BODY_NAMES and body_name_a in GRIPPER_BODY_NAMES:
+            if body_name_b in GRASPABLE_TOOL_BODY_NAMES and body_name_a in GRIPPER_GRASP_PAD_BODY_NAMES:
                 return body_name_b
 
         return None
@@ -1955,8 +1976,6 @@ class SimulationCore:
 
         grasp_pose = self._compute_gripper_grasp_pose_locked()
         graspable_id = self._find_contacted_graspable_object_locked()
-        if graspable_id is None:
-            graspable_id, _ = self._find_nearest_graspable_object_locked(grasp_pose)
         if graspable_id is None:
             return
         if self._attach_object_to_gripper_locked(graspable_id, grasp_pose):
@@ -2070,6 +2089,7 @@ class SimulationCore:
         self._last_collision_contacts = []
         self._latest_realtime_seq_by_source = {}
         self._last_streaming_command_at = None
+        self._frontend_slider_guard_until = 0.0
         self._sim_time = 0.0
         self._stats["steps"] = 0
         self._stats["commands"] = 0
@@ -2568,7 +2588,7 @@ class SimulationCore:
     def _should_hold_stale_streaming_control_locked(self) -> bool:
         if self._last_streaming_command_at is None:
             return False
-        if not _is_realtime_source(self._source, self._last_input_source):
+        if not _should_hold_stale_streaming_source(self._source, self._last_input_source):
             return False
         elapsed_s = perf_counter() - float(self._last_streaming_command_at)
         return elapsed_s >= STREAMING_CONTROL_HOLD_TIMEOUT_S
@@ -2595,7 +2615,7 @@ class SimulationCore:
 
         realtime_hold_input = self._is_realtime_hold_input_locked()
         streaming_realtime_input = (
-            _is_realtime_source(self._source, self._last_input_source)
+            _should_hold_stale_streaming_source(self._source, self._last_input_source)
             and not realtime_hold_input
             and self._last_streaming_command_at is not None
         )
