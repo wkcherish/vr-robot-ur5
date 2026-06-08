@@ -2607,10 +2607,44 @@ function isBackendStateAlignedWithRealtimeSliderDraft(state) {
   );
 }
 
+function isBackendTargetAlignedWithRealtimeSliderDraft(state) {
+  const draft = getFreshRealtimeSliderDraft();
+  if (!draft) return false;
+  const backendTargetArm = getBackendArmTargetFromState(state);
+  if (!Array.isArray(backendTargetArm) || backendTargetArm.length < ARM_JOINT_COUNT) {
+    return false;
+  }
+
+  let maxArmError = 0;
+  for (let i = 0; i < ARM_JOINT_COUNT; i += 1) {
+    const error = Math.abs(Number(backendTargetArm[i]) - Number(draft.arm[i]));
+    if (Number.isFinite(error) && error > maxArmError) {
+      maxArmError = error;
+    }
+  }
+
+  const backendTargetGripper = getGripperTargetRadiansFromBackendState(state);
+  const draftGripperRad = clamp(Number(draft.gripperOpening), 0, 1) * GRIPPER_MAX_RAD;
+  const gripperError =
+    backendTargetGripper === null
+      ? Number.POSITIVE_INFINITY
+      : Math.abs(Number(backendTargetGripper) - draftGripperRad);
+
+  return (
+    maxArmError <= ARM_TARGET_ACCEPT_THRESHOLD_RAD &&
+    gripperError <= GRIPPER_TARGET_ACCEPT_THRESHOLD_RAD
+  );
+}
+
 function shouldKeepRealtimeSliderPreview(state) {
   const draft = getFreshRealtimeSliderDraft();
   if (!draft) return false;
-  if (isSliderDrivenState(state)) return false;
+  if (isSliderDrivenState(state)) {
+    return (
+      isBackendTargetAlignedWithRealtimeSliderDraft(state) &&
+      !isBackendStateAlignedWithRealtimeSliderDraft(state)
+    );
+  }
 
   const source = String(state?.source || "").trim();
   if (source.length > 0 && !LOCAL_MANUAL_SOURCES.has(source)) {
@@ -2663,7 +2697,7 @@ function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
 
   if (isSliderDrivenState(state)) {
     clearPendingManualTarget();
-    return true;
+    return !shouldKeepRealtimeSliderPreview(state);
   }
 
   if (shouldKeepRealtimeSliderPreview(state)) {
@@ -3902,6 +3936,7 @@ function updateRealtimeSliderDraft(name, value, options = {}) {
 
 function sendRealtimeSliderControl(options = {}) {
   const force = options.force === true;
+  const expectResult = options.expectResult === true;
   const inputSource =
     typeof options.inputSource === "string" && options.inputSource.trim().length > 0
       ? options.inputSource.trim()
@@ -3936,7 +3971,7 @@ function sendRealtimeSliderControl(options = {}) {
     mode: "open_close",
     value: gripperOpening,
   };
-  clearPendingManualTarget();
+  rememberPendingManualTarget(armRadians, gripperOpening, { updateRenderTarget: true });
 
   const sent = websocketManager.isConnected
     ? websocketManager.sendControlCommand(armRadians, {
@@ -3945,13 +3980,28 @@ function sendRealtimeSliderControl(options = {}) {
         gripper_command: gripperCommand,
         source: "desktop_manual",
         input_source: inputSource,
-        expect_result: false,
-        ack: false,
+        raw_input: {
+          origin: "frontend",
+          input_source: inputSource,
+        },
+        expect_result: expectResult,
+        ack: expectResult,
       })
     : false;
 
   if (sent) {
     lastRealtimeSliderSendAt.value = now;
+    if (expectResult) {
+      sendCommandPending.value = true;
+      window.setTimeout(() => {
+        if (sendCommandPending.value) {
+          sendCommandPending.value = false;
+          if (websocketManager.isConnected) {
+            websocketManager.requestState();
+          }
+        }
+      }, 2500);
+    }
   } else {
     if (realtimeSliderFallbackInFlight.value) {
       return;
@@ -3964,6 +4014,10 @@ function sendRealtimeSliderControl(options = {}) {
       gripper_command: gripperCommand,
       source: "desktop_manual",
       input_source: inputSource,
+      raw_input: {
+        origin: "frontend",
+        input_source: inputSource,
+      },
     })
       .then((resp) => {
         const status = String(resp?.data?.status || "").toLowerCase();
@@ -4084,6 +4138,7 @@ function sliderCommit(value, name) {
       force: true,
       inputSource: "slider_commit",
       n_steps: 60,
+      expectResult: true,
     });
     return;
   }

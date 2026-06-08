@@ -110,9 +110,11 @@ def _error_payload(code: str, message: str, detail: str | None = None) -> dict[s
 
 def _is_realtime_control_request(request: StepRequest) -> bool:
     input_source = str(getattr(request, "input_source", "") or "").strip().lower()
+    if input_source == "slider_commit":
+        return False
     return request.source in {"quest3_controller", "quest3_hand"} or (
         request.source in {"manual", "desktop_manual"}
-        and input_source in {"slider", "joint_slider", "slider_commit"}
+        and input_source in {"slider", "joint_slider"}
     )
 
 
