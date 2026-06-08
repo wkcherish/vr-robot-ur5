@@ -295,7 +295,11 @@ class WebSocketManager {
         break;
 
       case 'state_broadcast':
-        this.handleStateUpdate(data);
+        this.handleSceneUpdate(data);
+        break;
+
+      case 'motion_broadcast':
+        this.handleMotionUpdate(data);
         break;
 
       case 'control_result':
@@ -350,6 +354,23 @@ class WebSocketManager {
       this.jointLimits = data.joint_limits;
     }
     this.emit('stateUpdate', data);
+  }
+
+  handleSceneUpdate(data) {
+    this.lastStateUpdate = Date.now();
+    this.emit('sceneUpdate', data);
+  }
+
+  handleMotionUpdate(data) {
+    this.simulationState = data;
+    this.lastStateUpdate = Date.now();
+    if (data && Array.isArray(data.joint_names)) {
+      this.jointNames = data.joint_names.map((name) => String(name));
+    }
+    if (data && data.joint_limits && typeof data.joint_limits === 'object') {
+      this.jointLimits = data.joint_limits;
+    }
+    this.emit('motionUpdate', data);
   }
 
   // 将目标关节角裁剪到后端公布的关节限位内，防止越过物理边界

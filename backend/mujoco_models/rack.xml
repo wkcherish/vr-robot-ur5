@@ -5,7 +5,7 @@
         type="mesh"
         friction="1.0 0.02 0.002"
         solimp="0.95 0.99 0.001"
-        solref="0.004 1"
+        solref="0.01 1"
         condim="4"
       />
     </default>
