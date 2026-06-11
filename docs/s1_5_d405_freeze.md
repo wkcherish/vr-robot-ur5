@@ -4,7 +4,7 @@
 
 本文件用于冻结 `S1.5` 的主视觉传感器、挂载方式、仿真接口、标定版本与录制字段规范。
 
-真实 D405 内参与 MuJoCo 光轴的实测验证步骤，见 [docs/d405_real_intrinsics_validation.md](d405_real_intrinsics_validation.md)。
+真实 D405 内参验证步骤见 [docs/d405_real_intrinsics_validation.md](d405_real_intrinsics_validation.md)。末端 D405 作为 eye-in-hand 相机时，还需要手眼外参标定，见 [docs/d405_hand_eye_calibration.md](d405_hand_eye_calibration.md)。
 
 ## 1. 主传感器角色冻结
 
@@ -39,11 +39,13 @@
 
 - 挂载父坐标：`wrist_3_link`
 - 安装方案名：`wrist_d405_v1`
-- 固定外参：见 `shared/camera_sensor_config.json` 的 `primary_sensor.mount`
+- 名义固定外参：见 `shared/camera_sensor_config.json` 的 `primary_sensor.mount`
 - MuJoCo 相机名：
   - `d405_rgb`
   - `d405_depth`
 - 挂载定义位置：`backend/mujoco_models/ur5.xml`
+
+当前外参是 CAD/照片估计值，只适合仿真调试和 pilot。正式真实场景数据采集前，应通过手眼标定生成 `T_wrist_3_link_camera` 或 `T_tool0_camera`，并更新 `camera_extrinsics_version`。
 
 输出接口：
 

@@ -79,7 +79,8 @@ DEFAULT_DT = 0.02
 GRIPPER_DRIVER_LIMIT = 0.87
 ARM_COMMAND_BLEND_PER_STEP = 0.12
 GRIPPER_COMMAND_BLEND_PER_STEP = 0.16
-TOOL_FRAME_CANDIDATES = ["tool0", "wrist_3_link"]
+TOOL_SITE_CANDIDATES = ["tool0"]
+TOOL_BODY_CANDIDATES = ["tool0", "wrist_3_link"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environment.xml"
 DEFAULT_CAMERA_SENSOR_CONFIG_PATH = REPO_ROOT / "shared" / "camera_sensor_config.json"
@@ -421,6 +422,45 @@ def _compose_pose(
     }
 
 
+def _matrix_to_quaternion_wxyz(matrix_rowmajor: Any) -> list[float]:
+    values = [float(v) for v in list(matrix_rowmajor)[:9]]
+    if len(values) < 9:
+        return [1.0, 0.0, 0.0, 0.0]
+    m00, m01, m02, m10, m11, m12, m20, m21, m22 = values
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        return _normalize_quaternion([
+            0.25 * s,
+            (m21 - m12) / s,
+            (m02 - m20) / s,
+            (m10 - m01) / s,
+        ])
+    if m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        return _normalize_quaternion([
+            (m21 - m12) / s,
+            0.25 * s,
+            (m01 + m10) / s,
+            (m02 + m20) / s,
+        ])
+    if m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        return _normalize_quaternion([
+            (m02 - m20) / s,
+            (m01 + m10) / s,
+            0.25 * s,
+            (m12 + m21) / s,
+        ])
+    s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+    return _normalize_quaternion([
+        (m10 - m01) / s,
+        (m02 + m20) / s,
+        (m12 + m21) / s,
+        0.25 * s,
+    ])
+
+
 class SimulationCore:
     def __init__(self, manifest_path: Path):
         self._manifest_path = manifest_path
@@ -480,6 +520,7 @@ class SimulationCore:
         self._object_freejoint_qpos_addr: dict[str, int] = {}
         self._object_freejoint_dof_addr: dict[str, int] = {}
         self._gripper_body_ids: dict[str, int] = {}
+        self._tool_site_id: int | None = None
         self._tool_body_id: int | None = None
         self._mj_rgb_camera_id: int = -1
         self._mj_depth_camera_id: int = -1
@@ -1269,6 +1310,7 @@ class SimulationCore:
         self._object_freejoint_qpos_addr = {}
         self._object_freejoint_dof_addr = {}
         self._gripper_body_ids = {}
+        self._tool_site_id = None
         self._tool_body_id = None
         self._mj_rgb_camera_id = -1
         self._mj_depth_camera_id = -1
@@ -1396,8 +1438,15 @@ class SimulationCore:
             self._object_freejoint_qpos_addr[obj_id] = int(model.jnt_qposadr[joint_id])
             self._object_freejoint_dof_addr[obj_id] = int(model.jnt_dofadr[joint_id])
 
+        self._tool_site_id = None
+        for candidate in TOOL_SITE_CANDIDATES:
+            site_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_SITE, candidate)
+            if site_id >= 0:
+                self._tool_site_id = int(site_id)
+                break
+
         self._tool_body_id = None
-        for candidate in TOOL_FRAME_CANDIDATES:
+        for candidate in TOOL_BODY_CANDIDATES:
             body_id = _mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_BODY, candidate)
             if body_id >= 0:
                 self._tool_body_id = int(body_id)
@@ -2736,11 +2785,17 @@ class SimulationCore:
         return objects
 
     def _compute_ee_pose_locked(self) -> dict[str, list[float]]:
-        if self._using_mujoco_model() and self._mj_data is not None and self._tool_body_id is not None:
-            return {
-                "position": [float(v) for v in self._mj_data.xpos[self._tool_body_id]],
-                "quaternion": [float(v) for v in self._mj_data.xquat[self._tool_body_id]],
-            }
+        if self._using_mujoco_model() and self._mj_data is not None:
+            if self._tool_site_id is not None:
+                return {
+                    "position": [float(v) for v in self._mj_data.site_xpos[self._tool_site_id]],
+                    "quaternion": _matrix_to_quaternion_wxyz(self._mj_data.site_xmat[self._tool_site_id]),
+                }
+            if self._tool_body_id is not None:
+                return {
+                    "position": [float(v) for v in self._mj_data.xpos[self._tool_body_id]],
+                    "quaternion": [float(v) for v in self._mj_data.xquat[self._tool_body_id]],
+                }
 
         # Fallback FK for stub mode.
         base = self._manifest_data.get("robot", {}).get("transform", {}).get("position", [-0.2, 0.5, -0.1])

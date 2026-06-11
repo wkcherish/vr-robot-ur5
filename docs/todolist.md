@@ -225,13 +225,13 @@
 - [x] `P0` `frontend/public/camera/mesh/前半.STL` 作为末端安装结构的一部分
 - [x] `P0` `frontend/public/camera/mesh/后半.STL` 作为末端安装结构的另一部分
 - [x] `P0` `pic/camera.jpg` 作为真实安装参考图
-- [x] `P0` 根据 `pic/camera.jpg` 冻结 D405 在末端的安装方向、朝向工作区的视角和线缆出线方向
+- [x] `P0` 根据 `pic/camera.jpg` 冻结 D405 在末端的名义安装方向、朝向工作区的视角和线缆出线方向
 - [x] `P0` 冻结 D405 是“夹爪上方附近的固定安装相机”，而不是场景外部俯视相机
 
 ### S1.5.2 仿真侧传感器接入定义
 
 - [x] `P0` 在 MuJoCo 中新增末端 D405 挂载定义，而不是只保留场景调试相机
-- [x] `P0` 明确 D405 相对 `tool0` 或 `wrist_3_link` 的固定挂载坐标系
+- [x] `P0` 明确 D405 在 MuJoCo 中名义挂载到 `wrist_3_link`，`tool0` 保留为末端语义帧
 - [x] `P0` 明确仿真中 D405 的 `RGB` 输出接口
 - [x] `P0` 明确仿真中 D405 的 `Depth` 输出接口
 - [x] `P0` 明确 `RGB` 与 `Depth` 的分辨率、帧率和时间戳对齐方式
@@ -246,6 +246,7 @@
 - [x] `P0` 明确 `data/calibration/` 下相机标定文件的组织方式
 - [x] `P0` 明确 episode 元数据中必须记录 `camera_device`、`camera_intrinsics_version`、`camera_extrinsics_version`
 - [ ] `P0` 按 `docs/d405_real_intrinsics_validation.md` 连接真实 D405，读取实测 `fx/fy/ppx/ppy`，并写回 MuJoCo `focalpixel/principalpixel`
+- [ ] `P0` 按 `docs/d405_hand_eye_calibration.md` 完成 wrist-mounted D405 手眼外参标定，写回 `camera_pose_in_ee` / MuJoCo camera `pos/quat`
 - [ ] `P1` 预留后续真实 D405 与仿真相机的误差分析字段
 
 ### S1.5.4 数据录制前置条件
@@ -528,8 +529,8 @@
 
 ### S6.2 MuJoCo D405 挂载与第一轮渲染验证
 
-- [x] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
-- [x] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和目标操作区域
+- [x] `P0` 确认 D405 在 MuJoCo 中按名义外参固定挂载到 UR5 腕部坐标系，并随机械臂运动
+- [ ] `P0` 通过真实 D405 手眼标定确认 `d405_rgb` 渲染视角与真实末端相机方向一致
 - [x] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
 - [ ] `P0` 确认 MuJoCo D405 内参来自真实 D405 实测值，而不是只用图像中心光轴占位
 - [ ] `P0` 确认 D405 在 `robot_grasp` 阶段能看到夹爪和目标工具
@@ -574,29 +575,29 @@
 
 ### S7.1 任务模板与采集入口
 
-- [ ] `P0` 新增或更新 Quest3 `VR采集模式`，面向 `quest3_vr_lerobot_pi05_v1`
-- [ ] `P0` VR 采集模式显示 D405 状态、WebSocket 状态、控制模式、`recording_ready` 和最近错误
-- [ ] `P0` VR 采集模式提供任务模板：`tool_grasp/tool_pick_place/tool_reposition/debug_trial`
-- [ ] `P0` VR 采集模式可选择目标工具：`wrench_01/screwdriver_01/pliers_01`
-- [ ] `P0` VR 采集模式可选择 `target_zone_id` 或工具箱槽位
-- [ ] `P0` VR 采集模式可写入稳定任务文本，例如 `pick up the wrench`、`place the screwdriver in the toolbox`
-- [ ] `P0` VR 内必须能一键或少步骤开始/停止 episode，避免操作者摘下头显回桌面端操作
+- [x] `P0` 新增或更新 Quest3 `VR采集模式`，面向 `quest3_vr_lerobot_pi05_v1`
+- [x] `P0` VR 采集模式显示 D405 状态、WebSocket 状态、控制模式、`recording_ready` 和最近错误
+- [x] `P0` VR 采集模式提供任务模板：`tool_grasp/tool_pick_place/tool_reposition/debug_trial`
+- [x] `P0` VR 采集模式可选择目标工具：`wrench_01/screwdriver_01/pliers_01`
+- [x] `P0` VR 采集模式可选择 `target_zone_id` 或工具箱槽位
+- [x] `P0` VR 采集模式可写入稳定任务文本，例如 `pick up the wrench`、`place the screwdriver in the toolbox`
+- [x] `P0` VR 内必须能一键或少步骤开始/停止 episode，避免操作者摘下头显回桌面端操作
 
 ### S7.2 precheck 与元数据
 
-- [ ] `P0` 实现 `/dataset/precheck/` 或等效检查，覆盖 WebSocket、D405、MuJoCo、UR5、工具状态和录制目录
-- [ ] `P0` 只有 `recording_ready=true` 时允许进入正式录制；否则只能进入 `debug_trial`
-- [ ] `P0` 每条正式 episode 写入 `operator_controlled=true`
-- [ ] `P0` 每条正式 episode 写入 `control_mode=vr_controller/vr_hand`
-- [ ] `P0` 每条正式 episode 写入 `robot_input_source=quest3_controller/quest3_hand`
-- [ ] `P0` 每条正式 episode 写入 `autonomy_level=manual_demonstration`
-- [ ] `P0` 每条正式 episode 写入 `scripted_collection=false`
+- [x] `P0` 实现 `/dataset/precheck/` 或等效检查，覆盖 WebSocket、D405、MuJoCo、UR5、工具状态和录制目录
+- [x] `P0` 只有 `recording_ready=true` 时允许进入正式录制；否则只能进入 `debug_trial`
+- [x] `P0` 每条正式 episode 写入 `operator_controlled=true`
+- [x] `P0` 每条正式 episode 写入 `control_mode=vr_controller/vr_hand`
+- [x] `P0` 每条正式 episode 写入 `robot_input_source=quest3_controller/quest3_hand`
+- [x] `P0` 每条正式 episode 写入 `autonomy_level=manual_demonstration`
+- [x] `P0` 每条正式 episode 写入 `scripted_collection=false`
 
 ### 验收
 
 - [ ] `P0` 操作者可以不摘下 Quest3，在 VR 采集模式内完成一条 `debug_trial` 的开始、停止和结果标记
-- [ ] `P0` 每条 episode 都能追溯任务模板、目标工具、目标区域、控制源和开始/停止事件
-- [ ] `P0` 脚本生成的测试轨迹不会被标记为正式训练候选
+- [x] `P0` 每条 episode 都能追溯任务模板、目标工具、目标区域、控制源和开始/停止事件
+- [x] `P0` 脚本生成的测试轨迹不会被标记为正式训练候选
 
 ---
 
