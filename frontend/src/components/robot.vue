@@ -82,12 +82,12 @@ import { ref, computed, watch } from "vue";
 
 const DEFAULT_JOINT_VALUES = [0, -90, 90, -90, -90, 0, 0];
 const JOINT_CONFIG = [
-  { name: "link1_joint", label: "关节1", min: -180, max: 180, step: 1 },
-  { name: "link2_joint", label: "关节2", min: -180, max: 180, step: 1 },
-  { name: "link3_joint", label: "关节3", min: -180, max: 180, step: 1 },
-  { name: "link4_joint", label: "关节4", min: -180, max: 180, step: 1 },
-  { name: "link5_joint", label: "关节5", min: -180, max: 180, step: 1 },
-  { name: "link6_joint", label: "关节6", min: -180, max: 180, step: 1 },
+  { name: "shoulder_pan_joint", label: "关节1", min: -180, max: 180, step: 1 },
+  { name: "shoulder_lift_joint", label: "关节2", min: -180, max: 180, step: 1 },
+  { name: "elbow_joint", label: "关节3", min: -180, max: 180, step: 1 },
+  { name: "wrist_1_joint", label: "关节4", min: -180, max: 180, step: 1 },
+  { name: "wrist_2_joint", label: "关节5", min: -180, max: 180, step: 1 },
+  { name: "wrist_3_joint", label: "关节6", min: -180, max: 180, step: 1 },
   { name: "gripper_joint", label: "手抓", min: 0, max: 50, step: 1 },
 ];
 

@@ -19,6 +19,21 @@ VRMode = Literal[
     "vr_hand_mode",
     "vr_error",
 ]
+DatasetTaskType = Literal[
+    "tool_grasp",
+    "tool_pick_place",
+    "tool_reposition",
+    "debug_trial",
+]
+DatasetCollectionStage = Literal[
+    "debug_trial",
+    "pilot",
+    "train_candidate",
+    "eval_candidate",
+    "rejected",
+]
+DatasetControlMode = Literal["vr_controller", "vr_hand"]
+DatasetRobotInputSource = Literal["quest3_controller", "quest3_hand"]
 
 
 class WSMessage(BaseModel):
@@ -137,8 +152,13 @@ class SimState(BaseModel):
     timestamp: float
     sim_time: float
     joint_names: list[str]
+    joint_limits: dict[str, list[float]] = Field(default_factory=dict)
     qpos: list[float]
     qvel: list[float]
+    arm_target_qpos: list[float] | None = None
+    arm_ctrl_qpos: list[float] | None = None
+    gripper_target_opening: float | None = None
+    gripper_ctrl_opening: float | None = None
     ee_pose: EEPose
     gripper_opening: float
     gripper_joints: dict[str, float]
@@ -195,6 +215,43 @@ class VRStateUpdateRequest(BaseModel):
     source: ControlSource | None = None
     raw_input: dict[str, Any] | None = None
     normalized_input: dict[str, Any] | None = None
+
+    class Config:
+        extra = "ignore"
+
+
+class DatasetEpisodeStartRequest(BaseModel):
+    task_type: DatasetTaskType = "debug_trial"
+    target_tool_id: str = "wrench_01"
+    target_zone_id: str = "desk_drop_zone"
+    instruction_text: str = "debug trial with the wrench"
+    collection_stage: DatasetCollectionStage = "debug_trial"
+    control_mode: DatasetControlMode = "vr_controller"
+    robot_input_source: DatasetRobotInputSource = "quest3_controller"
+    reset_seed: int | None = None
+    operator_id: str | None = None
+    notes: str | None = None
+    scripted_collection: bool = False
+
+    class Config:
+        extra = "ignore"
+
+
+class DatasetEpisodeStopRequest(BaseModel):
+    episode_id: str
+    result_status: str = "unknown"
+    quality_label: str | None = None
+    notes: str | None = None
+
+    class Config:
+        extra = "ignore"
+
+
+class DatasetEpisodeResultRequest(BaseModel):
+    episode_id: str
+    result_status: str
+    quality_label: str | None = None
+    notes: str | None = None
 
     class Config:
         extra = "ignore"

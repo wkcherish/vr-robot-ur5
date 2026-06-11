@@ -1,6 +1,8 @@
 # D405 真实内参与 MuJoCo 光轴验证步骤
 
-本步骤用于确认 MuJoCo 第一人称 `d405_rgb` / `d405_depth` 与真实 Intel RealSense D405 的实测光轴对应。仅让画面看起来居中不算通过；必须读取真实相机的 `fx/fy/ppx/ppy` 并写回 MuJoCo。
+本步骤用于确认 MuJoCo 第一人称 `d405_rgb` / `d405_depth` 使用真实 Intel RealSense D405 的实测内参。仅让画面看起来居中不算通过；必须读取真实相机的 `fx/fy/ppx/ppy` 并写回 MuJoCo。
+
+注意：本文件只覆盖 D405 内参。D405 固定在 UR5 腕部时，还必须做 eye-in-hand 手眼外参标定，见 [docs/d405_hand_eye_calibration.md](d405_hand_eye_calibration.md)。
 
 ## 1. 连接真实 D405
 
@@ -92,6 +94,6 @@ python backend/d405_intrinsics.py --depth-mode raw-depth --apply
 2. `backend/mujoco_models/ur5.xml` 中 `focalpixel`、`principalpixel` 不再只是占位值。
 3. `shared/camera_sensor_config.json` 中 `intrinsics_reference.source` 变为 `pyrealsense2_measured_device_intrinsics`。
 4. `data/calibration/camera_intrinsics/` 下存在本次生成的内参 JSON。
-5. MuJoCo 第一人称画面中，夹爪、工具、桌面和 handover zone 的位置关系与真实 D405 画面大体一致。
+5. MuJoCo 第一人称画面能正常渲染，且没有由错误内参导致的明显畸变或视场异常。
 
-本步骤只校准相机内参和图像光轴。相机在末端夹具上的真实三维位置与朝向仍由挂载外参决定；如果实拍画面与仿真画面整体平移、旋转或高度明显不一致，需要继续校准 `camera_pose_in_ee` / MuJoCo camera `pos`、`quat`。
+本步骤只校准相机内参。相机在末端夹具上的真实三维位置与朝向由手眼外参决定；如果实拍画面与仿真画面整体平移、旋转或高度明显不一致，需要继续校准 `camera_pose_in_ee` / MuJoCo camera `pos`、`quat`。

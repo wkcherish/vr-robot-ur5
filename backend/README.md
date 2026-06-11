@@ -71,6 +71,9 @@ python backend/main.py --host 0.0.0.0 --port 8000 \
   --ssl-keyfile <path/to/key.pem>
 ```
 
+统一入口 `backend/main.py` 会在 `--port` 被占用时自动寻找可用端口，并把实际监听地址写入 `shared/runtime/backend-dev.json`。
+前端开发代理会优先读取这份文件；如果前端已经在运行，需要重启一次 `npm run dev` 才会切到新的后端端口。
+
 如果你使用环境变量，可参考 `backend/.env.example`。
 
 ## 打开 MuJoCo 可视化界面
@@ -84,6 +87,7 @@ python backend/main.py
 行为说明：
 
 - 脚本会先启动 FastAPI 后端（等价于开发命令 `uvicorn backend.api_app:app --app-dir .. --reload --host 0.0.0.0 --port 8000`）。
+- 若 `8000` 已被占用，脚本会自动回退到可用端口并在终端打印最终端口。
 - 后端健康检查通过后，终端会提示 `yes/no`：是否加载 MuJoCo 仿真窗口。
 - 后端会持续运行，按 `Ctrl+C` 停止。
 

@@ -39,7 +39,7 @@ function createEmptyCacheState() {
 }
 
 const HAND_CACHE = {
-  left: createEmptyCacheState(),
+  right: createEmptyCacheState(),
 };
 
 const JOINT_NAMES = {
@@ -347,37 +347,36 @@ function readControllerAsHandState(frame, inputSource, referenceSpace, handednes
 export function buildSnapshot(frame, session, referenceSpace) {
   const nowMs = Date.now();
   const hands = {
-    left: { tracked: false, stability: 0, palm_position: null, pinch: {}, fist: 0, raw_joints: {} },
+    right: { tracked: false, stability: 0, palm_position: null, pinch: {}, fist: 0, raw_joints: {} },
   };
 
   const sources = Array.from(session?.inputSources || []);
   const handSources = sources.filter((source) => Boolean(source?.hand));
-  const leftHandSources = handSources.filter((source) => source?.handedness === "left");
+  const rightHandSources = handSources.filter((source) => source?.handedness === "right");
   const controllerSources = sources.filter((source) => Boolean(!source?.hand));
-  let hasLeftSource = false;
-  const leftHandSource = leftHandSources[0] || null;
-  if (leftHandSource) {
-    hasLeftSource = true;
-    hands.left = readHandState(frame, leftHandSource, referenceSpace, "left", nowMs);
-    writeCache("left", hands.left, nowMs);
+  let hasRightSource = false;
+  const rightHandSource = rightHandSources[0] || null;
+  if (rightHandSource) {
+    hasRightSource = true;
+    hands.right = readHandState(frame, rightHandSource, referenceSpace, "right", nowMs);
+    writeCache("right", hands.right, nowMs);
   }
 
-  if (!hasLeftSource) {
-    const leftControllerSource =
-      controllerSources.find((source) => source?.handedness === "left") ||
-      controllerSources[0] ||
+  if (!hasRightSource) {
+    const rightControllerSource =
+      controllerSources.find((source) => source?.handedness === "right") ||
       null;
-    if (leftControllerSource) {
-      hands.left = readControllerAsHandState(frame, leftControllerSource, referenceSpace, "left", nowMs);
-      hasLeftSource = Boolean(hands.left.tracked || hands.left.recently_tracked);
+    if (rightControllerSource) {
+      hands.right = readControllerAsHandState(frame, rightControllerSource, referenceSpace, "right", nowMs);
+      hasRightSource = Boolean(hands.right.tracked || hands.right.recently_tracked);
     } else {
-      hands.left = readCachedHandState("left", nowMs);
+      hands.right = readCachedHandState("right", nowMs);
     }
   }
 
-  const leftAvailable = Boolean(hands.left.tracked || hands.left.recently_tracked);
-  const available = Boolean(leftAvailable);
-  const trackingStability = leftAvailable ? clamp(hands.left.stability || 0, 0, 1) : 0;
+  const rightAvailable = Boolean(hands.right.tracked || hands.right.recently_tracked);
+  const available = Boolean(rightAvailable);
+  const trackingStability = rightAvailable ? clamp(hands.right.stability || 0, 0, 1) : 0;
 
   return {
     available,
@@ -385,23 +384,23 @@ export function buildSnapshot(frame, session, referenceSpace) {
     timestamp_ms: nowMs,
     tracking_stability: trackingStability,
     hands: {
-      left: {
-        tracked: hands.left.tracked,
-        recently_tracked: Boolean(hands.left.recently_tracked),
-        predicted: Boolean(hands.left.predicted),
-        stability: hands.left.stability,
-        palm_position: hands.left.palm_position,
-        pinch: hands.left.pinch,
-        fist: clamp(hands.left.fist, 0, 1),
-        controller_fallback: Boolean(hands.left.controller_fallback),
+      left: { tracked: false, recently_tracked: false, predicted: false, stability: 0, palm_position: null, pinch: {}, fist: 0 },
+      right: {
+        tracked: hands.right.tracked,
+        recently_tracked: Boolean(hands.right.recently_tracked),
+        predicted: Boolean(hands.right.predicted),
+        stability: hands.right.stability,
+        palm_position: hands.right.palm_position,
+        pinch: hands.right.pinch,
+        fist: clamp(hands.right.fist, 0, 1),
+        controller_fallback: Boolean(hands.right.controller_fallback),
       },
-      right: { tracked: false, recently_tracked: false, predicted: false, stability: 0, palm_position: null, pinch: {}, fist: 0 },
     },
     raw: {
       input_source_count: sources.length,
-      hand_input_source_count: leftHandSources.length,
-      left_controller_fallback: Boolean(hands.left.controller_fallback),
-      left: hands.left,
+      hand_input_source_count: rightHandSources.length,
+      right_controller_fallback: Boolean(hands.right.controller_fallback),
+      right: hands.right,
     },
   };
 }

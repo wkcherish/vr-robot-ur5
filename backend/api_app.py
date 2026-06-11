@@ -14,8 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from backend.dataset import DatasetCollectionService
 from backend.schemas import (
     CommandResult,
+    DatasetEpisodeResultRequest,
+    DatasetEpisodeStartRequest,
+    DatasetEpisodeStopRequest,
     ErrorResponse,
     HealthResponse,
     ResetRequest,
@@ -28,10 +32,17 @@ from backend.sim import SimulationCore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
 SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "50"))
+STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "90"))
 STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
+STATUS_BROADCAST_HZ = float(os.getenv("STATUS_BROADCAST_HZ", "12"))
+STATUS_BROADCAST_INTERVAL = max(0.05, 1.0 / max(1.0, STATUS_BROADCAST_HZ))
+WS_SEND_TIMEOUT_S = float(os.getenv("WS_SEND_TIMEOUT_S", "0.03"))
+INTERACTIVE_PASSIVE_ADVANCE_MAX_S = float(
+    os.getenv("INTERACTIVE_PASSIVE_ADVANCE_MAX_S", str(STATE_BROADCAST_INTERVAL))
+)
 
 simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)
+dataset_service = DatasetCollectionService()
 
 
 class ConnectionManager:
@@ -57,11 +68,14 @@ class ConnectionManager:
             return
 
         stale_connections: list[WebSocket] = []
-        for websocket in list(self._connections):
+
+        async def _send_one(websocket: WebSocket) -> None:
             try:
-                await websocket.send_json(payload)
+                await asyncio.wait_for(websocket.send_json(payload), timeout=WS_SEND_TIMEOUT_S)
             except Exception:
                 stale_connections.append(websocket)
+
+        await asyncio.gather(*(_send_one(websocket) for websocket in list(self._connections)))
 
         for websocket in stale_connections:
             self.disconnect(websocket)
@@ -100,7 +114,13 @@ def _error_payload(code: str, message: str, detail: str | None = None) -> dict[s
 
 
 def _is_realtime_control_request(request: StepRequest) -> bool:
-    return request.source in {"quest3_controller", "quest3_hand"}
+    input_source = str(getattr(request, "input_source", "") or "").strip().lower()
+    if input_source == "slider_commit":
+        return False
+    return request.source in {"quest3_controller", "quest3_hand"} or (
+        request.source in {"manual", "desktop_manual"}
+        and input_source in {"slider", "joint_slider"}
+    )
 
 
 def _consume_realtime_control_result(future: asyncio.Future[dict[str, Any]]) -> None:
@@ -114,20 +134,32 @@ def _consume_realtime_control_result(future: asyncio.Future[dict[str, Any]]) -> 
 
 async def _state_broadcast_loop() -> None:
     last_tick = time.monotonic()
+    next_tick_at = last_tick
+    last_status_broadcast_at = 0.0
     while True:
         now = time.monotonic()
         elapsed_s = max(0.0, now - last_tick)
         last_tick = now
-        if manager.active_count > 0:
-            # Keep broadcast lightweight while still advancing passive dynamics:
-            # objects that were bumped by the arm must continue falling/sliding
-            # between control commands.
-            state = await simulation.advance_and_get_state(
-                elapsed_s=elapsed_s,
-                refresh_camera=False,
-            )
-            await manager.broadcast({"type": "state_broadcast", "data": state})
-        await asyncio.sleep(STATE_BROADCAST_INTERVAL)
+        active_count = manager.active_count
+        should_advance = active_count > 0 or await simulation.needs_background_physics()
+        if should_advance:
+            advance_elapsed_s = elapsed_s
+            if active_count > 0:
+                advance_elapsed_s = min(elapsed_s, INTERACTIVE_PASSIVE_ADVANCE_MAX_S)
+            await simulation.advance_passive(elapsed_s=advance_elapsed_s)
+        if active_count > 0:
+            if should_advance:
+                motion_state = await simulation.get_motion_state()
+                await manager.broadcast({"type": "motion_broadcast", "data": motion_state})
+            if (now - last_status_broadcast_at) >= STATUS_BROADCAST_INTERVAL:
+                status_state = await simulation.advance_and_get_broadcast_state()
+                await manager.broadcast({"type": "state_broadcast", "data": status_state})
+                last_status_broadcast_at = now
+        next_tick_at += STATE_BROADCAST_INTERVAL
+        now_after_work = time.monotonic()
+        if next_tick_at < now_after_work:
+            next_tick_at = now_after_work
+        await asyncio.sleep(max(0.0, next_tick_at - now_after_work))
 
 
 @asynccontextmanager
@@ -172,7 +204,7 @@ async def health() -> HealthResponse:
 
 
 @app.get("/sim/state/")
-async def get_sim_state(refresh_camera: bool = True) -> dict[str, Any]:
+async def get_sim_state(refresh_camera: bool = False) -> dict[str, Any]:
     return await simulation.get_state(refresh_camera=refresh_camera)
 
 
@@ -222,6 +254,76 @@ async def post_sim_vr_state(request: VRStateUpdateRequest) -> CommandResult:
     return CommandResult(status="success", message="vr state updated", state=state)
 
 
+@app.get("/dataset/templates/")
+async def get_dataset_templates() -> dict[str, Any]:
+    return dataset_service.get_templates()
+
+
+@app.get("/dataset/precheck/")
+async def get_dataset_precheck() -> dict[str, Any]:
+    precheck = await dataset_service.precheck(
+        simulation=simulation,
+        ws_active_count=manager.active_count,
+    )
+    try:
+        await simulation.update_vr_state(
+            VRStateUpdateRequest(
+                recording_ready=bool(precheck.get("recording_ready", False)),
+                error_message="" if precheck.get("recording_ready", False) else "; ".join(precheck.get("summary", [])),
+            )
+        )
+    except Exception:
+        pass
+    return precheck
+
+
+@app.post("/dataset/episode/start/")
+async def post_dataset_episode_start(request: DatasetEpisodeStartRequest) -> dict[str, Any]:
+    result = await dataset_service.start_episode(
+        request=request,
+        simulation=simulation,
+        ws_active_count=manager.active_count,
+    )
+    precheck = result.get("precheck") if isinstance(result.get("precheck"), dict) else {}
+    recording_ready = bool(precheck.get("recording_ready", False))
+    try:
+        await simulation.update_vr_state(
+            VRStateUpdateRequest(
+                recording_ready=recording_ready,
+                error_message="" if result.get("status") == "success" else str(result.get("message", "")),
+            )
+        )
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/dataset/episode/stop/")
+async def post_dataset_episode_stop(request: DatasetEpisodeStopRequest) -> dict[str, Any]:
+    result = await dataset_service.stop_episode(
+        request=request,
+        simulation=simulation,
+        ws_active_count=manager.active_count,
+    )
+    if result.get("status") == "success":
+        precheck = result.get("precheck") if isinstance(result.get("precheck"), dict) else {}
+        try:
+            await simulation.update_vr_state(
+                VRStateUpdateRequest(
+                    recording_ready=bool(precheck.get("recording_ready", False)),
+                    error_message="",
+                )
+            )
+        except Exception:
+            pass
+    return result
+
+
+@app.post("/dataset/episode/result/")
+async def post_dataset_episode_result(request: DatasetEpisodeResultRequest) -> dict[str, Any]:
+    return await dataset_service.update_result(request)
+
+
 @app.get("/data/")
 async def legacy_data() -> dict[str, str]:
     state = await simulation.get_state()
@@ -244,7 +346,10 @@ async def websocket_sim(websocket: WebSocket) -> None:
             },
         },
     )
-    await manager.send(websocket, {"type": "state_update", "data": await simulation.get_state()})
+    await manager.send(
+        websocket,
+        {"type": "state_update", "data": await simulation.get_state(refresh_camera=False)},
+    )
 
     try:
         while True:

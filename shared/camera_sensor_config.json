@@ -42,7 +42,7 @@
     },
     "mount": {
       "name": "wrist_d405_v1",
-      "parent_frame": "tool0",
+      "parent_frame": "wrist_3_link",
       "position": [
         0.0,
         -0.077929684,
@@ -59,7 +59,8 @@
         "Front and rear clamp halves wrap around wrist_3 cylindrical housing.",
         "Plate section extends from the clamp and D405 is mounted under the red-marked plate area.",
         "Optical center is on the D405 front face, not at the visual mesh center.",
-        "Optical axis points to the tabletop workspace and cable exits from side/back."
+        "Optical axis points to the tabletop workspace and cable exits from side/back.",
+        "This nominal extrinsic is a CAD/photo estimate and must be replaced by wrist-mounted D405 hand-eye calibration before real-scene dataset collection."
       ],
       "mount_asset_roles": {
         "camera_body_mesh": "frontend/public/camera/mesh/d405.stl",
