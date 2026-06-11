@@ -6,3 +6,5 @@ node_modules
 backend/MUJOCO_LOG.TXT
 
 frontend/dist
+shared/runtime/
+data/datasets/

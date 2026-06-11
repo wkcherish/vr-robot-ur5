@@ -113,8 +113,8 @@ function frontendDeltaToBackend(delta) {
   return [delta[0], -delta[2], delta[1]];
 }
 
-function estimateFallbackFist(leftHand) {
-  const pinch = leftHand?.pinch || {};
+function estimateFallbackFist(handState) {
+  const pinch = handState?.pinch || {};
   const values = ["index", "middle", "ring", "little"].map((name) =>
     clamp(pinch?.[name], 0, 1)
   );
@@ -128,16 +128,16 @@ export function createQuestHandTeleop(options = {}) {
       : 0.003,
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
-      : 0.48,
+      : 0.72,
     movement_gain: Number.isFinite(Number(options.sensitivity))
-      ? Number(options.sensitivity) * 1.9
-      : 1.9,
+      ? Number(options.sensitivity) * 2.8
+      : 4.2,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
       : 0.62,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
-      : 0.065,
+      : 0.12,
     anchor_reset_threshold_m: Number.isFinite(Number(options.anchor_reset_threshold_m))
       ? Number(options.anchor_reset_threshold_m)
       : 0.38,
@@ -179,28 +179,28 @@ export function createQuestHandTeleop(options = {}) {
     return {
       selected_joint_group: CONTROL_GROUP,
       selected_joint_group_label: CONTROL_GROUP_LABEL,
-      input_mode: "left_hand_ee_ik",
+      input_mode: "right_hand_ee_ik",
       tracking_stable: false,
       group_sequence: [CONTROL_GROUP],
     };
   }
 
-  function resetAnchor(leftPalm, currentEePose) {
-    anchorPalm = cloneVec3(leftPalm);
+  function resetAnchor(rightPalm, currentEePose) {
+    anchorPalm = cloneVec3(rightPalm);
     anchorEePose = cloneEePose(currentEePose);
     targetEePose = cloneEePose(currentEePose);
     smoothedBackendDelta = [0, 0, 0];
   }
 
-  function ensureAnchor(leftPalm, currentEePose) {
+  function ensureAnchor(rightPalm, currentEePose) {
     if (!anchorPalm || !anchorEePose || !targetEePose) {
-      resetAnchor(leftPalm, currentEePose);
+      resetAnchor(rightPalm, currentEePose);
       return;
     }
 
     const drift = vecNorm(vecSub(targetEePose.position, currentEePose.position));
     if (drift > cfg.anchor_reset_threshold_m) {
-      resetAnchor(leftPalm, currentEePose);
+      resetAnchor(rightPalm, currentEePose);
     }
   }
 
@@ -232,11 +232,11 @@ export function createQuestHandTeleop(options = {}) {
     }
 
     const now = Date.now();
-    const leftHand = snapshot?.hands?.left || {};
-    const leftTracked = Boolean(leftHand.tracked || leftHand.recently_tracked);
-    const leftPalm = cloneVec3(leftHand.palm_position);
-    const trackingStability = clamp(leftHand.stability ?? snapshot?.tracking_stability, 0, 1);
-    const trackingPresent = Boolean(leftTracked && leftPalm);
+    const rightHand = snapshot?.hands?.right || {};
+    const rightTracked = Boolean(rightHand.tracked || rightHand.recently_tracked);
+    const rightPalm = cloneVec3(rightHand.palm_position);
+    const trackingStability = clamp(rightHand.stability ?? snapshot?.tracking_stability, 0, 1);
+    const trackingPresent = Boolean(rightTracked && rightPalm);
     let trackingStable = false;
     if (trackingStableLatched) {
       trackingStable =
@@ -249,7 +249,7 @@ export function createQuestHandTeleop(options = {}) {
     }
     trackingStableLatched = trackingStable;
 
-    if (!snapshot?.available || !trackingStable || !leftTracked || !leftPalm) {
+    if (!snapshot?.available || !trackingStable || !rightTracked || !rightPalm) {
       const recentlyTracked = lastTrackedAt > 0 && now - lastTrackedAt <= cfg.tracking_grace_ms;
       smoothedBackendDelta = lowPassVec(smoothedBackendDelta, [0, 0, 0], cfg.movement_smoothing);
       gripper = lowPass(gripper, currentGripper, cfg.gripper_smoothing);
@@ -268,7 +268,7 @@ export function createQuestHandTeleop(options = {}) {
         changed_joint_group: false,
         tracking_stable: false,
         tracking_stability: trackingStability,
-        hand_input_mode: "left_hand_ee_ik",
+        hand_input_mode: "right_hand_ee_ik",
         normalized_input: {
           control_mode: "ee_ik",
           ee_active: 0,
@@ -282,9 +282,9 @@ export function createQuestHandTeleop(options = {}) {
     }
 
     lastTrackedAt = now;
-    ensureAnchor(leftPalm, currentPose);
+    ensureAnchor(rightPalm, currentPose);
 
-    const rawPalmDelta = applyVecDeadzone(vecSub(leftPalm, anchorPalm), cfg.movement_deadzone);
+    const rawPalmDelta = applyVecDeadzone(vecSub(rightPalm, anchorPalm), cfg.movement_deadzone);
     const backendDelta = clampVecMagnitude(
       frontendDeltaToBackend(vecScale(rawPalmDelta, cfg.movement_gain)),
       cfg.max_control_offset
@@ -307,9 +307,9 @@ export function createQuestHandTeleop(options = {}) {
       quaternion: anchorEePose.quaternion.slice(0, 4),
     };
 
-    const rawFist = Number.isFinite(Number(leftHand.fist))
-      ? clamp(leftHand.fist, 0, 1)
-      : estimateFallbackFist(leftHand);
+    const rawFist = Number.isFinite(Number(rightHand.fist))
+      ? clamp(rightHand.fist, 0, 1)
+      : estimateFallbackFist(rightHand);
     smoothedFist = lowPass(smoothedFist, rawFist, cfg.fist_smoothing);
     if (!fistLatched && smoothedFist >= cfg.fist_engage_threshold) {
       fistLatched = true;
@@ -345,7 +345,7 @@ export function createQuestHandTeleop(options = {}) {
       changed_joint_group: false,
       tracking_stable: trackingStable,
       tracking_stability: trackingStability,
-      hand_input_mode: "left_hand_ee_ik",
+      hand_input_mode: "right_hand_ee_ik",
       normalized_input: {
         control_mode: "ee_ik",
         ee_active: hasEeActivity ? 1 : 0,

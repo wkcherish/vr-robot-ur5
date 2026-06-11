@@ -5,14 +5,16 @@ const LEFT_PAD_PATTERN = /(left|l-touch|left controller)/i;
 const RIGHT_PAD_PATTERN = /(right|r-touch|right controller)/i;
 
 const LEFT_BUTTON_INDEX = {
-  precision: [0],
+  precision: [],
   select_wrist: [1],
   select_upper_arm: [4],
   select_forearm: [5],
+  grip: [1],
 };
 
 const RIGHT_BUTTON_INDEX = {
   trigger: [0],
+  grip: [1],
 };
 
 function asConnectedPads() {
@@ -166,29 +168,50 @@ function readButtonValueFromPads(pads, candidates) {
   return pads.reduce((maxValue, pad) => Math.max(maxValue, readButtonValue(pad, candidates)), 0);
 }
 
-function pickControlPad(leftPad, rightPad) {
-  const leftStick = readStickAxes(leftPad);
-  const rightStick = readStickAxes(rightPad);
-  const leftMagnitude = readStickMagnitude(leftStick);
-  const rightMagnitude = readStickMagnitude(rightStick);
-
-  if (rightMagnitude > 0 || leftMagnitude > 0) {
-    if (rightMagnitude >= leftMagnitude) {
-      return { pad: rightPad || leftPad, stick: rightStick, role: rightPad ? "right" : "left" };
-    }
-    return { pad: leftPad || rightPad, stick: leftStick, role: leftPad ? "left" : "right" };
-  }
-
-  if (rightPad) {
-    return { pad: rightPad, stick: rightStick, role: "right" };
-  }
-  return { pad: leftPad, stick: leftStick, role: leftPad ? "left" : "" };
-}
-
 function normalizeHandedness(value) {
   const handed = String(value || "").toLowerCase();
   if (handed === "left" || handed === "right") return handed;
   return "";
+}
+
+function buildControllerRaw(handedness, pad, buttonIndexMap) {
+  const stick = readStickAxes(pad);
+  const buttons = summarizeButtons(pad?.buttons);
+  return {
+    id: String(pad?.id || ""),
+    mapping: String(pad?.mapping || ""),
+    handedness: String(pad?.hand || handedness || ""),
+    axes: readNumericArray(pad?.axes),
+    axis_pair: stick.pair,
+    button_values: buttons.values,
+    button_pressed: buttons.pressed,
+    button_touched: buttons.touched,
+    stick_x: stick.x,
+    stick_y: stick.y,
+    trigger: readButtonValue(pad, buttonIndexMap.trigger || []),
+    grip: readButtonValue(pad, buttonIndexMap.grip || []),
+  };
+}
+
+function pickActiveController(raw) {
+  const leftGrip = Number(raw?.left?.grip) || 0;
+  const rightGrip = Number(raw?.right?.grip) || 0;
+  const leftTrigger = Number(raw?.left?.trigger) || 0;
+  const rightTrigger = Number(raw?.right?.trigger) || 0;
+  const leftStickMagnitude = readStickMagnitude(raw?.left);
+  const rightStickMagnitude = readStickMagnitude(raw?.right);
+
+  if (rightGrip > 0 || leftGrip > 0) {
+    return rightGrip >= leftGrip ? "right" : "left";
+  }
+  if (rightTrigger > 0 || leftTrigger > 0) {
+    return rightTrigger >= leftTrigger ? "right" : "left";
+  }
+  if (rightStickMagnitude > 0 || leftStickMagnitude > 0) {
+    return rightStickMagnitude >= leftStickMagnitude ? "right" : "left";
+  }
+  if (raw?.right?.id) return "right";
+  return raw?.left?.id ? "left" : "";
 }
 
 function pickLeftRightPadsFromXRSession() {
@@ -266,6 +289,12 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
         stick_x: 0,
         stick_y: 0,
         trigger: 0,
+        grip: 0,
+        left_trigger: 0,
+        left_grip: 0,
+        right_trigger: 0,
+        right_grip: 0,
+        active_hand: "",
       },
       raw: null,
     };
@@ -273,11 +302,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
 
   const pads = [leftPad, rightPad].filter(Boolean);
   const selectPad = leftPad || rightPad || null;
-  const control = pickControlPad(leftPad, rightPad);
-  const controlPad = control.pad || selectPad;
-  const rightStick = control.stick || readStickAxes(controlPad);
   const leftButtons = summarizeButtons(selectPad?.buttons);
-  const rightButtons = summarizeButtons(controlPad?.buttons);
   const selectUpperArm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_upper_arm);
   const selectForearm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_forearm);
   const selectWrist = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_wrist);
@@ -286,36 +311,30 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
     source,
     roles: {
       select: leftPad ? "left" : rightPad ? "right" : "",
-      control: control.role,
+      control: "",
     },
     left: {
-      id: String(selectPad?.id || ""),
-      mapping: String(selectPad?.mapping || ""),
-      handedness: String(selectPad?.hand || ""),
-      axes: readNumericArray(selectPad?.axes),
-      button_values: leftButtons.values,
-      button_pressed: leftButtons.pressed,
-      button_touched: leftButtons.touched,
+      ...buildControllerRaw("left", leftPad, {
+        trigger: RIGHT_BUTTON_INDEX.trigger,
+        grip: LEFT_BUTTON_INDEX.grip,
+      }),
+      select_id: String(selectPad?.id || ""),
+      select_mapping: String(selectPad?.mapping || ""),
+      select_handedness: String(selectPad?.hand || ""),
+      select_button_values: leftButtons.values,
+      select_button_pressed: leftButtons.pressed,
+      select_button_touched: leftButtons.touched,
       select_upper_arm: selectUpperArm,
       select_forearm: selectForearm,
       select_wrist: selectWrist,
       precision,
     },
-    right: {
-      id: String(controlPad?.id || ""),
-      mapping: String(controlPad?.mapping || ""),
-      handedness: String(controlPad?.hand || ""),
-      axes: readNumericArray(controlPad?.axes),
-      axis_pair: rightStick.pair,
-      fallback_hand: control.role,
-      button_values: rightButtons.values,
-      button_pressed: rightButtons.pressed,
-      button_touched: rightButtons.touched,
-      stick_x: rightStick.x,
-      stick_y: rightStick.y,
-      trigger: readButtonValue(controlPad, RIGHT_BUTTON_INDEX.trigger),
-    },
+    right: buildControllerRaw("right", rightPad, RIGHT_BUTTON_INDEX),
   };
+  const activeHand = pickActiveController(raw);
+  raw.roles.control = activeHand;
+  raw.active_hand = activeHand;
+  const activeRaw = activeHand === "left" ? raw.left : raw.right;
 
   return {
     available: true,
@@ -327,9 +346,15 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       select_forearm: raw.left.select_forearm,
       select_wrist: raw.left.select_wrist,
       precision: raw.left.precision,
-      stick_x: raw.right.stick_x,
-      stick_y: raw.right.stick_y,
-      trigger: raw.right.trigger,
+      stick_x: activeRaw?.stick_x || 0,
+      stick_y: activeRaw?.stick_y || 0,
+      trigger: activeRaw?.trigger || 0,
+      grip: activeRaw?.grip || 0,
+      left_trigger: raw.left.trigger,
+      left_grip: raw.left.grip,
+      right_trigger: raw.right.trigger,
+      right_grip: raw.right.grip,
+      active_hand: activeHand,
     },
     raw,
   };

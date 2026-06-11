@@ -1,10 +1,10 @@
-﻿# Quest3 人机协作安全交接实验 ToDo（2026-05-21 修订）
+﻿# Quest3 VR 数据采集转 LeRobot 并微调 pi0.5 ToDo（2026-06-08 任务回归）
 
 基于 [task.md](task.md) 重新整理。  
 本清单以 `2026-04-12` 主分支真实代码状态为基准，分成两部分：
 
 1. 当前已经完成的基线总结
-2. 围绕 Quest3 人机协作安全交接实验的新主链路任务
+2. 围绕 Quest3 / VR 采集数据、转换 LeRobot 格式并微调 pi0.5 的新主链路任务
 
 说明：
 
@@ -104,28 +104,33 @@
 
 ### F. 旧任务中仍未真正完成的部分
 
-这部分虽然旧文档里存在目标，但按当前代码复核，仍不能标完成：
+这部分虽然旧文档里存在目标，但按当前代码复核，仍不能标完成。2026-06-08 任务回归后，其中与人机协作交接相关的项目只保留为历史未完成记录，当前不再作为主链路推进。
 
 - [ ] `P0` 真实任务运行器
 - [ ] `P0` 抓取成功判定
 - [ ] `P0` 附着与释放机制
-- [ ] `P0` 人机安全交接成功判定
 - [ ] `P0` 末端 `Intel RealSense D405` 主相机接入
 - [ ] `P0` 末端 `RGB-D` 观测导出链路
-- [ ] `P0` `RGB-D + 机器人状态 + 人手状态 + 工具状态 + relation feature + 动作 + 交互阶段标签` 采集协议冻结
-- [ ] `P0` 协作记忆模型训练与验证脚本
+- [ ] `P0` `RGB-D + 机器人状态 + 工具状态 + 动作 + 任务文本 + 质量标签` 采集协议冻结
+- [ ] `P0` LeRobot / OpenPI 数据转换器与 loader smoke test
 - [ ] `P0` pi0.5 LoRA 微调模型加载到 MuJoCo 的验证入口
-- [ ] `P0` interaction gating 与交接 release 控制入口
-- [ ] `P0` Quest3 双边协作输入链路：左手控制机器人，右手控制仿真人手
 - [ ] `P0` 数据集与模型目录
 - [ ] `P1` 末端 `D405` 的调试预览与回放接口
 - [ ] `P1` 自动化测试体系
 
+历史暂停项：
+
+- 人机安全交接成功判定（当前暂停）
+- `RGB-D + 机器人状态 + 人手状态 + 工具状态 + relation feature + 动作 + 交互阶段标签` 协作采集协议冻结（当前暂停）
+- 协作记忆模型训练与验证脚本（当前暂停）
+- interaction gating 与交接 release 控制入口（当前暂停）
+- Quest3 双边协作输入链路：左手控制机器人，右手控制仿真人手（当前暂停）
+
 ---
 
-## 二、新实验主链路 ToDo
+## 二、当前主链路 ToDo
 
-以下任务在已完成 `quest3_tool_sorting_v1` 工具场景基线上继续推进，新的主目标是 `quest3_safe_handover_v1`：机器人不仅要会抓取和递送工具，还要理解人与机器人之间是否已经形成稳定可信的协作关系，并据此决定是否允许释放工具。
+以下任务在已完成 `quest3_tool_sorting_v1` 工具场景基线上继续推进，当前主目标是 `quest3_vr_lerobot_pi05_v1`：用 Quest3 / VR 采集机器人操作示教数据，将 raw episode 转换为 LeRobot / OpenPI 可读取格式，并用转换后的数据微调 pi0.5，再回到 MuJoCo 中验证抓取、移动、放置和对齐能力。
 
 ## 里程碑 S0：文档与基线冻结
 
@@ -220,13 +225,13 @@
 - [x] `P0` `frontend/public/camera/mesh/前半.STL` 作为末端安装结构的一部分
 - [x] `P0` `frontend/public/camera/mesh/后半.STL` 作为末端安装结构的另一部分
 - [x] `P0` `pic/camera.jpg` 作为真实安装参考图
-- [x] `P0` 根据 `pic/camera.jpg` 冻结 D405 在末端的安装方向、朝向工作区的视角和线缆出线方向
+- [x] `P0` 根据 `pic/camera.jpg` 冻结 D405 在末端的名义安装方向、朝向工作区的视角和线缆出线方向
 - [x] `P0` 冻结 D405 是“夹爪上方附近的固定安装相机”，而不是场景外部俯视相机
 
 ### S1.5.2 仿真侧传感器接入定义
 
 - [x] `P0` 在 MuJoCo 中新增末端 D405 挂载定义，而不是只保留场景调试相机
-- [x] `P0` 明确 D405 相对 `tool0` 或 `wrist_3_link` 的固定挂载坐标系
+- [x] `P0` 明确 D405 在 MuJoCo 中名义挂载到 `wrist_3_link`，`tool0` 保留为末端语义帧
 - [x] `P0` 明确仿真中 D405 的 `RGB` 输出接口
 - [x] `P0` 明确仿真中 D405 的 `Depth` 输出接口
 - [x] `P0` 明确 `RGB` 与 `Depth` 的分辨率、帧率和时间戳对齐方式
@@ -241,6 +246,7 @@
 - [x] `P0` 明确 `data/calibration/` 下相机标定文件的组织方式
 - [x] `P0` 明确 episode 元数据中必须记录 `camera_device`、`camera_intrinsics_version`、`camera_extrinsics_version`
 - [ ] `P0` 按 `docs/d405_real_intrinsics_validation.md` 连接真实 D405，读取实测 `fx/fy/ppx/ppy`，并写回 MuJoCo `focalpixel/principalpixel`
+- [ ] `P0` 按 `docs/d405_hand_eye_calibration.md` 完成 wrist-mounted D405 手眼外参标定，写回 `camera_pose_in_ee` / MuJoCo camera `pos/quat`
 - [ ] `P1` 预留后续真实 D405 与仿真相机的误差分析字段
 
 ### S1.5.4 数据录制前置条件
@@ -473,17 +479,49 @@
 
 ---
 
+## 里程碑 S5.5：2026-06-08 任务回归冻结
+
+### 目标
+
+保留 S5 已完成的安全交接文档冻结记录，但当前开发主线回归为：`VR 采集机器人操作示教数据 -> 转换 LeRobot / OpenPI 数据格式 -> 微调 pi0.5 -> MuJoCo 验证`。后续未完成任务不再围绕 human hand、collaboration memory 或 interaction gating 展开。
+
+### S5.5.1 当前任务名与范围冻结
+
+- [x] `P0` 当前主任务名回归为 `quest3_vr_lerobot_pi05_v1`
+- [x] `P0` 明确 `quest3_tool_sorting_v1` 继续作为工具场景、机器人操作和抓取资产基线
+- [x] `P0` 明确当前 P0 不新增 `human_hand`
+- [x] `P0` 明确当前 P0 不训练 collaboration memory
+- [x] `P0` 明确当前 P0 不集成 interaction gating
+- [x] `P0` 明确当前 P0 不以 release timing / unsafe handover 作为评估指标
+- [x] `P0` 明确当前训练主线只服务 pi0.5 操作能力微调
+
+### S5.5.2 新数据闭环冻结
+
+- [x] `P0` 冻结新闭环：`Quest3 VR 示教 -> raw episode -> validation -> LeRobot/OpenPI conversion -> loader smoke test -> pi0.5 LoRA -> MuJoCo rollout`
+- [x] `P0` 明确 raw JSONL 不能直接用于 pi0.5 训练，必须先转换为 LeRobot / OpenPI 可读取数据集
+- [x] `P0` 明确训练主视觉仍为末端 D405 RGB，Depth 第一版作为 sidecar 或评估/回放字段
+- [x] `P0` 明确训练动作空间第一版使用 `joint_delta[0:6] + gripper_target`
+- [x] `P0` 明确 train/val/test 必须按 episode 划分，禁止按帧随机打散
+- [x] `P0` 明确 5090D 32GB 服务器第一版只做 LoRA / adapter，不做全参数微调
+
+### S5.5.3 验收
+
+- [x] `P0` `docs/task.md` 已回归到 VR 数据采集、LeRobot 转换和 pi0.5 微调任务
+- [x] `P0` `docs/todolist.md` 保留已完成 todo，并把后续未完成任务转向当前主链路
+
+---
+
 ## 里程碑 S6：末端 D405 摄像头模块与 MuJoCo 观测验证
 
 ### 目标
 
-协作数据的主视觉观测必须来自机械臂末端 D405，而不是 Quest3 页面画面、Three.js 外部观察相机或调试相机。本阶段可以先于 human hand 开发启动：第一轮先验证夹爪、工具和 handover zone 是否在末端相机视野内；等 S7 的 human hand 接入后，再复测人手进入、犹豫、后撤和 release 前后的可见性。
+训练主视觉观测必须来自机械臂末端 D405，而不是 Quest3 页面画面、Three.js 外部观察相机或调试相机。本阶段第一轮先验证夹爪、目标工具、目标放置区域和工具箱是否在末端相机视野内。
 
-本轮落地产物：后端 D405 观测状态字段、`/sim/observation/` RGB-D 验证、前端 `D405ObservationPanel`、`shared/handover_scene_config.json`。
+本轮落地产物：后端 D405 观测状态字段、`/sim/observation/` RGB-D 验证、前端 `D405ObservationPanel`、数据录制所需相机字段。
 
 ### S6.1 视觉来源边界冻结
 
-- [x] `P0` 明确 `d405_rgb / d405_depth` 是 `quest3_safe_handover_v1` 的唯一训练主视觉来源
+- [x] `P0` 明确 `d405_rgb / d405_depth` 是当前 pi0.5 数据集的训练主视觉来源
 - [x] `P0` 明确 Quest3 页面画面、Three.js 观察相机、`camera / camera_base` 只能用于调试和展示
 - [x] `P0` 在 episode metadata 中记录 `camera_device=intel_realsense_d405`
 - [x] `P0` 在 episode metadata 中记录 `camera_mount_name`、`camera_intrinsics_version`、`camera_extrinsics_version`
@@ -491,14 +529,14 @@
 
 ### S6.2 MuJoCo D405 挂载与第一轮渲染验证
 
-- [x] `P0` 确认 D405 在 MuJoCo 中固定挂载到 UR5 末端或腕部坐标系，并随机械臂运动
-- [x] `P0` 确认 `d405_rgb` 渲染视角与真实末端相机方向一致，朝向夹爪、工具和 handover zone
+- [x] `P0` 确认 D405 在 MuJoCo 中按名义外参固定挂载到 UR5 腕部坐标系，并随机械臂运动
+- [ ] `P0` 通过真实 D405 手眼标定确认 `d405_rgb` 渲染视角与真实末端相机方向一致
 - [x] `P0` 确认 `d405_depth` 与 RGB 同视角、同时间戳或可对齐时间戳
 - [ ] `P0` 确认 MuJoCo D405 内参来自真实 D405 实测值，而不是只用图像中心光轴占位
 - [ ] `P0` 确认 D405 在 `robot_grasp` 阶段能看到夹爪和目标工具
-- [ ] `P0` 确认 D405 在 `robot_offer` 阶段能看到工具和 handover zone
-- [x] `P0` 在没有 human hand 前，先用 handover zone 标记或简化接收占位体检查未来人手进入区域是否在视野内
-- [ ] `P0` 记录不同递送姿态下的遮挡情况，优先找出能同时看到夹爪、工具和接收区域的姿态
+- [ ] `P0` 确认 D405 在 `robot_place` 阶段能看到工具和目标放置区域
+- [x] `P0` 使用目标区域标记或占位体检查未来工具放置区域是否在视野内
+- [ ] `P0` 记录不同抓取、移动和放置姿态下的遮挡情况，优先找出能同时看到夹爪、工具和目标区域的姿态
 
 ### S6.3 RGB-D 接口与落盘
 
@@ -517,372 +555,229 @@
 - [x] `P0` 前端显示帧号、时间戳、帧率和最近错误
 - [x] `P0` 前端显示 `camera_capture_ok`、`rgb_valid`、`depth_valid`、`frame_aligned`
 - [x] `P0` 前端明确标记当前视觉源是 D405，而不是 Quest3 页面画面或外部观察相机
-- [ ] `P1` 在观测面板中叠加 handover zone 或关键区域提示，辅助采集前检查
+- [ ] `P1` 在观测面板中叠加目标区域或关键区域提示，辅助采集前检查
 
 ### S6.5 摄像头阶段验收
 
-- [ ] `P0` 第一轮 camera-only smoke test 中，D405 能稳定看到夹爪、目标工具和 handover zone
+- [ ] `P0` 第一轮 camera-only smoke test 中，D405 能稳定看到夹爪、目标工具和目标放置区域
 - [x] `P0` D405 Depth 不出现全零、全 NaN、严重错位或明显尺度错误
 - [x] `P0` `validation_summary.json` 能报告 `camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
-- [ ] `P0` S7 接入 human hand 后，必须复测 `human_approach/hesitation/retreat/release` 阶段的人手可见性
-- [ ] `P0` 未通过 D405 观测验证和 human hand 可见性复测前，不允许进入批量协作数据采集
-- [ ] `P0` 若 D405 看不到交接关键区域，优先调整 handover zone、机器人递送姿态或相机挂载角度
+- [ ] `P0` 未通过 D405 观测验证前，不允许进入批量训练数据采集
+- [ ] `P0` 若 D405 看不到操作关键区域，优先调整目标区、机器人姿态或相机挂载角度
 
 ---
 
-## 里程碑 S7：仿真人手与双边 VR 协作控制
+## 里程碑 S7：VR 采集入口与任务模板
 
 ### 目标
 
-在现有 UR5 + 工具场景基础上加入 human hand，使 Quest3 能同时控制机器人侧和人手侧：左手控制机械臂抓取/递送，右手通过手势模式控制仿真人手接近、犹豫、后撤、稳定接收等行为。
+在 Quest3 / VR 中建立面向 pi0.5 数据采集的单边机器人操作入口，让操作者能在头显内完成 precheck、选择任务模板、开始/停止录制和结果标记。
 
-### S7.1 human hand 资产与物理模型
+### S7.1 任务模板与采集入口
 
-- [ ] `P0` 选择第一版 human hand 表达：简化手掌 + 指尖碰撞体，优先保证可控和可记录
-- [ ] `P0` 新增 `backend/mujoco_models/human_hand.xml` 或等效模型
-- [ ] `P0` 为 human hand 配置稳定的 palm / fingertip collision geom
-- [ ] `P0` 为 human hand 定义 `human_hand_root` 自由度，第一版至少支持 3D 平移 + yaw/pitch/roll
-- [ ] `P0` 为人手定义接收区域 `handover_zone`，与 UR5 工作空间、桌面和工具保持合理距离
-- [ ] `P0` 在 `shared/scene_manifest.json` 或新增配置中记录 human hand 初始位姿、可移动范围和安全边界
-- [ ] `P0` 前端 Three.js 场景加载 human hand 可视模型，并按后端状态实时同步
+- [x] `P0` 新增或更新 Quest3 `VR采集模式`，面向 `quest3_vr_lerobot_pi05_v1`
+- [x] `P0` VR 采集模式显示 D405 状态、WebSocket 状态、控制模式、`recording_ready` 和最近错误
+- [x] `P0` VR 采集模式提供任务模板：`tool_grasp/tool_pick_place/tool_reposition/debug_trial`
+- [x] `P0` VR 采集模式可选择目标工具：`wrench_01/screwdriver_01/pliers_01`
+- [x] `P0` VR 采集模式可选择 `target_zone_id` 或工具箱槽位
+- [x] `P0` VR 采集模式可写入稳定任务文本，例如 `pick up the wrench`、`place the screwdriver in the toolbox`
+- [x] `P0` VR 内必须能一键或少步骤开始/停止 episode，避免操作者摘下头显回桌面端操作
 
-### S7.2 右手 VR 手势到 human hand 的映射
+### S7.2 precheck 与元数据
 
-- [ ] `P0` 明确 Quest3 左手用于机器人控制，右手用于 human hand 控制
-- [ ] `P0` 设计右手位姿映射：Quest3 手部位姿 -> MuJoCo human hand 目标位姿
-- [ ] `P0` 设计右手输入滤波、速度限制、工作区限制和丢失追踪后的 hold 逻辑
-- [ ] `P0` 记录右手原始追踪状态：`tracked/lost/low_confidence`
-- [ ] `P0` 记录右手派生动作：接近、停止、后撤、横向微调、晃动
-- [ ] `P0` 前端显示 human hand 控制状态，区分机器人控制焦点和人手控制焦点
-- [ ] `P1` 支持右手轨迹回放，用于复现 hesitation 和 retreat 样本
-
-### S7.3 双边控制安全规则
-
-- [ ] `P0` human hand 不允许穿桌、穿工具箱或穿过机器人夹爪实体
-- [ ] `P0` human hand 与工具允许接触，但接触必须记录接触点、接触对象和接触持续时间
-- [ ] `P0` human hand 与机器人连杆/夹爪发生危险距离过近时触发 `human_robot_proximity_warning`
-- [ ] `P0` 当右手追踪丢失或快速跳变时，禁止 release 并进入 `handover_hold`
-- [ ] `P0` 当左手机器人控制和右手人手控制出现冲突时，优先保证 human hand 安全边界
-- [ ] `P0` 在状态广播中增加 `human_hand_state`、`human_hand_tracking_status`、`human_robot_min_distance`
-
-### S7.4 VR 沉浸式快速采集入口
-
-- [ ] `P0` 新增 Quest3 `VR采集模式`，让操作者在头显内完成 precheck、阶段选择、开始录制、停止录制和结果标记
-- [ ] `P0` VR 采集模式显示 D405 状态、WebSocket 状态、左右手追踪状态、`recording_ready` 和最近错误
-- [ ] `P0` VR 采集模式提供阶段模板：`camera_check/robot_offer_dryrun/normal_handover/hesitation/retreat/unstable/debug_negative`
-- [ ] `P0` VR 采集模式中必须能一键或少步骤开始/停止 episode，避免操作者摘下头显回桌面端操作
-- [ ] `P0` 每条正式 episode 写入 `operator_controlled=true`、`control_mode=vr_immersive_bilateral`、`autonomy_level=manual_demonstration`
-- [ ] `P0` 正式训练候选数据必须来自 VR 人工示教，不允许程序自动驱动机械臂批量生成协作 episode
-- [ ] `P0` 程序脚本只能用于 camera smoke test、接口测试、固定姿态检查或回放验证，不得冒充正式协作采集数据
+- [x] `P0` 实现 `/dataset/precheck/` 或等效检查，覆盖 WebSocket、D405、MuJoCo、UR5、工具状态和录制目录
+- [x] `P0` 只有 `recording_ready=true` 时允许进入正式录制；否则只能进入 `debug_trial`
+- [x] `P0` 每条正式 episode 写入 `operator_controlled=true`
+- [x] `P0` 每条正式 episode 写入 `control_mode=vr_controller/vr_hand`
+- [x] `P0` 每条正式 episode 写入 `robot_input_source=quest3_controller/quest3_hand`
+- [x] `P0` 每条正式 episode 写入 `autonomy_level=manual_demonstration`
+- [x] `P0` 每条正式 episode 写入 `scripted_collection=false`
 
 ### 验收
 
-- [ ] `P0` 前后端能显示并同步 human hand 位姿
-- [ ] `P0` Quest3 右手能稳定控制仿真人手靠近、停止和后撤
-- [ ] `P0` 左手控制机器人、右手控制人手可同时录制，不互相覆盖控制状态
-- [ ] `P0` 人手与工具、夹爪、机器人之间的距离和接触状态可记录
-- [ ] `P0` 操作者可以不摘下 Quest3，在 VR 采集模式内完成一条 debug_trial 的开始、停止和结果标记
+- [ ] `P0` 操作者可以不摘下 Quest3，在 VR 采集模式内完成一条 `debug_trial` 的开始、停止和结果标记
+- [x] `P0` 每条 episode 都能追溯任务模板、目标工具、目标区域、控制源和开始/停止事件
+- [x] `P0` 脚本生成的测试轨迹不会被标记为正式训练候选
 
 ---
 
-## 里程碑 S8：交互数据集、关系特征与阶段标签
+## 里程碑 S8：raw episode 录制器与数据质量校验
 
 ### 目标
 
-建立 interaction dataset。数据不只记录机器人轨迹，还要记录人手行为、工具状态、视觉观测和人机关系变化，尤其是用于训练协作记忆模型的 relation sequence。
+建立 raw episode 录制器。当前数据只记录机器人操作示教，不记录 human hand、relation feature、phase label 或 release gate。
 
 ### S8.1 数据目录与 episode 分级
 
-- [ ] `P0` 创建 `data/datasets/quest3_safe_handover_v1/`
-- [ ] `P0` 定义 episode 类型：`normal_handover/hesitation/retreat/unstable/early_release/collision_near_miss/operator_abort`
-- [ ] `P0` 定义采集等级：`debug_trial/pilot/train_candidate/rejected`
-- [ ] `P0` 定义采集控制来源字段：`operator_controlled/control_mode/autonomy_level/scripted_collection`
-- [ ] `P0` 正式训练候选必须满足 `operator_controlled=true` 且 `scripted_collection=false`
-- [ ] `P0` 每条 episode 记录 `handover_object_id`、`handover_object_class`、`handover_zone_id`
-- [ ] `P0` 每条 episode 记录双边输入源：`robot_input_source`、`human_input_source`
-- [ ] `P0` episode 结束后生成 `validation_summary.json`，判断是否可进入 manipulation 数据、memory 数据或仅保留调试
+- [ ] `P0` 创建 `data/datasets/quest3_vr_lerobot_pi05_v1/`
+- [ ] `P0` 定义 episode 类型：`tool_grasp/tool_pick_place/tool_reposition/failed_attempt/operator_abort`
+- [ ] `P0` 定义采集等级：`debug_trial/pilot/train_candidate/eval_candidate/rejected`
+- [ ] `P0` 每条 episode 记录 `task_type`、`target_tool_id`、`target_tool_class`、`target_zone_id`
+- [ ] `P0` 每条 episode 记录 `instruction_text`、`reset_seed`、相机标定版本和场景配置版本
+- [ ] `P0` episode 结束后生成 `result.json` 和 `validation_summary.json`
 
 ### S8.2 原始数据字段
 
 - [ ] `P0` 记录机器人状态：`qpos/qvel/ee_pose/gripper_opening/grasp_state/attached_tool_id`
-- [ ] `P0` 记录人手状态：`hand_pose/hand_velocity/fingertip_pose/tracking_confidence/hand_stability`
-- [ ] `P0` 记录工具状态：`tool_pose/tool_velocity/tool_attached/tool_in_human_hand/tool_dropped`
+- [ ] `P0` 记录工具状态：`tool_pose/tool_velocity/tool_attached/tool_dropped/tool_in_target_zone`
 - [ ] `P0` 记录视觉信息：`d405_rgb/d405_depth/frame_id/timestamp/frame_aligned`
-- [ ] `P0` 记录动作信息：机器人动作、人手动作、原始 Quest3 输入和控制模式
-- [ ] `P0` 记录交互事件：`first_contact_time/stable_contact_start/release_time/drop_time/retract_start`
-- [ ] `P0` 记录安全事件：`unsafe_distance/collision_warning/premature_release/safe_hold`
+- [ ] `P0` 记录动作信息：`joint_target/joint_delta/gripper_target/source/control_mode/raw_input`
+- [ ] `P0` 记录质量事件：`camera_error/tracking_warning/workspace_limit_hit/collision_warning/operator_abort`
+- [ ] `P0` 写入 `metadata.json/visuals.jsonl/states.jsonl/actions.jsonl/events.jsonl/result.json/validation_summary.json`
 
-### S8.3 relation feature 冻结
+### S8.3 自动验证与人工筛选
 
-- [ ] `P0` 计算 `human_tool_distance`
-- [ ] `P0` 计算 `human_robot_distance`
-- [ ] `P0` 计算 `human_ee_distance`
-- [ ] `P0` 计算 `human_tool_relative_velocity`
-- [ ] `P0` 计算 `human_approach_speed`
-- [ ] `P0` 计算 `retreat_speed` 与 `retreat_detected`
-- [ ] `P0` 计算 `hand_stability_score`，例如滑动窗口内位置/姿态方差
-- [ ] `P0` 计算 `pose_alignment_score`，衡量手掌接收姿态与工具递送方向是否对齐
-- [ ] `P0` 计算 `contact_valid`、`contact_duration_ms`、`contact_consistency`
-- [ ] `P0` 计算 `hesitation_score`，综合反复接近/后撤、速度符号变化和微抖动
-- [ ] `P0` 计算 `handover_confidence_target`，供后续监督训练或评估使用
-
-### S8.4 interaction phase 标注
-
-- [ ] `P0` 冻结 phase 标签：`approach/stabilization/hesitation/retreat/ready/release/fail`
-- [ ] `P0` 先实现规则辅助标注脚本，根据距离、速度、稳定性和接触事件生成候选标签
-- [ ] `P0` 支持人工在回放界面修正 phase 标签
-- [ ] `P0` 每条 step 保存 `phase_label`、`phase_source=rule/manual/model`、`phase_confidence`
-- [ ] `P0` 对 `hesitation` 与 `retreat` 做强制覆盖检查，避免被误标为 `ready`
-- [ ] `P1` 支持导出 phase 时间轴可视化
-
-### S8.5 采集策略
-
-- [ ] `P0` 分阶段采集，先 `camera_check`，再 `robot_offer_dryrun`，再 normal，最后采集 hesitation/retreat/unstable
-- [ ] `P0` 每个阶段先完成少量 pilot，校验通过后再进入该阶段的批量采集
-- [ ] `P0` 采集正常交接样本：操作者左手递送工具，右手稳定接近、对齐、短暂停顿后接收
-- [ ] `P0` 采集 hesitation 样本：操作者右手接近后小幅晃动、停顿、反复微调
-- [ ] `P0` 采集 retreat 样本：操作者右手接近后后撤或突然改变方向
-- [ ] `P0` 采集 unstable 样本：操作者右手制造接触不稳、姿态不对齐或速度过快
-- [ ] `P0` 采集 early release 负样本：仅在调试模式下由操作者受控制造提前释放，用于标注危险案例
-- [ ] `P0` 每种工具至少覆盖正常、犹豫、后撤和不稳定四类交互
-- [ ] `P1` 建立 episode 配比表，避免数据只包含成功交接
-
-### S8.6 单条 episode 采集操作流程
-
-- [ ] `P0` 采集前启动后端和前端，确认 WebSocket、MuJoCo、D405、UR5、工具和 human hand 均在线
-- [ ] `P0` 采集前执行 reset，确认工具位姿、human hand 初始位姿和 handover zone 合法
-- [ ] `P0` 采集前打开 D405 观测面板，确认夹爪、目标工具和 human hand 接收区域在末端相机视野内
-- [ ] `P0` 采集前确认 Quest3 左手和右手追踪状态均为 `tracked`
-- [ ] `P0` 采集前进入 Quest3 `VR采集模式`，确认头显内能看到采集状态和开始/停止入口
-- [ ] `P0` 采集前在 VR 采集面板选择 `collection_stage`、`episode_type`、目标工具、`handover_zone_id` 和 `instruction_text`
-- [ ] `P0` 采集前调用 `/dataset/precheck/` 或等效检查，只有 `recording_ready=true` 才允许正式录制
-- [ ] `P0` 正常交接采集流程：操作者左手控制 UR5 抓取工具，移动到 handover zone，右手控制 human hand 稳定接近并对齐，ready 后执行 gated release
-- [ ] `P0` hesitation 采集流程：右手接近工具后停顿、晃动、微调或反复接近，保持 `release_allowed=false`
-- [ ] `P0` retreat 采集流程：右手先接近工具，再明显后撤，确认 `retreat_detected=true` 且 gate 阻止 release
-- [ ] `P0` unstable 采集流程：右手快速接近、姿态不对齐或接触不稳，记录低稳定性和低对齐度片段
-- [ ] `P0` early release 和 collision near miss 只允许在 `debug_trial` 或受控 pilot 中采集，默认不得进入正式训练候选
-- [ ] `P0` 操作者在 VR 内停止 episode，并快速标记成功、失败、人工中止、相机异常或追踪异常
-- [ ] `P0` 每条 episode 停止后写入 `result.json`、`validation_summary.json` 和基础预览信息
-
-### S8.7 自动验证与人工筛选
-
-- [ ] `P0` 自动验证 `metadata/visuals/states/actions/relations/events/phase_labels/result` 文件是否齐全
+- [ ] `P0` 自动验证 raw 文件是否齐全
 - [ ] `P0` 自动验证 RGB 和 Depth 均来自 D405，且 `stub_frame_used=false`
-- [ ] `P0` 自动验证 D405 视野中能看到工具、夹爪和 human hand 关键区域
+- [ ] `P0` 自动验证 D405 视野中能看到工具、夹爪和目标区域关键帧
 - [ ] `P0` 自动验证 RGB、Depth、状态和动作时间戳对齐误差低于阈值
 - [ ] `P0` 自动验证机器人状态连续有效，`qpos/qvel/ee_pose/gripper` 无明显缺失
-- [ ] `P0` 自动验证 human hand 追踪未长时间丢失，位姿没有异常跳变
-- [ ] `P0` 自动验证每个有效 step 都能计算 relation feature
-- [ ] `P0` 自动验证 phase 标签完整，且 `hesitation/retreat/ready` 无明显空洞
-- [ ] `P0` 自动验证 candidate action、gated action、`release_allowed` 和 `gate_reason` 可追溯
+- [ ] `P0` 自动验证动作维度固定、无 NaN、控制源清晰
 - [ ] `P0` 自动验证正式训练候选来自 VR 人工示教，而不是脚本自动采集
-- [ ] `P0` 人工回放 RGB-D，确认工具、夹爪和 human hand 可见
-- [ ] `P0` 人工回放 3D 状态，确认机器人、人手和工具轨迹与 episode 类型一致
-- [ ] `P0` 人工检查 relation timeline，确认距离、速度、稳定性和接触变化与画面一致
-- [ ] `P0` 人工检查 phase timeline，确认 `hesitation`、`retreat`、`ready` 没有明显误标
-- [ ] `P0` 人工检查 release/gate timeline，确认不安全状态下没有执行 release
-- [ ] `P0` 根据验证结果把 episode 标记为 `debug_trial`、`memory_train_candidate`、`manipulation_train_candidate`、`eval_candidate` 或 `rejected`
-- [ ] `P1` 生成 session 级采集质量报告，统计各类 episode 数量、通过率、缺帧率、误标修正数和 gate 拦截次数
+- [ ] `P0` 人工回放 RGB-D，确认工具、夹爪和目标区域可见
+- [ ] `P0` 人工回放 3D 状态和 action timeline，确认任务类型、动作和结果标签一致
+- [ ] `P0` 根据验证结果把 episode 标记为 `train_candidate/eval_candidate/debug_trial/rejected`
 
-### S8.8 pilot 验证门槛
+### S8.4 pilot 验证门槛
 
-- [ ] `P0` 每种工具至少完成 1 条 `normal_handover` pilot
-- [ ] `P0` 每种工具至少完成 1 条 `hesitation` pilot
-- [ ] `P0` 每种工具至少完成 1 条 `retreat` pilot
-- [ ] `P0` 每种工具至少完成 1 条 `unstable` pilot
-- [ ] `P0` 所有 pilot episode 都能生成完整 `relations.jsonl`
-- [ ] `P0` 至少 80% pilot episode 通过 `camera_capture_ok` 和 `frame_alignment_ok`
-- [ ] `P0` 至少 80% pilot episode 通过 `camera_view_ok`
-- [ ] `P0` 人工回放确认 pilot 的 phase 标签与画面基本一致
-- [ ] `P0` gate 在 `hesitation` 和 `retreat` pilot 中默认不允许 release
-- [ ] `P0` 未通过 pilot 验证前，不进入批量采集
-
-### S8.9 训练拆分与硬件策略
-
-- [ ] `P0` 明确正式数据不做“一块端到端训练”，而是拆成 memory 数据和 pi0.5 LoRA 数据
-- [ ] `P0` 从 raw episode 生成 memory 数据：`relations.jsonl + phase_labels.jsonl + release_allowed`
-- [ ] `P0` 从 raw episode 生成 LeRobot / OpenPI 兼容 manipulation 数据：`d405_rgb + robot_state + action + task_prompt`
-- [ ] `P0` 本地机器优先负责 relation feature 构建、phase 标注检查和 collaboration memory 小模型训练
-- [ ] `P0` 5090D 32GB 服务器优先负责 pi0.5 LoRA / adapter 轻量微调
-- [ ] `P0` 第一版禁止全参数微调，优先冻结 backbone，只训练 LoRA、adapter 或动作相关模块
-- [ ] `P0` pi0.5 训练从 batch size `1-2`、gradient accumulation、半精度和 gradient checkpointing 开始
-- [ ] `P0` D405 RGB 先使用可控分辨率版本，避免 32GB 显存被图像序列撑爆
-- [ ] `P0` 训练、验证和测试按 episode 划分，禁止按帧随机打散
-- [ ] `P0` release 相关帧单独标记，避免 pi0.5 把不安全 release 学成普通动作
+- [ ] `P0` 每种工具至少完成 3 条 `tool_grasp` pilot
+- [ ] `P0` 每种工具至少完成 3 条 `tool_pick_place` 或 `tool_reposition` pilot
+- [ ] `P0` 所有 pilot episode 都能生成完整 raw 文件和 `validation_summary.json`
+- [ ] `P0` 至少 80% pilot episode 通过 `camera_capture_ok`、`frame_alignment_ok` 和 `camera_view_ok`
+- [ ] `P0` 人工回放确认 pilot 的动作、任务文本和结果标签基本一致
+- [ ] `P0` 未通过 pilot 验证前，不进入批量训练数据采集
 
 ### 验收
 
-- [ ] `P0` 至少完成一组包含正常、hesitation、retreat、unstable 的 pilot 数据
-- [ ] `P0` 每条 episode 都能生成 relation sequence
-- [ ] `P0` phase 标签可回放检查
-- [ ] `P0` `validation_summary.json` 能区分 manipulation 可用、memory 可用和 rejected
+- [ ] `P0` 一条 episode 能完整回放 D405 RGB-D、机器人状态、工具状态和动作序列
+- [ ] `P0` `validation_summary.json` 能区分 `train_candidate/eval_candidate/debug_trial/rejected`
 - [ ] `P0` 已形成可照着执行的数据采集操作手册和验证清单
-- [ ] `P0` 正式训练候选数据都能追溯到 VR 操作者输入、阶段模板和开始/停止事件
-- [ ] `P0` 已明确哪些数据进 memory 训练，哪些数据进 pi0.5 LoRA 训练，哪些只进评估或调试
 
 ---
 
-## 里程碑 S9：协作记忆模型 collaboration memory
+## 里程碑 S9：LeRobot / OpenPI 数据转换
 
 ### 目标
 
-训练一个时序模型理解人机关系是否已经稳定可信。该模型不直接控制机械臂运动，而是输出当前 `handover_phase`、`handover_confidence` 和 `release_allowed`，作为 release gating 的依据。
+把通过校验的 raw episode 转换成 LeRobot / OpenPI 可读取的数据集。raw JSONL 不能直接用于 pi0.5 训练。
 
-### S9.1 数据转换与切窗
+### S9.1 转换脚本与字段映射
 
-- [ ] `P0` 新增 `scripts/datasets/build_relation_sequences.py`
-- [ ] `P0` 将 raw episode 转换为固定频率 relation sequence，第一版建议 `10-20 Hz`
-- [ ] `P0` 支持滑动窗口长度配置，例如 `1s/2s/3s`
-- [ ] `P0` 每个窗口包含 relation feature、机器人状态摘要、人手状态摘要和工具状态摘要
-- [ ] `P0` 每个窗口标签包含 `phase_label`、`release_allowed`、`unsafe_handover`
-- [ ] `P0` 生成 `relation_feature_stats.json`，记录归一化参数
-- [ ] `P0` 生成 `sequence_split.json`，按 episode 划分 train/val/test
-
-### S9.2 模型结构与训练
-
-- [ ] `P0` 新增 `backend/models/collaboration_memory/`
-- [ ] `P0` 第一版实现 GRU 或 LSTM 模型
-- [ ] `P0` 输入为 relation sequence，输出 phase logits、ready confidence 和 release gate
-- [ ] `P0` 损失函数包含 phase classification loss、ready binary loss 和 unsafe release penalty
-- [ ] `P0` 支持类别不平衡处理，避免模型把大多数帧都预测为 `approach`
-- [ ] `P0` 训练配置写入 `configs/memory/safe_handover_gru.yaml`
-- [ ] `P0` 训练脚本写入 `scripts/training/train_collaboration_memory.py`
-- [ ] `P0` 模型输出写入 `models/memory/<run_id>/`
-- [ ] `P0` 第一版 memory 训练优先在本地机器跑通，必要时用 CPU 或小 batch 先验证流程
-
-### S9.3 离线评估
-
-- [ ] `P0` 输出 `phase_accuracy`
-- [ ] `P0` 输出 `ready_precision`、`ready_recall`、`ready_f1`
-- [ ] `P0` 输出 `unsafe_release_false_positive_rate`
-- [ ] `P0` 输出 `hesitation_recall` 与 `retreat_recall`
-- [ ] `P0` 输出 `release_timing_error_ms`
-- [ ] `P0` 输出混淆矩阵，重点检查 `hesitation/retreat` 是否被误判为 `ready`
-- [ ] `P0` 保存失败窗口索引，能回溯到原始 episode 和时间戳
-
-### S9.4 在线推理接口
-
-- [ ] `P0` 新增 `backend/policies/collaboration_memory_adapter.py`
-- [ ] `P0` 在线维护最近 N 秒 relation feature buffer
-- [ ] `P0` 每个控制周期输出 `memory_phase`、`handover_confidence`、`release_allowed`
-- [ ] `P0` 当输入缺帧、人手追踪丢失或 relation feature 异常时输出 `release_allowed=false`
-- [ ] `P0` 在 WebSocket 状态广播中增加 memory 输出，供前端显示和录制
-
-### 验收
-
-- [ ] `P0` relation sequence 可训练 GRU/LSTM
-- [ ] `P0` memory 模型能区分 `ready` 与 `hesitation/retreat`
-- [ ] `P0` memory 模型可在线输出 release gate
-- [ ] `P0` 离线评估指标和失败样本可追溯
-
----
-
-## 里程碑 S10：pi0.5 LoRA 交接操作能力微调
-
-### 目标
-
-让 `pi0.5` 学会底层 handover manipulation：抓取工具、移动到交接区域、对齐人手、保持稳定递送姿态。`pi0.5` 不负责最终 release 决策，release 必须经过 collaboration memory gating。
-
-### S10.1 数据转换
-
-- [ ] `P0` 新增 `scripts/datasets/convert_handover_to_lerobot.py`
-- [ ] `P0` 转换器读取 `quest3_safe_handover_v1` 中 manipulation 可用的 episode
-- [ ] `P0` 转换器只读取 `manipulation_train_candidate`，跳过 `debug_trial/rejected`
-- [ ] `P0` 转换器按 episode 对齐 D405 RGB、机器人状态、动作、任务文本和时间戳
-- [ ] `P0` 转换器生成连续 `episode_index/frame_index/timestamp`
-- [ ] `P0` 转换器输出 `observation.images.d405_rgb`
-- [ ] `P0` 转换器输出 `observation.state=[qpos[0:6], gripper_opening]`
-- [ ] `P0` 转换器可选输出 compact human hand state，但第一版不强制输入 pi0.5
-- [ ] `P0` 转换器输出 action：`joint_delta[0:6] + gripper_target`
-- [ ] `P0` 任务文本改为交接语义，例如 `pick up the wrench and hand it to the human`
-- [ ] `P0` 转换器生成 `feature_mapping.json`、`conversion_report.json`、`rejected_episodes.jsonl`
-- [ ] `P0` 转换器生成 action/state normalization 统计
-- [ ] `P0` 按 episode 划分 train/val/test，禁止按帧随机打散
-- [ ] `P0` release 相关样本单独标记，避免把不安全 release 学成普通动作
+- [ ] `P0` 新增 `scripts/datasets/convert_vr_to_lerobot.py`
+- [ ] `P0` 新增 `scripts/datasets/validate_lerobot_dataset.py`
+- [ ] `P0` 新增 `configs/pi05/quest3_vr_tools_lora.yaml`
+- [ ] `P0` 转换器只读取 `train_candidate` 和明确允许的 `eval_candidate`
+- [ ] `P0` 转换器跳过 `debug_trial/rejected`
+- [ ] `P0` 输出 `observation.images.d405_rgb`
+- [ ] `P0` 输出 `observation.state=[qpos[0:6], gripper_opening]`
+- [ ] `P0` 输出 `action=[joint_delta[0:6], gripper_target]`
+- [ ] `P0` 输出 `task/prompt`
 - [ ] `P0` Depth 第一版作为 sidecar 或回放/评估字段保留，不强制进入 pi0.5 主输入
-- [ ] `P0` 用 LeRobot / OpenPI loader 做 smoke test，确认 RGB、state、action、prompt 和 timestamp 都可读
 
-### S10.2 LoRA 微调
+### S9.2 转换报告与 split
 
-- [ ] `P0` 新增 `configs/pi05/quest3_safe_handover_lora.yaml`
-- [ ] `P0` 新增或复用 `scripts/training/train_pi05.py` 支持 handover 数据集
-- [ ] `P0` 第一版优先 LoRA 或冻结大部分 backbone，只微调动作相关模块
-- [ ] `P0` 第一版 pi0.5 训练放到 5090D 32GB 服务器执行，不占用本地弱 GPU
-- [ ] `P0` 训练配置支持 batch size `1-2`、gradient accumulation、半精度、gradient checkpointing
-- [ ] `P0` 训练配置支持降低 D405 RGB 分辨率或缓存视觉特征，避免显存不足
-- [ ] `P0` 训练配置记录数据集版本、相机版本、动作定义和任务文本模板
-- [ ] `P0` 模型输出写入 `models/pi05/handover_lora_runs/<run_id>/`
-- [ ] `P0` 离线评估输出 action MSE、gripper MAE、对齐阶段动作误差和动作平滑度
+- [ ] `P0` 生成连续 `episode_index/frame_index/timestamp`
+- [ ] `P0` 生成 `feature_mapping.json`
+- [ ] `P0` 生成 `conversion_report.json`
+- [ ] `P0` 生成 `rejected_episodes.jsonl`
+- [ ] `P0` 生成 action/state normalization 统计
+- [ ] `P0` 按 episode 划分 train/val/test，禁止按帧随机打散
+- [ ] `P0` 记录相机标定版本、数据采集版本和转换脚本版本
 
-### S10.3 MuJoCo 验证
+### S9.3 loader smoke test
 
-- [ ] `P0` 新增 `scripts/training/evaluate_handover_pi05_mujoco.py`
-- [ ] `P0` 验证固定工具和固定 human hand 接收位姿
-- [ ] `P0` 验证人手不同接近方向下的工具递送对齐能力
-- [ ] `P0` 验证 pi0.5 输出 release 候选时仍必须经过 gating
-- [ ] `P0` 记录 `handover_alignment_error`、`tool_drop_rate`、`robot_motion_jitter`
+- [ ] `P0` 用 LeRobot / OpenPI loader 随机读取一个 episode
+- [ ] `P0` 检查 RGB 能正常解码
+- [ ] `P0` 检查 `observation.state` 维度固定
+- [ ] `P0` 检查 `action` 维度固定且无 NaN
+- [ ] `P0` 检查 prompt 与目标工具和任务类型一致
+- [ ] `P0` 检查 timestamp 单调递增
+- [ ] `P0` 检查 train/val/test 没有同一 episode 泄漏
+- [ ] `P0` 检查 normalization 统计没有被 rejected episode 污染
 
 ### 验收
 
-- [ ] `P0` handover 数据可转换为 LeRobot / OpenPI 可训练格式，且不能直接用 raw JSONL 启动 pi0.5 训练
+- [ ] `P0` pilot 数据可转换为 LeRobot / OpenPI 可训练格式
 - [ ] `P0` 转换后的数据能通过 loader smoke test
 - [ ] `P0` 转换报告能说明接收、跳过和拒绝的 episode 数量及原因
-- [ ] `P0` pi0.5 LoRA run 可复现并入库
-- [ ] `P0` pi0.5 能在 MuJoCo 中完成抓取、递送和对齐的基础 rollout
-- [ ] `P0` pi0.5 不绕过 interaction gating 直接释放工具
 
 ---
 
-## 里程碑 S11：interaction gating 集成与安全交接验证
+## 里程碑 S10：pi0.5 LoRA / adapter 微调
 
 ### 目标
 
-把 `pi0.5` 候选动作与 collaboration memory 的时机判断合成一个完整闭环：VLA 持续给出操作动作，memory 判断交互阶段，gating 只在 `ready` 且安全条件满足时允许 release。
+让 `pi0.5` 基于 VR 示教数据学习工具抓取、移动、放置和重定位能力。当前不训练人机交接 release 时机，不集成 collaboration memory 或 interaction gating。
 
-### S11.1 gating 规则
+### S10.1 训练配置
 
-- [ ] `P0` 定义 `release_allowed = memory_ready && contact_valid && hand_stable && safety_ok`
-- [ ] `P0` 当 `memory_phase=hesitation/retreat` 时强制 `release_allowed=false`
-- [ ] `P0` 当 `human_robot_min_distance` 低于安全阈值时强制进入 `safe_hold`
-- [ ] `P0` 当人手追踪丢失、relation feature 缺失或 memory 置信度过低时禁止 release
-- [ ] `P0` 当连续 ready 达到最短稳定窗口后才允许 release，避免瞬时误判
-- [ ] `P0` 每次 gate 拦截都记录 `gate_reason`
+- [ ] `P0` 训练输入必须来自通过 loader smoke test 的 LeRobot / OpenPI 数据集
+- [ ] `P0` 第一版优先 LoRA 或 adapter，冻结大部分 backbone，不做全参数微调
+- [ ] `P0` 第一版 pi0.5 训练放到 5090D 32GB 服务器执行
+- [ ] `P0` 训练配置支持 batch size `1-2`
+- [ ] `P0` 训练配置支持 gradient accumulation
+- [ ] `P0` 训练配置支持半精度和 gradient checkpointing
+- [ ] `P0` 训练配置支持降低 D405 RGB 分辨率或缓存视觉特征
+- [ ] `P0` 训练配置记录数据集版本、相机版本、动作定义和任务文本模板
 
-### S11.2 运行时集成
+### S10.2 训练输出与离线指标
 
-- [ ] `P0` 新增 `backend/policies/handover_policy_runtime.py`
-- [ ] `P0` runtime 同时加载 pi0.5 LoRA 和 collaboration memory
-- [ ] `P0` runtime 每步生成 `candidate_action`、`memory_output`、`gated_action`
-- [ ] `P0` 若 candidate action 包含 release，但 gate 拒绝，则替换为保持夹持或安全等待动作
-- [ ] `P0` 前端显示当前 `handover_phase`、`handover_confidence`、`release_allowed`、`gate_reason`
-- [ ] `P0` 录制器保存 candidate action 与 gated action 的差异
-
-### S11.3 对比与消融
-
-- [ ] `P0` baseline 1：距离阈值 release
-- [ ] `P0` baseline 2：瞬时接触状态 release
-- [ ] `P0` baseline 3：pi0.5 without memory gating
-- [ ] `P0` proposed：pi0.5 + collaboration memory + interaction gating
-- [ ] `P0` 消融：去掉 history，只用当前 relation feature
-- [ ] `P1` 消融：GRU vs LSTM vs temporal CNN
-
-### S11.4 评估指标
-
-- [ ] `P0` 输出 `release_timing_accuracy`
-- [ ] `P0` 输出 `unsafe_handover_rate`
-- [ ] `P0` 输出 `collision_rate`
-- [ ] `P0` 输出 `premature_release_rate`
-- [ ] `P0` 输出 `handover_success_rate`
-- [ ] `P0` 输出 `handover_drop_rate`
-- [ ] `P0` 输出 `hesitation_block_success_rate`
-- [ ] `P0` 输出 `retreat_block_success_rate`
-- [ ] `P0` 输出平均交接时长和 release 延迟
+- [ ] `P0` 模型输出写入 `models/pi05/quest3_vr_lora_runs/<run_id>/`
+- [ ] `P0` run 目录包含 `config.json/dataset_snapshot.json/feature_mapping.json`
+- [ ] `P0` run 目录包含 `checkpoints/exported/offline_eval/mujoco_validation`
+- [ ] `P0` 离线评估输出 `action_mse`
+- [ ] `P0` 离线评估输出 `joint_delta_mse`
+- [ ] `P0` 离线评估输出 `gripper_mae`
+- [ ] `P0` 记录 train/val loss、checkpoint step、数据集版本和 normalization 版本
 
 ### 验收
 
-- [ ] `P0` 系统能在 normal handover 中允许 release
-- [ ] `P0` 系统能在 hesitation 和 retreat 中阻止 release
-- [ ] `P0` 与距离阈值/瞬时接触 baseline 相比，提前释放率或危险交接率有可测下降
+- [ ] `P0` pi0.5 LoRA run 可复现并入库
+- [ ] `P0` 训练配置可在 5090D 32GB 显存边界内启动
+- [ ] `P0` 训练输出能追溯到 LeRobot 数据集版本和 raw episode 来源
+
+---
+
+## 里程碑 S11：MuJoCo rollout 验证与动作后处理
+
+### 目标
+
+把 pi0.5 checkpoint 加载回当前 MuJoCo 场景，验证基础工具操作能力，并用动作后处理保护仿真执行。
+
+### S11.1 runtime 与动作安全约束
+
+- [ ] `P0` 新增或复用 `backend/policies/pi05_policy_runtime.py`
+- [ ] `P0` 新增或复用 `backend/policies/action_postprocess.py`
+- [ ] `P0` 关节目标或增量必须经过 UR5 关节限位裁剪
+- [ ] `P0` 单步 `joint_delta` 必须限幅，避免模型输出造成跳变
+- [ ] `P0` 夹爪目标必须限制在合法开合范围
+- [ ] `P0` 当 WebSocket、D405 或仿真状态异常时，策略进入 `safe_hold`
+- [ ] `P0` 当动作包含 NaN、Inf、维度错误或时间戳过旧时，直接丢弃该动作
+
+### S11.2 MuJoCo 评估脚本
+
+- [ ] `P0` 新增 `scripts/training/evaluate_pi05_mujoco.py`
+- [ ] `P0` 验证固定工具初始位姿下的 `tool_grasp`
+- [ ] `P0` 验证固定目标区下的 `tool_pick_place`
+- [ ] `P0` 验证 `tool_reposition`
+- [ ] `P0` 验证不同工具类别下动作维度、夹爪控制和状态归一化一致
+- [ ] `P0` rollout 中无明显关节越界、剧烈抖动、穿桌或持续碰撞
+
+### S11.3 rollout 指标
+
+- [ ] `P0` 输出 `task_success_rate`
+- [ ] `P0` 输出 `grasp_success_rate`
+- [ ] `P0` 输出 `placement_error`
+- [ ] `P0` 输出 `tool_drop_rate`
+- [ ] `P0` 输出 `collision_rate`
+- [ ] `P0` 输出 `joint_limit_violation_count`
+- [ ] `P0` 输出 `robot_motion_jitter`
+- [ ] `P0` 输出 `mean_episode_duration_s`
+
+### 验收
+
+- [ ] `P0` pi0.5 能在 MuJoCo 中完成基础工具抓取 rollout
+- [ ] `P0` pi0.5 能在 MuJoCo 中完成基础工具放置或重定位 rollout
 - [ ] `P0` 所有评估结果能追溯到数据集版本、模型版本和配置版本
 
 ---
@@ -891,283 +786,205 @@
 
 ### 目标
 
-在仿真中验证稳定后，把实时状态映射到真实 UR5 的接口约束先冻结。第一版可以只做影子模式或低速 smoke test，不要求马上让真实机械臂执行完整交接。
+在仿真中验证稳定后，把实时状态映射到真实 UR5 的接口约束先冻结。第一版可以只做 shadow mode 或低速 smoke test，不要求马上让真实机械臂执行完整策略。
 
 ### S12.1 sim2real 接口
 
 - [ ] `P0` 定义统一 `runtime_target=sim/real_ur5/shadow_real_ur5`
-- [ ] `P0` 统一仿真和实机的高层动作：`joint_target/joint_delta/gripper_target/release_request`
-- [ ] `P0` 统一观测字段：机器人关节、夹爪、D405、human hand 估计状态、relation feature
-- [ ] `P0` 明确真实 human hand 状态未来由视觉或外部追踪估计，当前仿真人手字段作为接口占位
-- [ ] `P0` 模型注册表增加 `requires_memory_gate=true`、`release_policy=gated`
-- [ ] `P0` 明确任何实机 release 都必须经过 safety gate 和人工确认开关
+- [ ] `P0` 统一仿真和实机的高层动作：`joint_target/joint_delta/gripper_target`
+- [ ] `P0` 统一观测字段：机器人关节、夹爪、D405 RGB-D、任务文本和必要状态
+- [ ] `P0` 模型注册表记录 LeRobot 数据集版本、pi0.5 checkpoint、相机标定和动作空间定义
+- [ ] `P0` 明确实机执行必须保留限速、急停、watchdog、掉线保护和人工确认开关
 
 ### S12.2 安全与日志
 
 - [ ] `P0` 规划实机限速、急停、掉线保护和 watchdog
-- [ ] `P0` 规划 `safe_hold`：机器人保持工具、不释放、不继续靠近人手
-- [ ] `P0` 规划实机 shadow mode：策略只输出建议动作和 release 决策，不驱动真实硬件
+- [ ] `P0` 规划 `safe_hold`：停止发送新动作，保持安全姿态或进入人工接管
+- [ ] `P0` 规划实机 shadow mode：策略只输出建议动作，不驱动真实硬件
 - [ ] `P0` 记录仿真状态到实机状态映射误差
-- [ ] `P0` 记录实机验证时的 `release_allowed`、`gate_reason`、人工接管事件
+- [ ] `P0` 记录实机验证时的建议动作、后处理结果和人工接管事件
 
 ### S12.3 结果固化与复现实验
 
-- [ ] `P0` 冻结数据集版本、phase 标签版本、relation feature 版本
-- [ ] `P0` 冻结 memory 模型版本、pi0.5 LoRA 版本和 gating 配置版本
-- [ ] `P0` 输出对比表：distance threshold、contact threshold、without memory、with memory
-- [ ] `P0` 输出失败案例清单：提前释放、误拦截、后撤未识别、追踪丢失
-- [ ] `P0` 输出关键回放材料到 `experiments/safe_handover/`
+- [ ] `P0` 冻结 raw 数据集版本、LeRobot 数据集版本和 split
+- [ ] `P0` 冻结 pi0.5 LoRA 版本和动作后处理配置版本
+- [ ] `P0` 输出失败案例清单：抓取失败、掉落、穿桌、动作抖动、相机不可见、状态映射异常
+- [ ] `P0` 输出关键回放材料到 `experiments/pi05_vr_tools/`
 - [ ] `P1` 整理 sim2real shadow mode 结果和真实机械臂低速验证记录
 
 ### 验收
 
-- [ ] `P0` 仿真端完整闭环可复现
+- [ ] `P0` 仿真端 VR 数据采集 -> LeRobot 转换 -> pi0.5 微调 -> MuJoCo 验证闭环可复现
 - [ ] `P0` 真实机械臂接口字段和安全约束已冻结
-- [ ] `P0` 所有结果都能追溯到数据集、模型和配置版本
+- [ ] `P0` 所有结果都能追溯到 raw 数据、LeRobot 数据、模型和配置版本
+
+---
+
+## 历史暂停：原 S7-S12 协作任务（当前不执行）
+
+以下原 S7-S12 内容来自 `quest3_safe_handover_v1` 安全交接规划，当前仅作为历史未完成记录保留。当前主线不继续推进 human hand、双边协作、relation feature、collaboration memory 或 interaction gating。
+
+暂停范围摘要：
+
+- 原 S7：仿真人手与双边 VR 协作控制。
+- 原 S8：交互数据集、relation feature 与 phase 标签。
+- 原 S9：collaboration memory 训练、评估和在线推理。
+- 原 S10：面向 handover manipulation 的 pi0.5 LoRA。
+- 原 S11：interaction gating、安全交接验证、baseline 和消融。
+- 原 S12：围绕 release gate 的实机 shadow mode 与安全交接约束。
 
 ---
 
 ## 三、按开发先后顺序的周计划版本
 
-这部分不是替代上面的详细里程碑，而是把任务按更容易执行的时间顺序重新展开。
-如果实际开发节奏更快或更慢，可以把“一周”理解为“一个阶段块”。
+这部分不是替代上面的详细里程碑，而是把当前任务按更容易执行的时间顺序重新展开。如果实际开发节奏更快或更慢，可以把“一周”理解为“一个阶段块”。
 
-### 第 1 周：安全交接目标冻结周
-
-目标：
-
-- 把主任务从工具入库切换为安全交接时机理解
-- 明确现有工具场景如何复用
-- 冻结 `quest3_safe_handover_v1` 的任务定义
-
-本周建议完成：
-
-- [x] `P0` 冻结 `quest3_safe_handover_v1` 任务名
-- [x] `P0` 写清楚“VLA 负责怎么递，memory 负责什么时候递”
-- [x] `P0` 冻结 interaction phase 枚举
-- [x] `P0` 冻结 release gate 的基本语义
-- [x] `P0` 前后端已完成 `tools + toolbox` 场景替换
-- [x] `P0` 已完成 S4.5 物理边界与 reset 合法性基线
-
-周验收：
-
-- [x] `P0` 新任务目标不再和工具入库混淆
-- [x] `P0` 后续所有未开始任务都围绕安全交接展开
-
-### 第 2 周：末端 D405 MuJoCo 观测验证周
+### 第 1 周：任务回归与 D405 验证周
 
 目标：
 
-- 确认协作数据的主视觉来自机械臂末端 D405
-- 先在没有 human hand 的情况下验证夹爪、工具和 handover zone 可见
-- 打通 RGB-D 预览、接口和落盘 smoke test
+- 把当前主线冻结为 `quest3_vr_lerobot_pi05_v1`
+- 确认末端 D405 作为 pi0.5 数据集主视觉源
+- 验证夹爪、目标工具和目标区域在 D405 视野内
 
 本周建议完成：
 
-- [x] `P0` 确认 `d405_rgb / d405_depth` 是唯一训练主视觉来源
-- [x] `P0` 确认 D405 末端挂载视角随机械臂运动，并朝向夹爪、工具和 handover zone
-- [ ] `P0` 验证 `robot_grasp / robot_offer` 阶段的 D405 画面
-- [x] `P0` 使用 handover zone 标记或简化接收占位体检查未来人手区域是否在视野内
-- [x] `P0` 验证 RGB、Depth 接口均返回有效帧，且不是 stub / fallback
-- [x] `P0` 前端观测面板能显示 D405 RGB、Depth、帧号、时间戳和有效性
+- [x] `P0` 冻结任务回归：VR 采集 -> LeRobot / OpenPI 转换 -> pi0.5 微调 -> MuJoCo 验证
+- [x] `P0` 保留已完成工具场景、VR 控制、D405 和物理边界基线
+- [ ] `P0` 确认 MuJoCo D405 内参来自真实 D405 实测值
+- [ ] `P0` 验证 `robot_grasp / robot_place` 阶段的 D405 画面
 - [ ] `P0` 录制器能把 RGB、Depth 和 `visuals.jsonl` 一起落盘
-- [x] `P0` `validation_summary.json` 增加 `camera_source_ok`、`camera_capture_ok`、`camera_view_ok`、`frame_alignment_ok`
+- [ ] `P0` camera-only smoke test 中 D405 能稳定看到夹爪、目标工具和目标区域
 
 周验收：
 
-- [ ] `P0` D405 能稳定看到夹爪、目标工具和 handover zone
-- [ ] `P0` camera-only smoke test 通过后，可以进入 human hand 建模阶段
-- [ ] `P0` 未通过 D405 第一轮观测验证前，不进入正式协作数据采集
+- [ ] `P0` 未通过 D405 观测验证前，不进入批量训练数据采集
+- [ ] `P0` D405 观测质量能写入 `validation_summary.json`
 
-### 第 3 周：human hand 建模、右手控制与 D405 复测周
+### 第 2 周：VR 采集入口与 raw recorder 周
 
 目标：
 
-- 在 MuJoCo 和前端中加入 human hand
-- 让 Quest3 右手能控制仿真人手
-- 打通 VR 沉浸式快速采集入口
-- 复测 D405 是否能看到 human hand 进入、犹豫、后撤和 release 前后的关键区域
+- 在 Quest3 中完成任务模板、precheck、开始/停止录制和结果标记
+- 建立 raw episode 录制器
 
 本周建议完成：
 
-- [ ] `P0` 新增 human hand MuJoCo 模型
-- [ ] `P0` 前端加载 human hand 可视模型
-- [ ] `P0` 定义 human hand 初始位姿、接收区和工作区限制
-- [ ] `P0` 完成右手位姿到 human hand 的映射
-- [ ] `P0` 完成右手追踪丢失后的 hold 逻辑
-- [ ] `P0` 在状态广播中加入 `human_hand_state`
-- [ ] `P0` 在 Quest3 内新增 `VR采集模式`，支持 precheck、阶段模板选择、开始/停止录制和结果标记
-- [ ] `P0` VR 采集模式显示 D405、WebSocket、左右手追踪和 `recording_ready`
-- [ ] `P0` 复测 `human_approach / hesitation / retreat / release` 阶段的 D405 画面
-- [ ] `P0` 若 human hand 关键区域不可见，调整 handover zone、递送姿态或相机挂载角度
+- [ ] `P0` 新增或更新 Quest3 `VR采集模式`
+- [ ] `P0` VR 采集模式支持 `tool_grasp/tool_pick_place/tool_reposition/debug_trial`
+- [ ] `P0` 实现 `/dataset/precheck/` 或等效检查
+- [ ] `P0` 创建 `data/datasets/quest3_vr_lerobot_pi05_v1/`
+- [ ] `P0` 录制 `metadata/visuals/states/actions/events/result/validation_summary`
+- [ ] `P0` 每条正式 episode 写入 `operator_controlled=true` 和 `scripted_collection=false`
 
 周验收：
 
-- [ ] `P0` Quest3 右手可稳定控制仿真人手接近、停止、后撤
-- [ ] `P0` 人手状态能被前端显示和后端记录
-- [ ] `P0` D405 能看到 human hand 与工具、夹爪之间的关键相对关系
-- [ ] `P0` 操作者可以不摘下头显完成一条 debug_trial 的开始、停止和结果标记
+- [ ] `P0` 操作者可以不摘下 Quest3 完成一条 `debug_trial`
+- [ ] `P0` 一条 episode 能完整回放 D405、机器人状态、工具状态和动作序列
 
-### 第 4 周：双边协作录制与 relation feature 周
+### 第 3 周：pilot 数据与质量筛选周
 
 目标：
 
-- 完成操作者左手机器人、右手人手的同步录制
-- 生成第一版 relation sequence
-- 固定 VR 沉浸式单条 episode 的操作流程，避免不同采集轮次动作不一致
+- 采集最小 pilot 数据
+- 建立自动验证和人工筛选流程
 
 本周建议完成：
 
-- [ ] `P0` 创建 `data/datasets/quest3_safe_handover_v1/`
-- [ ] `P0` 实现采集前 precheck，确认 WebSocket、D405、Quest3 双手追踪、human hand 和 reset 状态均可用
-- [ ] `P0` 在 VR 采集面板中选择阶段模板、episode 类型、目标工具、handover zone 和任务文本
-- [ ] `P0` 录制机器人、人手、工具、视觉和动作序列
-- [ ] `P0` 每条 episode 写入 `operator_controlled=true`、`control_mode=vr_immersive_bilateral`、`scripted_collection=false`
-- [ ] `P0` 计算人手-工具距离、人手-机器人距离、接近速度、后撤速度
-- [ ] `P0` 计算手部稳定性、姿态对齐程度、接触持续时间
-- [ ] `P0` 生成 `relations.jsonl`
-- [ ] `P0` 回放界面显示 relation timeline
-- [ ] `P0` episode 停止后自动生成 `result.json` 和 `validation_summary.json`
+- [ ] `P0` 每种工具至少完成 3 条 `tool_grasp` pilot
+- [ ] `P0` 每种工具至少完成 3 条 `tool_pick_place` 或 `tool_reposition` pilot
+- [ ] `P0` 自动验证文件完整性、D405 来源、时间戳对齐、机器人状态和动作有效性
+- [ ] `P0` 人工回放 RGB-D、3D 状态和 action timeline
+- [ ] `P0` 根据验证结果标记 `train_candidate/eval_candidate/debug_trial/rejected`
 
 周验收：
 
-- [ ] `P0` 一条 episode 能完整回放机器人、人手、工具和 relation feature
-- [ ] `P0` relation feature 与画面表现基本一致
-- [ ] `P0` 采集者能在 Quest3 内按固定步骤完成一条 normal handover 和一条 hesitation episode
-- [ ] `P0` 正式训练候选不会混入程序自动驱动生成的 episode
+- [ ] `P0` 至少 80% pilot 通过 `camera_capture_ok/frame_alignment_ok/camera_view_ok`
+- [ ] `P0` 未通过 pilot 验证前，不进入批量训练数据采集
 
-### 第 5 周：交互阶段标注与 pilot 数据周
+### 第 4 周：LeRobot / OpenPI 转换周
 
 目标：
 
-- 分阶段采集正常、犹豫、后撤、不稳定交接样本
-- 建立可训练的 phase 标签
-- 建立 pilot 数据的自动验证和人工筛选规则
+- 把 raw episode 转换为 LeRobot / OpenPI 可读取数据集
+- 跑通 loader smoke test
 
 本周建议完成：
 
-- [ ] `P0` 实现规则辅助 phase 标注脚本
-- [ ] `P0` 支持人工修正 `phase_label`
-- [ ] `P0` 按阶段先采 normal，再采 hesitation，再采 retreat，最后采 unstable，不混着批量采
-- [ ] `P0` 每种工具采集 normal / hesitation / retreat / unstable 样本
-- [ ] `P0` 生成 `validation_summary.json`
-- [ ] `P0` 自动验证文件完整性、D405 帧有效性、时间戳对齐、人手追踪、relation feature 和 gate 日志
-- [ ] `P0` 人工回放检查 RGB-D、3D 状态、relation timeline、phase timeline 和 release/gate timeline
-- [ ] `P0` 根据验证结果标记 `memory_train_candidate`、`manipulation_train_candidate`、`eval_candidate` 或 `rejected`
-- [ ] `P0` 完成 episode 级 train/val/test 初步划分
+- [ ] `P0` 完成 `scripts/datasets/convert_vr_to_lerobot.py`
+- [ ] `P0` 完成 `scripts/datasets/validate_lerobot_dataset.py`
+- [ ] `P0` 输出 `observation.images.d405_rgb`
+- [ ] `P0` 输出 `observation.state=[qpos[0:6], gripper_opening]`
+- [ ] `P0` 输出 `action=[joint_delta[0:6], gripper_target]`
+- [ ] `P0` 输出 `task/prompt`
+- [ ] `P0` 生成 `feature_mapping.json/conversion_report.json/rejected_episodes.jsonl`
+- [ ] `P0` 按 episode 划分 train/val/test
 
 周验收：
 
-- [ ] `P0` pilot 数据覆盖至少四类交互情况
-- [ ] `P0` phase 标签可回放检查
-- [ ] `P0` 未通过 pilot 验证前不会进入批量采集
+- [ ] `P0` 转换后的数据能通过 loader smoke test
+- [ ] `P0` train/val/test 没有同一 episode 泄漏
 
-### 第 6 周：collaboration memory 训练周
+### 第 5 周：pi0.5 LoRA 微调周
 
 目标：
 
-- 用 relation sequence 训练 GRU/LSTM 协作记忆模型
-- 让模型能识别 ready、hesitation 和 retreat
-- 优先在本地机器跑通轻量训练和评估
+- 在 5090D 32GB 服务器上启动 pi0.5 LoRA / adapter 训练
+- 训练 run 可复现并入库
 
 本周建议完成：
 
-- [ ] `P0` 完成 `build_relation_sequences.py`
-- [ ] `P0` 完成 GRU/LSTM 第一版模型
-- [ ] `P0` 完成 `train_collaboration_memory.py`
-- [ ] `P0` 本地跑通 memory 小模型训练，不依赖 5090D 服务器
-- [ ] `P0` 输出 phase accuracy、ready F1、unsafe false positive rate
-- [ ] `P0` 失败样本可回溯到原 episode
+- [ ] `P0` 完成 `configs/pi05/quest3_vr_tools_lora.yaml`
+- [ ] `P0` 训练输入只使用通过 loader smoke test 的 LeRobot / OpenPI 数据集
+- [ ] `P0` 使用 LoRA / adapter，不做全参数微调
+- [ ] `P0` 使用 batch size `1-2`、gradient accumulation、半精度和 gradient checkpointing
+- [ ] `P0` 模型输出到 `models/pi05/quest3_vr_lora_runs/<run_id>/`
+- [ ] `P0` 离线评估输出 action MSE、joint delta MSE 和 gripper MAE
 
 周验收：
 
-- [ ] `P0` memory 模型能离线区分 ready 与 hesitation/retreat
-- [ ] `P0` memory 输出能进入在线 adapter
+- [ ] `P0` pi0.5 LoRA run 可复现并能追溯到数据集、相机和动作空间版本
 
-### 第 7 周：pi0.5 LoRA 交接操作周
+### 第 6 周：MuJoCo rollout 验证周
 
 目标：
 
-- 让 pi0.5 学会抓取、递送和对齐人手
-- 不让 pi0.5 单独决定 release
-- 用 5090D 32GB 服务器做轻量 LoRA / adapter 微调，不做全参数训练
+- 将 pi0.5 checkpoint 加载回 MuJoCo
+- 验证工具抓取、放置和重定位 rollout
 
 本周建议完成：
 
-- [ ] `P0` 完成 handover 数据到 LeRobot / OpenPI 的转换
-- [ ] `P0` 转换后跑通 loader smoke test，确认 RGB、state、action、prompt、timestamp 都可读
-- [ ] `P0` 生成 `feature_mapping.json`、`conversion_report.json`、`rejected_episodes.jsonl` 和 normalization 统计
-- [ ] `P0` 完成 `quest3_safe_handover_lora.yaml`
-- [ ] `P0` 在 5090D 32GB 服务器上启动 pi0.5 LoRA 微调
-- [ ] `P0` 使用小 batch、gradient accumulation、半精度和 gradient checkpointing 控制显存
-- [ ] `P0` 模型入库到 `models/pi05/handover_lora_runs/<run_id>/`
-- [ ] `P0` MuJoCo 验证 pi0.5 可完成基础递送对齐
+- [ ] `P0` 完成 `scripts/training/evaluate_pi05_mujoco.py`
+- [ ] `P0` 完成 `backend/policies/pi05_policy_runtime.py` 或等效 runtime
+- [ ] `P0` 完成动作后处理：关节限位、增量限幅、夹爪限幅、NaN 丢弃、异常 safe hold
+- [ ] `P0` 验证固定工具初始位姿下的 `tool_grasp`
+- [ ] `P0` 验证固定目标区下的 `tool_pick_place/tool_reposition`
+- [ ] `P0` 输出 task success、grasp success、placement error、drop rate、collision rate 和 motion jitter
 
 周验收：
 
-- [ ] `P0` LeRobot / OpenPI 数据集转换通过校验
-- [ ] `P0` pi0.5 LoRA 模型可加载并执行 handover rollout
-- [ ] `P0` release 决策仍由 gating 控制
+- [ ] `P0` pi0.5 能在 MuJoCo 中完成基础工具抓取 rollout
+- [ ] `P0` pi0.5 能在 MuJoCo 中完成基础放置或重定位 rollout
 
-### 第 8 周：interaction gating 集成周
-
-目标：
-
-- 合并 pi0.5 候选动作与 memory release gate
-- 验证 hesitation/retreat 下不会释放
-
-本周建议完成：
-
-- [ ] `P0` 完成 `handover_policy_runtime.py`
-- [ ] `P0` 每步输出 candidate action、memory output、gated action
-- [ ] `P0` 实现 release 拦截和 `gate_reason`
-- [ ] `P0` 前端显示 phase、confidence、release_allowed
-- [ ] `P0` 录制 candidate/gated action 差异
-
-周验收：
-
-- [ ] `P0` normal handover 中可以 release
-- [ ] `P0` hesitation/retreat 中阻止 release
-
-### 第 9 周：评估、消融与复现周
+### 第 7 周：版本固化与 shadow mode 准备周
 
 目标：
 
-- 对比无记忆方法和协作记忆方法
-- 输出可复现结果
+- 固化数据集、模型、配置和失败案例
+- 冻结真实 UR5 shadow mode 接口
 
 本周建议完成：
 
-- [ ] `P0` 实现 distance threshold baseline
-- [ ] `P0` 实现 contact threshold baseline
-- [ ] `P0` 实现 without memory gating baseline
-- [ ] `P0` 输出 release timing accuracy、unsafe handover rate、premature release rate
-- [ ] `P0` 输出 handover success rate、collision rate、drop rate
-- [ ] `P0` 固化数据集、模型和配置版本
-
-周验收：
-
-- [ ] `P0` with memory 相比 baseline 在危险释放或提前释放上有可测下降，或输出明确失败分析
-
-### 第 10 周：数字孪生与实机接口冻结周
-
-目标：
-
-- 把仿真中稳定的状态、动作和 gate 映射到真实 UR5 接口
-- 优先完成 shadow mode 和低速验证准备
-
-本周建议完成：
-
+- [ ] `P0` 冻结 raw 数据集版本、LeRobot 数据集版本和 split
+- [ ] `P0` 冻结 pi0.5 LoRA 版本和动作后处理配置
+- [ ] `P0` 输出失败案例清单：抓取失败、掉落、穿桌、动作抖动、相机不可见、状态映射异常
 - [ ] `P0` 冻结 `runtime_target=sim/real_ur5/shadow_real_ur5`
-- [ ] `P0` 冻结高层动作接口和 release request 接口
-- [ ] `P0` 冻结真实人手状态估计接口占位
-- [ ] `P0` 规划实机安全机制和人工确认开关
-- [ ] `P0` 记录仿真到实机的状态映射误差
+- [ ] `P0` 冻结实机观测字段和高层动作字段
 
 周验收：
 
-- [ ] `P0` 实机接入不需要推翻现有 handover runtime
-- [ ] `P0` release 相关安全约束在接口层有明确落点
+- [ ] `P0` 仿真端 VR 数据采集 -> LeRobot 转换 -> pi0.5 微调 -> MuJoCo 验证闭环可复现
+- [ ] `P0` 真实机械臂接口字段和安全约束已冻结
 
 ---
 
@@ -1179,34 +996,29 @@
 - [x] `P0` 实现多工具对象状态同步
 - [x] `P0` 建立物理边界基线，解决前后端虚拟干涉并阻止明显穿桌、穿箱、穿工具
 - [x] `P0` 完成 reset 合法性检查，确保工具平躺、工具箱开口朝上且对象不穿透
-- [ ] `P0` 冻结 `quest3_safe_handover_v1` 主任务和 interaction phase
-- [ ] `P0` 固定 `d405_rgb / d405_depth` 为协作数据唯一训练主视觉来源，并禁止使用 Quest3 页面画面或 Three.js 外部相机替代
-- [ ] `P0` 先完成末端 D405 在 MuJoCo 中的第一轮观测验证，确认工具、夹爪和 handover zone 可见
-- [ ] `P0` 新增 human hand 模型、前端显示和状态广播
-- [ ] `P0` 打通 Quest3 右手控制仿真人手
-- [ ] `P0` human hand 接入后复测 D405，确认人手、工具、夹爪关键区域可见
-- [ ] `P0` 新增 VR 沉浸式快速采集入口，支持阶段模板、precheck、开始/停止录制和结果标记
-- [ ] `P0` 建立双边协作 episode 录制器
-- [ ] `P0` 固定单条 episode 的采集操作流程：precheck、选择类型、开始录制、执行交互、停止、校验、标记去向
-- [ ] `P0` 冻结 relation feature schema，并生成 `relations.jsonl`
-- [ ] `P0` 冻结训练拆分策略：memory 本地轻量训练，pi0.5 LoRA 放到 5090D 32GB 服务器
-- [ ] `P0` 按阶段采集 normal / hesitation / retreat / unstable pilot 数据，每阶段先 pilot 再批量
+- [x] `P0` 回归当前任务：`quest3_vr_lerobot_pi05_v1`
+- [ ] `P0` 固定 `d405_rgb / d405_depth` 为 pi0.5 数据集主视觉来源，并禁止使用 Quest3 页面画面或 Three.js 外部相机替代
+- [ ] `P0` 完成末端 D405 在 MuJoCo 中的第一轮观测验证，确认工具、夹爪和目标区域可见
+- [ ] `P0` 新增或更新 VR 采集入口，支持任务模板、precheck、开始/停止录制和结果标记
+- [ ] `P0` 建立 raw episode 录制器
+- [ ] `P0` 固定单条 episode 的采集操作流程：precheck、选择任务、开始录制、执行操作、停止、校验、标记去向
+- [ ] `P0` 采集 `tool_grasp/tool_pick_place/tool_reposition` pilot 数据
 - [ ] `P0` 建立自动验证和人工回放筛选流程
-- [ ] `P0` 完成 phase 标注和回放检查
-- [ ] `P0` 训练第一版 collaboration memory
-- [ ] `P0` 完成 pi0.5 LoRA handover manipulation 微调
-- [ ] `P0` 集成 interaction gating，阻止 hesitation/retreat 下 release
-- [ ] `P0` 完成 baseline、消融和安全交接指标评估
-- [ ] `P0` 冻结 sim2real shadow mode 接口和 release 安全约束
+- [ ] `P0` 完成 LeRobot / OpenPI 数据转换器和 loader smoke test
+- [ ] `P0` 按 episode 划分 train/val/test，禁止按帧随机打散
+- [ ] `P0` 在 5090D 32GB 服务器上完成 pi0.5 LoRA / adapter 微调
+- [ ] `P0` 在 MuJoCo 中验证 pi0.5 工具抓取、放置和重定位 rollout
+- [ ] `P0` 冻结 sim2real shadow mode 接口和基础动作安全约束
 
 ---
 
 ## 五、补充提醒
 
 - 当前最有价值的既有资产，是已经能实时映射的 UR5、工具、工具箱、VR 控制、D405 规划和 S4.5 物理边界基线。
-- 当前最不建议的路线，是继续只做“能不能抓、能不能递”的操作能力，而忽略“什么时候可以安全释放”的交互时机问题。
-- 新路线的核心顺序是“末端 D405 MuJoCo 观测验证 -> human hand -> D405 人手可见性复测 -> VR 沉浸式采集入口 -> 双边人工示教录制 -> relation feature -> phase 标签 -> collaboration memory -> pi0.5 LoRA -> interaction gating -> 对比评估 -> sim2real shadow mode”。
-- 正式采集的底线，是每条 episode 必须同时有机器人状态、人手状态、工具状态、视觉帧、relation sequence、phase 标签和 release/gate 日志。
-- 正式训练候选必须来自操作者在 Quest3 中的人工示教，程序脚本只能用于相机、接口、固定姿态和回放验证。
-- `hesitation` 与 `retreat` 是最关键的负样本；如果数据中只有顺利交接，协作记忆模型无法学会安全时机判断。
-- `pi0.5` 的职责应限制在 manipulation，release 决策必须由 memory 和 safety gate 共同控制。
+- 当前最不建议的路线，是在数据闭环没跑通前恢复 human hand、collaboration memory 或 interaction gating。
+- 当前路线的核心顺序是“末端 D405 MuJoCo 观测验证 -> VR 采集入口 -> raw episode 录制 -> pilot 数据筛选 -> LeRobot / OpenPI 转换 -> loader smoke test -> pi0.5 LoRA -> MuJoCo rollout -> shadow mode”。
+- 正式采集的底线，是每条 episode 必须同时有机器人状态、工具状态、D405 视觉帧、动作、任务文本、metadata 和 validation summary。
+- 正式训练候选必须来自操作者在 Quest3 中的人工示教，程序脚本只能用于相机、接口、固定姿态、回放验证和数据管线测试。
+- raw JSONL 不能直接训练 pi0.5，必须先转换为 LeRobot / OpenPI 可读取数据集，并保留字段映射、转换报告和 rejected episode 列表。
+- 5090D 32GB 服务器第一版只做 LoRA / adapter，不做全参数微调。
+- human hand、collaboration memory、interaction gating 和安全交接评估已作为历史暂停任务保留，当前不执行。
