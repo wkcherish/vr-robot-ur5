@@ -240,12 +240,13 @@
                 <span class="network-label">当前关节组:</span>
                 <span class="network-value">{{ vrSelectedJointGroupText }}</span>
               </div>
-              <div class="network-status-row" v-if="questControllerRawInput && questControllerRawInput.right">
-                <span class="network-label">右摇杆/扳机:</span>
+              <div class="network-status-row" v-if="questControllerRawInput && (questControllerRawInput.left || questControllerRawInput.right)">
+                <span class="network-label">手柄握柄/扳机:</span>
                 <span class="network-value">
-                  X={{ Number(questControllerRawInput.right.stick_x || 0).toFixed(2) }},
-                  Y={{ Number(questControllerRawInput.right.stick_y || 0).toFixed(2) }},
-                  T={{ Number(questControllerRawInput.right.trigger || 0).toFixed(2) }}
+                  L G={{ Number(questControllerRawInput.left?.grip || 0).toFixed(2) }},
+                  L T={{ Number(questControllerRawInput.left?.trigger || 0).toFixed(2) }},
+                  R G={{ Number(questControllerRawInput.right?.grip || 0).toFixed(2) }},
+                  R T={{ Number(questControllerRawInput.right?.trigger || 0).toFixed(2) }}
                 </span>
               </div>
               <div class="network-status-row">
@@ -255,7 +256,7 @@
                     class="vr-inline-slider"
                     type="range"
                     min="0.4"
-                    max="1.8"
+                    max="3.0"
                     step="0.1"
                     v-model.number="questControllerSensitivity"
                   />
@@ -289,12 +290,12 @@
                 <span class="network-label">手势模式:</span>
                 <span class="network-value">
                   {{
-                    questHandRawInput && questHandRawInput.left_controller_fallback
-                      ? "左控制器兜底模式"
-                      : questHandInputMode === "left_hand_ee_ik"
-                        ? "左手末端IK模式"
-                        : questHandInputMode === "left_hand"
-                          ? "左手单手模式"
+                    questHandRawInput && questHandRawInput.right_controller_fallback
+                      ? "右控制器兜底模式"
+                      : questHandInputMode === "right_hand_ee_ik"
+                        ? "右手末端IK模式"
+                        : questHandInputMode === "right_hand"
+                          ? "右手单手模式"
                         : questHandInputMode === "dual_hand"
                           ? "双手模式"
                           : "单手降级模式"
@@ -303,16 +304,16 @@
               </div>
               <div
                 class="network-status-row"
-                v-if="questHandRawInput && questHandRawInput.left"
+                v-if="questHandRawInput && questHandRawInput.right"
               >
-                <span class="network-label">左手追踪:</span>
+                <span class="network-label">右手追踪:</span>
                 <span class="network-value">
                   {{
-                    questHandRawInput.left && (questHandRawInput.left.tracked || questHandRawInput.left.recently_tracked)
+                    questHandRawInput.right && (questHandRawInput.right.tracked || questHandRawInput.right.recently_tracked)
                       ? "可用"
                       : "丢失"
                   }}
-                  ({{ (((questHandRawInput.left && questHandRawInput.left.stability) || 0) * 100).toFixed(0) }}%)
+                  ({{ (((questHandRawInput.right && questHandRawInput.right.stability) || 0) * 100).toFixed(0) }}%)
                 </span>
               </div>
               <div class="network-status-row">
@@ -326,7 +327,7 @@
                     class="vr-inline-slider"
                     type="range"
                     min="0.4"
-                    max="1.8"
+                    max="3.0"
                     step="0.1"
                     v-model.number="questHandSensitivity"
                   />
@@ -340,6 +341,179 @@
               <div v-if="questHandGroupToast" class="vr-joint-toast">{{ questHandGroupToast }}</div>
             </div>
             <div v-if="vrErrorMessage" class="vr-menu-error">{{ vrErrorMessage }}</div>
+          </div>
+
+          <div class="vr-control-section">
+            <div class="vr-section-title">VR采集模式</div>
+            <div class="dataset-status-strip">
+              <span class="dataset-pill" :class="datasetRecordingReady ? 'status-ok' : 'status-error'">
+                recording_ready={{ datasetRecordingReady ? "true" : "false" }}
+              </span>
+              <span class="dataset-pill" :class="datasetEpisodeActive ? 'status-checking' : 'status-unknown'">
+                {{ datasetEpisodeActive ? "episode录制中" : "episode空闲" }}
+              </span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">D405:</span>
+              <span class="network-value" :class="`status-${d405CheckStatus}`">
+                {{ normalizeStatusLabel(d405CheckStatus) }} | {{ d405CheckMessage }}
+              </span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">WebSocket:</span>
+              <span class="network-value" :class="`status-${wsCheckStatus}`">
+                {{ normalizeStatusLabel(wsCheckStatus) }} | {{ wsCheckMessage }}
+              </span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">控制模式:</span>
+              <span class="network-value">{{ datasetControlModeText }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">最近错误:</span>
+              <span class="network-value" :class="{ 'status-error': datasetLastError }">
+                {{ datasetLastError || "-" }}
+              </span>
+            </div>
+            <button
+              class="network-check-button dataset-precheck-button"
+              :disabled="datasetPrecheckInFlight"
+              @click="runDatasetPrecheck"
+            >
+              {{ datasetPrecheckInFlight ? "检查中..." : "执行precheck" }}
+            </button>
+            <div class="dataset-form-grid">
+              <label class="dataset-field">
+                <span class="dataset-label">任务模板</span>
+                <select
+                  class="dataset-select"
+                  v-model="selectedDatasetTaskType"
+                  @change="handleDatasetTemplateChanged"
+                  :disabled="datasetEpisodeActive"
+                >
+                  <option
+                    v-for="template in datasetTemplates"
+                    :key="template.task_type"
+                    :value="template.task_type"
+                  >
+                    {{ template.display_name || template.task_type }}
+                  </option>
+                </select>
+              </label>
+              <label class="dataset-field">
+                <span class="dataset-label">目标工具</span>
+                <select
+                  class="dataset-select"
+                  v-model="selectedDatasetTargetTool"
+                  @change="syncDatasetInstructionFromTemplate(true)"
+                  :disabled="datasetEpisodeActive"
+                >
+                  <option
+                    v-for="tool in datasetTargetTools"
+                    :key="tool.id"
+                    :value="tool.id"
+                  >
+                    {{ tool.display_name || tool.id }}
+                  </option>
+                </select>
+              </label>
+              <label class="dataset-field">
+                <span class="dataset-label">目标区域</span>
+                <select
+                  class="dataset-select"
+                  v-model="selectedDatasetTargetZone"
+                  :disabled="datasetEpisodeActive"
+                >
+                  <option
+                    v-for="zone in datasetTargetZones"
+                    :key="zone.id"
+                    :value="zone.id"
+                  >
+                    {{ zone.display_name || zone.id }}
+                  </option>
+                </select>
+              </label>
+              <label class="dataset-field">
+                <span class="dataset-label">采集等级</span>
+                <select
+                  class="dataset-select"
+                  v-model="selectedDatasetCollectionStage"
+                  :disabled="datasetEpisodeActive"
+                >
+                  <option
+                    v-for="stage in datasetCollectionStageOptions"
+                    :key="stage"
+                    :value="stage"
+                  >
+                    {{ formatDatasetStage(stage) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <label class="dataset-field full-width">
+              <span class="dataset-label">任务文本</span>
+              <textarea
+                class="dataset-textarea"
+                v-model="datasetInstructionText"
+                :disabled="datasetEpisodeActive"
+                rows="2"
+                @input="datasetInstructionEdited = true"
+              ></textarea>
+            </label>
+            <div class="dataset-form-grid compact">
+              <label class="dataset-field">
+                <span class="dataset-label">结果标记</span>
+                <select class="dataset-select" v-model="datasetResultStatus">
+                  <option value="success">成功</option>
+                  <option value="failed_attempt">失败尝试</option>
+                  <option value="operator_abort">操作者中止</option>
+                  <option value="unknown">未定</option>
+                </select>
+              </label>
+              <label class="dataset-field">
+                <span class="dataset-label">质量标签</span>
+                <select class="dataset-select" v-model="datasetQualityLabel">
+                  <option value="debug_only">debug_only</option>
+                  <option value="train_candidate">train_candidate</option>
+                  <option value="eval_candidate">eval_candidate</option>
+                  <option value="rejected">rejected</option>
+                </select>
+              </label>
+            </div>
+            <div class="dataset-action-row">
+              <button
+                class="dataset-button primary"
+                :disabled="!datasetCanStartEpisode"
+                @click="startDatasetEpisode"
+              >
+                {{ datasetEpisodeInFlight ? "处理中..." : "开始episode" }}
+              </button>
+              <button
+                class="dataset-button danger"
+                :disabled="!datasetCanStopEpisode"
+                @click="stopDatasetEpisode"
+              >
+                停止并标记
+              </button>
+              <button
+                class="dataset-button"
+                :disabled="!datasetCanUpdateResult"
+                @click="updateDatasetEpisodeResult"
+              >
+                更新结果
+              </button>
+            </div>
+            <div v-if="datasetActiveEpisodeId || datasetLastEpisodeId" class="dataset-episode-id">
+              {{
+                datasetEpisodeActive
+                  ? `当前: ${datasetActiveEpisodeId}`
+                  : `最近: ${datasetLastEpisodeId}`
+              }}
+            </div>
+            <div v-if="datasetLastMessage" class="dataset-message">{{ datasetLastMessage }}</div>
+            <div v-if="!datasetCanStartEpisode && datasetFormalModeSelected && !datasetRecordingReady" class="dataset-warning">
+              precheck 未通过时只能采集 debug_trial。
+            </div>
           </div>
 
           <div class="vr-control-section">
@@ -434,7 +608,7 @@
             class="panel-control-button"
             :class="{ active: showVrControlPanel }"
           >
-            <span class="panel-icon">🥽</span> VR控制
+            <span class="panel-icon">VR</span> VR采集
           </button>
         </div>
       </div>
@@ -589,7 +763,7 @@ const UI_SYNC_INTERVAL_MS = 33;
 const UI_POSE_SYNC_INTERVAL_MS = 50;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
 const VR_COMMAND_MIN_INTERVAL_MS = 16;
-const VR_COMMAND_STEPS = 16;
+const VR_COMMAND_STEPS = 8;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
 const VR_CONTROL_WATCHDOG_INTERVAL_MS = 33;
 const VR_CONTROL_WATCHDOG_STALE_MS = 55;
@@ -648,7 +822,7 @@ const vrControlOwner = ref("desktop_manual");
 const lastLocalVrModeSetAt = ref(0);
 const questControllerAvailable = ref(false);
 const questControllerStatusText = ref("未激活");
-const questControllerSensitivity = ref(1.0);
+const questControllerSensitivity = ref(1.6);
 const questControllerDeadzone = ref(0.1);
 const questControllerGroupToast = ref("");
 const questControllerGroupToastAt = ref(0);
@@ -661,10 +835,10 @@ const questControllerPendingMapped = ref(null);
 const questControllerControlSeq = ref(0);
 const questHandAvailable = ref(false);
 const questHandStatusText = ref("未激活");
-const questHandSensitivity = ref(0.9);
+const questHandSensitivity = ref(1.5);
 const questHandTrackingStable = ref(false);
 const questHandTrackingStability = ref(0);
-const questHandInputMode = ref("left_hand_ee_ik");
+const questHandInputMode = ref("right_hand_ee_ik");
 const questHandGroupToast = ref("");
 const questHandGroupToastAt = ref(0);
 const questHandRawInput = ref(null);
@@ -681,6 +855,83 @@ const questHandUnavailableSinceAt = ref(0);
 const QUEST_HAND_UNSTABLE_GRACE_MS = 260;
 const QUEST_HAND_UNAVAILABLE_GRACE_MS = 320;
 
+const datasetTemplates = ref([]);
+const datasetTargetTools = ref([]);
+const datasetTargetZones = ref([]);
+const datasetCollectionStages = ref(["debug_trial", "pilot", "train_candidate", "eval_candidate", "rejected"]);
+const selectedDatasetTaskType = ref("debug_trial");
+const selectedDatasetTargetTool = ref("wrench_01");
+const selectedDatasetTargetZone = ref("desk_drop_zone");
+const selectedDatasetCollectionStage = ref("debug_trial");
+const datasetInstructionText = ref("debug trial with the wrench");
+const datasetPrecheck = ref(null);
+const datasetRecordingReady = ref(false);
+const datasetPrecheckInFlight = ref(false);
+const datasetEpisodeInFlight = ref(false);
+const datasetActiveEpisodeId = ref("");
+const datasetLastEpisodeId = ref("");
+const datasetLastEpisodeDir = ref("");
+const datasetLastMessage = ref("");
+const datasetLastError = ref("");
+const datasetResultStatus = ref("success");
+const datasetQualityLabel = ref("debug_only");
+const datasetInstructionEdited = ref(false);
+
+datasetTemplates.value = [
+  {
+    task_type: "debug_trial",
+    display_name: "Debug Trial",
+    allowed_collection_stages: ["debug_trial", "rejected"],
+    default_instruction_by_class: {
+      wrench: "debug trial with the wrench",
+      screwdriver: "debug trial with the screwdriver",
+      pliers: "debug trial with the pliers",
+    },
+  },
+  {
+    task_type: "tool_grasp",
+    display_name: "Tool Grasp",
+    allowed_collection_stages: ["pilot", "train_candidate", "eval_candidate", "rejected"],
+    default_instruction_by_class: {
+      wrench: "pick up the wrench",
+      screwdriver: "pick up the screwdriver",
+      pliers: "pick up the pliers",
+    },
+  },
+  {
+    task_type: "tool_pick_place",
+    display_name: "Tool Pick Place",
+    allowed_collection_stages: ["pilot", "train_candidate", "eval_candidate", "rejected"],
+    default_instruction_by_class: {
+      wrench: "place the wrench in the toolbox",
+      screwdriver: "place the screwdriver in the toolbox",
+      pliers: "place the pliers in the toolbox",
+    },
+  },
+  {
+    task_type: "tool_reposition",
+    display_name: "Tool Reposition",
+    allowed_collection_stages: ["pilot", "train_candidate", "eval_candidate", "rejected"],
+    default_instruction_by_class: {
+      wrench: "move the wrench to the target zone",
+      screwdriver: "move the screwdriver to the target zone",
+      pliers: "move the pliers to the target zone",
+    },
+  },
+];
+datasetTargetTools.value = [
+  { id: "wrench_01", class_id: "wrench", display_name: "Wrench #1" },
+  { id: "screwdriver_01", class_id: "screwdriver", display_name: "Screwdriver #1" },
+  { id: "pliers_01", class_id: "pliers", display_name: "Pliers #1" },
+];
+datasetTargetZones.value = [
+  { id: "desk_drop_zone", type: "spawn_region", display_name: "desk_drop_zone" },
+  { id: "slot_wrench", type: "toolbox_slot", display_name: "slot_wrench" },
+  { id: "slot_screwdriver", type: "toolbox_slot", display_name: "slot_screwdriver" },
+  { id: "slot_pliers", type: "toolbox_slot", display_name: "slot_pliers" },
+  { id: "toolbox", type: "container", display_name: "toolbox" },
+];
+
 const VR_MODE_LOCAL_LOCK_MS = 1200;
 const VR_ENTERED_MODES = new Set(["vr_ready", "vr_controller_mode", "vr_hand_mode"]);
 
@@ -688,10 +939,10 @@ const uiLastJointSyncAt = ref(0);
 const uiLastPoseSyncAt = ref(0);
 
 let questControllerTeleop = createQuestControllerTeleop({
-  sensitivity: clamp(questControllerSensitivity.value, 0.4, 1.8),
+  sensitivity: clamp(questControllerSensitivity.value, 0.4, 3.0),
 });
 let questHandTeleop = createQuestHandTeleop({
-  sensitivity: questHandSensitivity.value,
+  sensitivity: clamp(questHandSensitivity.value, 0.4, 3.0),
 });
 let lastQuestControllerPoseSnapshot = null;
 
@@ -748,6 +999,66 @@ const vrControlOwnerText = computed(() => {
     manual: "手动",
   };
   return mapping[vrControlOwner.value] || "未知";
+});
+
+const selectedDatasetTemplate = computed(() => {
+  return (
+    datasetTemplates.value.find(
+      (template) => String(template?.task_type || "") === selectedDatasetTaskType.value
+    ) || null
+  );
+});
+
+const selectedDatasetTool = computed(() => {
+  return (
+    datasetTargetTools.value.find(
+      (tool) => String(tool?.id || "") === selectedDatasetTargetTool.value
+    ) || null
+  );
+});
+
+const datasetEpisodeActive = computed(() => Boolean(datasetActiveEpisodeId.value));
+
+const datasetFormalModeSelected = computed(() => selectedDatasetCollectionStage.value !== "debug_trial");
+
+const datasetCollectionStageOptions = computed(() => {
+  const allowed = selectedDatasetTemplate.value?.allowed_collection_stages;
+  if (Array.isArray(allowed) && allowed.length > 0) {
+    return allowed.map((stage) => String(stage));
+  }
+  return datasetCollectionStages.value;
+});
+
+const datasetControlMode = computed(() => {
+  if (selectedVrInputMode.value === "hand" || vrModeState.value === "vr_hand_mode") {
+    return "vr_hand";
+  }
+  return "vr_controller";
+});
+
+const datasetRobotInputSource = computed(() => {
+  return datasetControlMode.value === "vr_hand" ? "quest3_hand" : "quest3_controller";
+});
+
+const datasetControlModeText = computed(() => {
+  return datasetControlMode.value === "vr_hand" ? "VR手势 / quest3_hand" : "VR手柄 / quest3_controller";
+});
+
+const datasetCanStartEpisode = computed(() => {
+  if (datasetEpisodeInFlight.value || datasetEpisodeActive.value) return false;
+  if (!isVrModeEntered.value) return false;
+  if (!selectedDatasetTaskType.value || !selectedDatasetTargetTool.value) return false;
+  if (!String(datasetInstructionText.value || "").trim()) return false;
+  if (selectedDatasetCollectionStage.value === "debug_trial") return true;
+  return datasetRecordingReady.value;
+});
+
+const datasetCanStopEpisode = computed(() => {
+  return datasetEpisodeActive.value && !datasetEpisodeInFlight.value;
+});
+
+const datasetCanUpdateResult = computed(() => {
+  return Boolean(datasetLastEpisodeId.value) && !datasetEpisodeInFlight.value;
 });
 
 // 兼容旧 UI 关节名(link*_joint)与当前 URDF 关节名
@@ -875,7 +1186,7 @@ function updateNetworkPrereq() {
     backendHealthStatus.value === "ok" &&
     wsCheckStatus.value === "ok" &&
     d405CheckStatus.value === "ok" &&
-    recordingCheckStatus.value === "ok";
+    datasetRecordingReady.value;
   networkPrereqOk.value = lanOk && checksOk;
 }
 
@@ -937,6 +1248,8 @@ function updateHandTrackingFromBackend(state) {
   }
   const backendInputMode = String(state?.normalized_input?.hand_input_mode || "").trim();
   if (
+    backendInputMode === "right_hand_ee_ik" ||
+    backendInputMode === "right_hand" ||
     backendInputMode === "left_hand_ee_ik" ||
     backendInputMode === "left_hand" ||
     backendInputMode === "dual_hand" ||
@@ -984,6 +1297,253 @@ function checkRecordingBindingReady(state) {
 
   recordingCheckStatus.value = "error";
   recordingCheckMessage.value = "录制配置未绑定(缺少标定版本或录制标记)";
+}
+
+function getDatasetRecordingReady() {
+  return Boolean(datasetRecordingReady.value);
+}
+
+function formatDatasetStage(stage) {
+  const mapping = {
+    debug_trial: "debug_trial",
+    pilot: "pilot",
+    train_candidate: "train_candidate",
+    eval_candidate: "eval_candidate",
+    rejected: "rejected",
+  };
+  return mapping[stage] || String(stage || "");
+}
+
+function inferToolClassFromId(toolId) {
+  const id = String(toolId || "");
+  if (id.startsWith("wrench")) return "wrench";
+  if (id.startsWith("screwdriver")) return "screwdriver";
+  if (id.startsWith("pliers")) return "pliers";
+  return "tool";
+}
+
+function buildDefaultDatasetInstruction() {
+  const template = selectedDatasetTemplate.value;
+  const tool = selectedDatasetTool.value;
+  const classId = String(tool?.class_id || inferToolClassFromId(selectedDatasetTargetTool.value));
+  const byClass = template?.default_instruction_by_class;
+  if (byClass && typeof byClass === "object") {
+    const candidate = String(byClass[classId] || "").trim();
+    if (candidate) return candidate;
+  }
+  if (selectedDatasetTaskType.value === "tool_grasp") {
+    return `pick up the ${classId}`;
+  }
+  if (selectedDatasetTaskType.value === "tool_pick_place") {
+    return `place the ${classId} in the toolbox`;
+  }
+  if (selectedDatasetTaskType.value === "tool_reposition") {
+    return `move the ${classId} to the target zone`;
+  }
+  return `debug trial with the ${classId}`;
+}
+
+function syncDatasetInstructionFromTemplate(force = false) {
+  if (!force && datasetInstructionEdited.value) return;
+  datasetInstructionText.value = buildDefaultDatasetInstruction();
+  datasetInstructionEdited.value = false;
+}
+
+function applyDatasetTemplatesPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (Array.isArray(payload.task_templates) && payload.task_templates.length > 0) {
+    datasetTemplates.value = payload.task_templates;
+  }
+  if (Array.isArray(payload.target_tools) && payload.target_tools.length > 0) {
+    datasetTargetTools.value = payload.target_tools;
+    if (!datasetTargetTools.value.some((tool) => tool.id === selectedDatasetTargetTool.value)) {
+      selectedDatasetTargetTool.value = String(datasetTargetTools.value[0]?.id || "wrench_01");
+    }
+  }
+  if (Array.isArray(payload.target_zones) && payload.target_zones.length > 0) {
+    datasetTargetZones.value = payload.target_zones;
+    if (!datasetTargetZones.value.some((zone) => zone.id === selectedDatasetTargetZone.value)) {
+      selectedDatasetTargetZone.value = String(datasetTargetZones.value[0]?.id || "desk_drop_zone");
+    }
+  }
+  if (Array.isArray(payload.collection_stages) && payload.collection_stages.length > 0) {
+    datasetCollectionStages.value = payload.collection_stages.map((stage) => String(stage));
+  }
+  const activeEpisode = String(payload.active_episode_id || "").trim();
+  if (activeEpisode) {
+    datasetActiveEpisodeId.value = activeEpisode;
+  }
+  if (!datasetTemplates.value.some((template) => template.task_type === selectedDatasetTaskType.value)) {
+    selectedDatasetTaskType.value = String(datasetTemplates.value[0]?.task_type || "debug_trial");
+  }
+  syncDatasetInstructionFromTemplate(false);
+}
+
+function applyDatasetPrecheckPayload(payload) {
+  datasetPrecheck.value = payload || null;
+  datasetRecordingReady.value = Boolean(payload?.recording_ready);
+  const activeEpisode = String(payload?.active_episode_id || "").trim();
+  datasetActiveEpisodeId.value = activeEpisode;
+  const summary = Array.isArray(payload?.summary) ? payload.summary : [];
+  if (summary.length > 0) {
+    datasetLastError.value = summary[0];
+  } else {
+    datasetLastError.value = "";
+  }
+  if (datasetRecordingReady.value) {
+    recordingCheckStatus.value = "ok";
+    recordingCheckMessage.value = "precheck 已通过";
+  } else if (payload) {
+    recordingCheckStatus.value = "error";
+    recordingCheckMessage.value = summary[0] || "precheck 未通过";
+  }
+}
+
+async function loadDatasetTemplates() {
+  try {
+    const response = await get("/dataset/templates/", { timeout: 2000 });
+    applyDatasetTemplatesPayload(response?.data);
+  } catch (error) {
+    datasetLastError.value = "任务模板加载失败: " + (error?.message || error);
+  }
+}
+
+async function runDatasetPrecheck() {
+  datasetPrecheckInFlight.value = true;
+  datasetLastMessage.value = "正在执行采集 precheck...";
+  try {
+    const response = await get("/dataset/precheck/", { timeout: 6000 });
+    applyDatasetPrecheckPayload(response?.data);
+    const ready = Boolean(response?.data?.recording_ready);
+    datasetLastMessage.value = ready
+      ? "precheck 通过，可以开始正式录制。"
+      : "precheck 未通过，只允许 debug_trial。";
+    syncVrStateToBackend({
+      mode: vrModeState.value,
+      source: vrControlOwner.value,
+      selected_joint_group: vrSelectedJointGroup.value,
+      recording_ready: ready,
+      error_message: ready ? "" : datasetLastError.value,
+    }, { force: true });
+    return response?.data;
+  } catch (error) {
+    datasetLastError.value = "precheck 失败: " + (error?.message || error);
+    datasetLastMessage.value = datasetLastError.value;
+    datasetRecordingReady.value = false;
+    return null;
+  } finally {
+    datasetPrecheckInFlight.value = false;
+    updateNetworkPrereq();
+  }
+}
+
+function handleDatasetTemplateChanged() {
+  const allowed = datasetCollectionStageOptions.value;
+  if (!allowed.includes(selectedDatasetCollectionStage.value)) {
+    selectedDatasetCollectionStage.value = allowed[0] || "debug_trial";
+  }
+  syncDatasetInstructionFromTemplate(true);
+}
+
+function buildDatasetEpisodeStartPayload() {
+  return {
+    task_type: selectedDatasetTaskType.value,
+    target_tool_id: selectedDatasetTargetTool.value,
+    target_zone_id: selectedDatasetTargetZone.value,
+    instruction_text: String(datasetInstructionText.value || "").trim(),
+    collection_stage: selectedDatasetCollectionStage.value,
+    control_mode: datasetControlMode.value,
+    robot_input_source: datasetRobotInputSource.value,
+  };
+}
+
+async function startDatasetEpisode() {
+  if (!datasetCanStartEpisode.value) return;
+  datasetEpisodeInFlight.value = true;
+  datasetLastError.value = "";
+  datasetLastMessage.value = "正在开始 episode...";
+  try {
+    const response = await post("/dataset/episode/start/", buildDatasetEpisodeStartPayload(), {
+      timeout: 6000,
+    });
+    const data = response?.data || {};
+    if (data.status !== "success") {
+      datasetLastError.value = data.message || "episode 启动失败";
+      datasetLastMessage.value = datasetLastError.value;
+      applyDatasetPrecheckPayload(data.precheck);
+      return;
+    }
+    applyDatasetPrecheckPayload(data.precheck);
+    datasetActiveEpisodeId.value = String(data.episode_id || "");
+    datasetLastEpisodeId.value = datasetActiveEpisodeId.value;
+    datasetLastEpisodeDir.value = String(data.episode_dir || "");
+    datasetLastMessage.value = `episode 已开始: ${datasetActiveEpisodeId.value}`;
+  } catch (error) {
+    datasetLastError.value = "episode 启动失败: " + (error?.message || error);
+    datasetLastMessage.value = datasetLastError.value;
+  } finally {
+    datasetEpisodeInFlight.value = false;
+  }
+}
+
+async function stopDatasetEpisode() {
+  if (!datasetCanStopEpisode.value) return;
+  datasetEpisodeInFlight.value = true;
+  datasetLastError.value = "";
+  datasetLastMessage.value = "正在停止 episode...";
+  const episodeId = datasetActiveEpisodeId.value;
+  try {
+    const response = await post("/dataset/episode/stop/", {
+      episode_id: episodeId,
+      result_status: datasetResultStatus.value,
+      quality_label: datasetQualityLabel.value,
+      notes: "",
+    }, { timeout: 6000 });
+    const data = response?.data || {};
+    if (data.status !== "success") {
+      datasetLastError.value = data.message || "episode 停止失败";
+      datasetLastMessage.value = datasetLastError.value;
+      return;
+    }
+    datasetLastEpisodeId.value = episodeId;
+    datasetLastEpisodeDir.value = String(data.episode_dir || datasetLastEpisodeDir.value || "");
+    datasetActiveEpisodeId.value = "";
+    datasetLastMessage.value = `episode 已停止并标记: ${datasetResultStatus.value}`;
+    applyDatasetPrecheckPayload(data.precheck);
+    datasetActiveEpisodeId.value = "";
+  } catch (error) {
+    datasetLastError.value = "episode 停止失败: " + (error?.message || error);
+    datasetLastMessage.value = datasetLastError.value;
+  } finally {
+    datasetEpisodeInFlight.value = false;
+  }
+}
+
+async function updateDatasetEpisodeResult() {
+  const episodeId = datasetLastEpisodeId.value;
+  if (!episodeId) return;
+  datasetEpisodeInFlight.value = true;
+  datasetLastError.value = "";
+  try {
+    const response = await post("/dataset/episode/result/", {
+      episode_id: episodeId,
+      result_status: datasetResultStatus.value,
+      quality_label: datasetQualityLabel.value,
+      notes: "",
+    }, { timeout: 3000 });
+    const data = response?.data || {};
+    if (data.status !== "success") {
+      datasetLastError.value = data.message || "结果更新失败";
+      datasetLastMessage.value = datasetLastError.value;
+      return;
+    }
+    datasetLastMessage.value = `结果已更新: ${datasetResultStatus.value}`;
+  } catch (error) {
+    datasetLastError.value = "结果更新失败: " + (error?.message || error);
+    datasetLastMessage.value = datasetLastError.value;
+  } finally {
+    datasetEpisodeInFlight.value = false;
+  }
 }
 
 function getQuestSourceFromBackendState(state) {
@@ -1140,6 +1700,8 @@ async function runQuest3AccessChecks() {
     recordingCheckMessage.value = "录制配置检查失败";
   }
 
+  await runDatasetPrecheck();
+
   wsCheckStatus.value = latestWsOk ? "ok" : "error";
   wsCheckMessage.value = latestWsOk ? "WebSocket 已连接" : "WebSocket 未连接";
   updateNetworkPrereq();
@@ -1188,26 +1750,72 @@ function buildQuestControllerRay() {
   return line;
 }
 
+function normalizeXrHandedness(value) {
+  const handedness = String(value || "").toLowerCase();
+  if (handedness === "left" || handedness === "right") return handedness;
+  return "";
+}
+
+function resolveXrNodeKey(node, fallbackKey = "") {
+  return normalizeXrHandedness(node?.userData?.handedness) || normalizeXrHandedness(fallbackKey);
+}
+
+function assignQuestXrVisualNode(kind, key, node) {
+  if (!key || !node || !xrVisualNodes[kind]) return;
+  xrVisualNodes[kind][key] = node;
+}
+
+function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
+  if (!node || node.userData.questXrVisualEventsAttached) return;
+  node.userData.questXrVisualEventsAttached = true;
+  node.addEventListener("connected", (event) => {
+    const handedness = normalizeXrHandedness(event?.data?.handedness) || normalizeXrHandedness(fallbackKey);
+    if (!handedness) return;
+    node.userData.handedness = handedness;
+    node.userData.connected = true;
+    assignQuestXrVisualNode(kind, handedness, node);
+    updateQuestXrVisualVisibility();
+  });
+  node.addEventListener("disconnected", () => {
+    node.userData.connected = false;
+    node.visible = false;
+  });
+}
+
 function ensureQuestXrVisualNodes() {
   if (!renderer?.xr || !scene) return;
+  const sessionSources = Array.from(getQuestXRSession()?.inputSources || []);
   const slots = [
     { index: 0, key: "left" },
     { index: 1, key: "right" },
   ];
   slots.forEach(({ index, key }) => {
+    const sourceHandedness = normalizeXrHandedness(sessionSources[index]?.handedness);
     const controllerRay = renderer.xr.getController(index);
     if (controllerRay) {
+      registerQuestXrNodeEvents(controllerRay, "controllerRays", key);
+      if (sourceHandedness) {
+        controllerRay.userData.handedness = sourceHandedness;
+        controllerRay.userData.connected = true;
+      }
+      const nodeKey = resolveXrNodeKey(controllerRay, key);
       if (!controllerRay.getObjectByName("quest_controller_ray")) {
         controllerRay.add(buildQuestControllerRay());
       }
       if (!controllerRay.parent) {
         scene.add(controllerRay);
       }
-      xrVisualNodes.controllerRays[key] = controllerRay;
+      assignQuestXrVisualNode("controllerRays", nodeKey, controllerRay);
     }
 
     const controllerGrip = renderer.xr.getControllerGrip(index);
     if (controllerGrip) {
+      registerQuestXrNodeEvents(controllerGrip, "controllerGrips", key);
+      if (sourceHandedness) {
+        controllerGrip.userData.handedness = sourceHandedness;
+        controllerGrip.userData.connected = true;
+      }
+      const nodeKey = resolveXrNodeKey(controllerGrip, key);
       if (!controllerGrip.userData.questControllerModelAttached) {
         controllerGrip.add(xrControllerModelFactory.createControllerModel(controllerGrip));
         controllerGrip.userData.questControllerModelAttached = true;
@@ -1215,19 +1823,25 @@ function ensureQuestXrVisualNodes() {
       if (!controllerGrip.parent) {
         scene.add(controllerGrip);
       }
-      xrVisualNodes.controllerGrips[key] = controllerGrip;
+      assignQuestXrVisualNode("controllerGrips", nodeKey, controllerGrip);
     }
 
     const handNode = renderer.xr.getHand(index);
     if (handNode) {
+      registerQuestXrNodeEvents(handNode, "hands", key);
+      if (sourceHandedness) {
+        handNode.userData.handedness = sourceHandedness;
+        handNode.userData.connected = true;
+      }
+      const nodeKey = resolveXrNodeKey(handNode, key);
       if (!handNode.userData.questHandModelAttached) {
-        handNode.add(xrHandModelFactory.createHandModel(handNode, "mesh"));
+        handNode.add(xrHandModelFactory.createHandModel(handNode, "spheres"));
         handNode.userData.questHandModelAttached = true;
       }
       if (!handNode.parent) {
         scene.add(handNode);
       }
-      xrVisualNodes.hands[key] = handNode;
+      assignQuestXrVisualNode("hands", nodeKey, handNode);
     }
   });
 }
@@ -1235,20 +1849,22 @@ function ensureQuestXrVisualNodes() {
 function updateQuestXrVisualVisibility() {
   const xrPresenting = Boolean(renderer?.xr?.isPresenting);
   const showControllers = xrPresenting && vrModeState.value === "vr_controller_mode";
-  const showLeftHand = xrPresenting && vrModeState.value === "vr_hand_mode";
+  const showRightHand = xrPresenting && vrModeState.value === "vr_hand_mode";
   const applyVisible = (nodeMap, visible) => {
     Object.values(nodeMap).forEach((node) => {
       if (!node) return;
-      node.visible = visible;
+      node.visible = visible && node.userData.connected !== false;
     });
   };
   applyVisible(xrVisualNodes.controllerRays, showControllers);
   applyVisible(xrVisualNodes.controllerGrips, showControllers);
-  if (xrVisualNodes.hands.left) {
-    xrVisualNodes.hands.left.visible = showLeftHand;
-  }
-  if (xrVisualNodes.hands.right) {
-    xrVisualNodes.hands.right.visible = false;
+  applyVisible(xrVisualNodes.hands, false);
+  const rightHandNode =
+    xrVisualNodes.hands.right ||
+    Object.values(xrVisualNodes.hands).find((node) => node && node.userData.connected !== false) ||
+    null;
+  if (rightHandNode) {
+    rightHandNode.visible = showRightHand;
   }
 }
 
@@ -1368,7 +1984,7 @@ async function chooseVrInputMode(mode) {
       source: "quest3_controller",
       selected_joint_group: vrSelectedJointGroup.value,
       controller_available: true,
-      recording_ready: recordingCheckStatus.value === "ok",
+      recording_ready: getDatasetRecordingReady(),
       last_quest_input_ts: Date.now() / 1000,
       error_message: "",
     }, { force: true });
@@ -1386,7 +2002,7 @@ async function chooseVrInputMode(mode) {
     source: "quest3_hand",
     selected_joint_group: vrSelectedJointGroup.value,
     hand_tracking_available: true,
-    recording_ready: recordingCheckStatus.value === "ok",
+    recording_ready: getDatasetRecordingReady(),
     last_quest_input_ts: Date.now() / 1000,
     error_message: "",
   }, { force: true });
@@ -1446,7 +2062,7 @@ async function enterVrMode() {
       mode: "vr_ready",
       source: "desktop_manual",
       selected_joint_group: vrSelectedJointGroup.value,
-      recording_ready: recordingCheckStatus.value === "ok",
+      recording_ready: getDatasetRecordingReady(),
       error_message: "",
     });
 
@@ -1478,7 +2094,7 @@ function exitVrMode() {
     mode: "vr_disabled",
     source: "desktop_manual",
     selected_joint_group: vrSelectedJointGroup.value,
-    recording_ready: recordingCheckStatus.value === "ok",
+    recording_ready: getDatasetRecordingReady(),
     error_message: "",
   });
   detachQuestXrSessionListeners();
@@ -1516,7 +2132,7 @@ function handleQuestDisconnected() {
     mode: "vr_ready",
     source: "desktop_manual",
     selected_joint_group: vrSelectedJointGroup.value,
-    recording_ready: recordingCheckStatus.value === "ok",
+    recording_ready: getDatasetRecordingReady(),
     error_message: vrErrorMessage.value,
   });
 }
@@ -1577,13 +2193,13 @@ function isQuestHandModeActive() {
 
 function rebuildQuestControllerTeleop() {
   questControllerTeleop = createQuestControllerTeleop({
-    sensitivity: clamp(questControllerSensitivity.value, 0.4, 1.8),
+    sensitivity: clamp(questControllerSensitivity.value, 0.4, 3.0),
   });
 }
 
 function rebuildQuestHandTeleop() {
   questHandTeleop = createQuestHandTeleop({
-    sensitivity: clamp(questHandSensitivity.value, 0.4, 1.8),
+    sensitivity: clamp(questHandSensitivity.value, 0.4, 3.0),
   });
 }
 
@@ -1682,6 +2298,37 @@ function scheduleQuestHandQueuedFlush(delayMs = VR_COMMAND_MIN_INTERVAL_MS) {
   }, timeoutMs);
 }
 
+function readControllerSourcePose(xrFrame, referenceSpace, source) {
+  const pose =
+    (source?.gripSpace && xrFrame.getPose(source.gripSpace, referenceSpace)) ||
+    (source?.targetRaySpace && xrFrame.getPose(source.targetRaySpace, referenceSpace)) ||
+    null;
+  if (!pose?.transform?.position) return null;
+
+  const position = [
+    Number(pose.transform.position.x),
+    Number(pose.transform.position.y),
+    Number(pose.transform.position.z),
+  ];
+  if (position.some((value) => !Number.isFinite(value))) return null;
+
+  const orientation = pose.transform.orientation;
+  return {
+    tracked: true,
+    handedness: String(source?.handedness || ""),
+    position,
+    quaternion: orientation
+      ? [
+          Number(orientation.x),
+          Number(orientation.y),
+          Number(orientation.z),
+          Number(orientation.w),
+        ]
+      : null,
+    timestamp_ms: Date.now(),
+  };
+}
+
 function readQuestControllerPoseSnapshot(xrFrame = null) {
   const referenceSpace = getQuestXRReferenceSpace();
   if (!xrFrame || !referenceSpace) {
@@ -1701,40 +2348,20 @@ function readQuestControllerPoseSnapshot(xrFrame = null) {
     return null;
   }
 
-  const activeSource =
-    sources.find((source) => String(source?.handedness || "").toLowerCase() === "right") ||
-    sources.find((source) => String(source?.handedness || "").toLowerCase() === "left") ||
-    sources[0];
-  const pose =
-    (activeSource?.gripSpace && xrFrame.getPose(activeSource.gripSpace, referenceSpace)) ||
-    (activeSource?.targetRaySpace && xrFrame.getPose(activeSource.targetRaySpace, referenceSpace)) ||
-    null;
-  if (!pose?.transform?.position) {
-    return lastQuestControllerPoseSnapshot;
-  }
+  const leftSource = sources.find((source) => String(source?.handedness || "").toLowerCase() === "left") || null;
+  const rightSource = sources.find((source) => String(source?.handedness || "").toLowerCase() === "right") || null;
+  const left = leftSource ? readControllerSourcePose(xrFrame, referenceSpace, leftSource) : null;
+  const right = rightSource ? readControllerSourcePose(xrFrame, referenceSpace, rightSource) : null;
+  const fallbackSource = sources.find((source) => source !== leftSource && source !== rightSource) || sources[0];
+  const fallback = fallbackSource ? readControllerSourcePose(xrFrame, referenceSpace, fallbackSource) : null;
+  const active = right || left || fallback;
+  if (!active) return lastQuestControllerPoseSnapshot;
 
-  const position = [
-    Number(pose.transform.position.x),
-    Number(pose.transform.position.y),
-    Number(pose.transform.position.z),
-  ];
-  if (position.some((value) => !Number.isFinite(value))) {
-    return lastQuestControllerPoseSnapshot;
-  }
-
-  const orientation = pose.transform.orientation;
   lastQuestControllerPoseSnapshot = {
-    tracked: true,
-    handedness: String(activeSource?.handedness || ""),
-    position,
-    quaternion: orientation
-      ? [
-          Number(orientation.x),
-          Number(orientation.y),
-          Number(orientation.z),
-          Number(orientation.w),
-        ]
-      : null,
+    ...active,
+    left,
+    right,
+    active,
     timestamp_ms: Date.now(),
   };
   return lastQuestControllerPoseSnapshot;
@@ -1742,8 +2369,9 @@ function readQuestControllerPoseSnapshot(xrFrame = null) {
 
 function buildQuestControlPayload(mapped) {
   questControllerControlSeq.value += 1;
+  const fallbackArm = getAuthoritativeArmRadians();
   return {
-    target_positions: mapped.target_positions || null,
+    target_positions: mapped.target_positions || fallbackArm,
     target_ee_pose: mapped.target_ee_pose || null,
     n_steps: VR_COMMAND_STEPS,
     control_mode: mapped.control_mode || (mapped.target_ee_pose ? "ik_pose" : "position"),
@@ -1755,6 +2383,7 @@ function buildQuestControlPayload(mapped) {
     raw_input: mapped.raw_input || null,
     normalized_input: {
       ...(mapped.normalized_input || {}),
+      ik_pose_command: mapped.target_ee_pose ? 1 : 0,
       control_seq: Number(questControllerControlSeq.value),
     },
   };
@@ -1762,8 +2391,9 @@ function buildQuestControlPayload(mapped) {
 
 function buildQuestHandControlPayload(mapped) {
   questHandControlSeq.value += 1;
+  const fallbackArm = getAuthoritativeArmRadians();
   return {
-    target_positions: mapped.target_positions || null,
+    target_positions: mapped.target_positions || fallbackArm,
     target_ee_pose: mapped.target_ee_pose || null,
     n_steps: VR_COMMAND_STEPS,
     control_mode: mapped.control_mode || (mapped.target_ee_pose ? "ik_pose" : "position"),
@@ -1777,12 +2407,18 @@ function buildQuestHandControlPayload(mapped) {
       ...(mapped.normalized_input || {}),
       tracking_stability: mapped.tracking_stability,
       hand_input_mode: mapped.hand_input_mode,
+      ik_pose_command: mapped.target_ee_pose ? 1 : 0,
       control_seq: Number(questHandControlSeq.value),
     },
   };
 }
 
 function stageQuestRenderTarget(payload) {
+  if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
+    clearQuestRenderPreview();
+    return;
+  }
+
   const arm = Array.isArray(payload?.target_positions)
     ? payload.target_positions.slice(0, ARM_JOINT_COUNT).map((value) => Number(value))
     : null;
@@ -1806,7 +2442,7 @@ function stageQuestRenderTarget(payload) {
 function applyQuestCommandLocally(payload = {}) {
   if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
     clearPendingManualTarget();
-    clearQuestRenderPreview();
+    stageQuestRenderTarget(payload);
     return;
   }
 
@@ -1892,7 +2528,7 @@ function applyQuestSafetyHoldState() {
     source: "quest3_hand",
     hand_tracking_available: false,
     selected_joint_group: vrSelectedJointGroup.value,
-    recording_ready: recordingCheckStatus.value === "ok",
+    recording_ready: getDatasetRecordingReady(),
     last_quest_input_ts: Date.now() / 1000,
     error_message: "手势追踪不稳定，已进入安全保持状态",
   });
@@ -1986,6 +2622,12 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
       stick_x: 0,
       stick_y: 0,
       trigger: 0,
+      grip: 0,
+      left_trigger: 0,
+      left_grip: 0,
+      right_trigger: 0,
+      right_grip: 0,
+      active_hand: "",
     },
     raw: null,
   };
@@ -2014,7 +2656,7 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
     source: "quest3_controller",
     controller_available: true,
     selected_joint_group: vrSelectedJointGroup.value,
-    recording_ready: recordingCheckStatus.value === "ok",
+    recording_ready: getDatasetRecordingReady(),
     last_quest_input_ts: nowMs / 1000,
     raw_input: mapped?.raw_input || snapshot?.raw || null,
     normalized_input: {
@@ -2033,7 +2675,10 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
   }
   if (mapped?.reason === "controller_pose_unavailable") {
     questControllerStatusText.value = "等待手柄位姿";
-    return;
+    if (!mapped?.has_command) return;
+  }
+  if (mapped?.reason === "idle" && !mapped?.has_command) {
+    questControllerStatusText.value = "按住握柄移动，扳机抓取";
   }
 
   if (mapped?.has_command) {
@@ -2084,7 +2729,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
       source: "quest3_hand",
       hand_tracking_available: false,
       selected_joint_group: vrSelectedJointGroup.value,
-      recording_ready: recordingCheckStatus.value === "ok",
+      recording_ready: getDatasetRecordingReady(),
       last_quest_input_ts: nowMs / 1000,
       raw_input: snapshot?.raw || null,
       normalized_input: {
@@ -2117,7 +2762,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   );
 
   questHandTrackingStable.value = Boolean(mapped?.tracking_stable);
-  questHandInputMode.value = mapped?.hand_input_mode || "left_hand_ee_ik";
+  questHandInputMode.value = mapped?.hand_input_mode || "right_hand_ee_ik";
   questHandStatusText.value = buildHandTrackingStatusText();
 
   if (!mapped?.tracking_stable) {
@@ -2126,7 +2771,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
       source: "quest3_hand",
       hand_tracking_available: true,
       selected_joint_group: vrSelectedJointGroup.value,
-      recording_ready: recordingCheckStatus.value === "ok",
+      recording_ready: getDatasetRecordingReady(),
       last_quest_input_ts: nowMs / 1000,
       raw_input: mapped?.raw_input || snapshot?.raw || null,
       normalized_input: {
@@ -2165,7 +2810,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
     source: "quest3_hand",
     hand_tracking_available: true,
     selected_joint_group: vrSelectedJointGroup.value,
-    recording_ready: recordingCheckStatus.value === "ok",
+    recording_ready: getDatasetRecordingReady(),
     last_quest_input_ts: nowMs / 1000,
     raw_input: mapped?.raw_input || snapshot?.raw || null,
     normalized_input: {
@@ -2265,7 +2910,7 @@ function stopQuestHandLoop() {
   questHandStatusText.value = "未激活";
   questHandTrackingStable.value = false;
   questHandTrackingStability.value = 0;
-  questHandInputMode.value = "left_hand_ee_ik";
+  questHandInputMode.value = "right_hand_ee_ik";
   questHandRawInput.value = null;
   questHandPendingMapped.value = null;
   lastQuestHandSentAt.value = 0;
@@ -2282,13 +2927,17 @@ function stopQuestHandLoop() {
 function buildHandTrackingStatusText() {
   if (!questHandAvailable.value) return "未检测到稳定手势";
   if (!questHandTrackingStable.value) return "追踪不稳定(已保持)";
-  const modeText = questHandInputMode.value === "left_hand_ee_ik"
-    ? "左手末端IK"
-    : questHandInputMode.value === "left_hand"
-      ? "左手单手"
-      : questHandInputMode.value === "dual_hand"
-        ? "双手"
-        : "单手";
+  const modeText = questHandInputMode.value === "right_hand_ee_ik"
+    ? "右手末端IK"
+    : questHandInputMode.value === "right_hand"
+      ? "右手单手"
+      : questHandInputMode.value === "left_hand_ee_ik"
+        ? "左手末端IK"
+        : questHandInputMode.value === "left_hand"
+          ? "左手单手"
+          : questHandInputMode.value === "dual_hand"
+            ? "双手"
+            : "单手";
   return `采样中(${modeText})`;
 }
 
@@ -4851,6 +5500,7 @@ onMounted(() => {
     }
   }, 2000);
 
+  loadDatasetTemplates();
   runQuest3AccessChecks();
 });
 
@@ -5262,6 +5912,145 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   font-size: 12px;
   color: #ffc4c4;
+}
+
+.dataset-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.dataset-pill {
+  border: 1px solid rgba(116, 148, 175, 0.45);
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: rgba(32, 55, 76, 0.68);
+  font-size: 11px;
+}
+
+.dataset-precheck-button {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.dataset-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.dataset-form-grid.compact {
+  margin-top: 8px;
+}
+
+.dataset-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dataset-field.full-width {
+  margin-top: 8px;
+}
+
+.dataset-label {
+  font-size: 11px;
+  color: #9bc3e2;
+}
+
+.dataset-select,
+.dataset-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(116, 148, 175, 0.5);
+  border-radius: 7px;
+  background: rgba(13, 22, 31, 0.9);
+  color: #eff6fc;
+  font-size: 12px;
+}
+
+.dataset-select {
+  height: 32px;
+  padding: 0 7px;
+}
+
+.dataset-textarea {
+  min-height: 52px;
+  padding: 7px;
+  resize: vertical;
+}
+
+.dataset-select:disabled,
+.dataset-textarea:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.dataset-action-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.dataset-button {
+  border: 1px solid rgba(116, 148, 175, 0.5);
+  border-radius: 8px;
+  padding: 8px 6px;
+  background: rgba(32, 55, 76, 0.92);
+  color: #eff6fc;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.dataset-button.primary {
+  border-color: rgba(90, 190, 130, 0.55);
+  background: rgba(30, 92, 60, 0.9);
+}
+
+.dataset-button.danger {
+  border-color: rgba(196, 95, 95, 0.65);
+  background: rgba(88, 36, 36, 0.9);
+}
+
+.dataset-button:hover {
+  background: rgba(44, 71, 95, 0.94);
+}
+
+.dataset-button.primary:hover {
+  background: rgba(43, 118, 79, 0.94);
+}
+
+.dataset-button.danger:hover {
+  background: rgba(112, 44, 44, 0.94);
+}
+
+.dataset-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dataset-episode-id,
+.dataset-message,
+.dataset-warning {
+  margin-top: 8px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.dataset-episode-id {
+  color: #b4d7f1;
+}
+
+.dataset-message {
+  color: #d7ebff;
+}
+
+.dataset-warning {
+  color: #f6d07a;
 }
 
 .status-ok {

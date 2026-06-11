@@ -14,8 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from backend.dataset import DatasetCollectionService
 from backend.schemas import (
     CommandResult,
+    DatasetEpisodeResultRequest,
+    DatasetEpisodeStartRequest,
+    DatasetEpisodeStopRequest,
     ErrorResponse,
     HealthResponse,
     ResetRequest,
@@ -38,6 +42,7 @@ INTERACTIVE_PASSIVE_ADVANCE_MAX_S = float(
 )
 
 simulation = SimulationCore(manifest_path=SCENE_MANIFEST_PATH)
+dataset_service = DatasetCollectionService()
 
 
 class ConnectionManager:
@@ -247,6 +252,76 @@ async def post_sim_vr_state(request: VRStateUpdateRequest) -> CommandResult:
         return CommandResult(status="error", message=f"vr state update failed: {exc}")
 
     return CommandResult(status="success", message="vr state updated", state=state)
+
+
+@app.get("/dataset/templates/")
+async def get_dataset_templates() -> dict[str, Any]:
+    return dataset_service.get_templates()
+
+
+@app.get("/dataset/precheck/")
+async def get_dataset_precheck() -> dict[str, Any]:
+    precheck = await dataset_service.precheck(
+        simulation=simulation,
+        ws_active_count=manager.active_count,
+    )
+    try:
+        await simulation.update_vr_state(
+            VRStateUpdateRequest(
+                recording_ready=bool(precheck.get("recording_ready", False)),
+                error_message="" if precheck.get("recording_ready", False) else "; ".join(precheck.get("summary", [])),
+            )
+        )
+    except Exception:
+        pass
+    return precheck
+
+
+@app.post("/dataset/episode/start/")
+async def post_dataset_episode_start(request: DatasetEpisodeStartRequest) -> dict[str, Any]:
+    result = await dataset_service.start_episode(
+        request=request,
+        simulation=simulation,
+        ws_active_count=manager.active_count,
+    )
+    precheck = result.get("precheck") if isinstance(result.get("precheck"), dict) else {}
+    recording_ready = bool(precheck.get("recording_ready", False))
+    try:
+        await simulation.update_vr_state(
+            VRStateUpdateRequest(
+                recording_ready=recording_ready,
+                error_message="" if result.get("status") == "success" else str(result.get("message", "")),
+            )
+        )
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/dataset/episode/stop/")
+async def post_dataset_episode_stop(request: DatasetEpisodeStopRequest) -> dict[str, Any]:
+    result = await dataset_service.stop_episode(
+        request=request,
+        simulation=simulation,
+        ws_active_count=manager.active_count,
+    )
+    if result.get("status") == "success":
+        precheck = result.get("precheck") if isinstance(result.get("precheck"), dict) else {}
+        try:
+            await simulation.update_vr_state(
+                VRStateUpdateRequest(
+                    recording_ready=bool(precheck.get("recording_ready", False)),
+                    error_message="",
+                )
+            )
+        except Exception:
+            pass
+    return result
+
+
+@app.post("/dataset/episode/result/")
+async def post_dataset_episode_result(request: DatasetEpisodeResultRequest) -> dict[str, Any]:
+    return await dataset_service.update_result(request)
 
 
 @app.get("/data/")

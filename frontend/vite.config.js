@@ -172,6 +172,7 @@ export default defineConfig({
       '/health/': createBackendProxyOptions(),
       '/sim': createBackendProxyOptions(true),
       '/data/': createBackendProxyOptions(),
+      '/dataset': createBackendProxyOptions(),
     },
   },
 });
