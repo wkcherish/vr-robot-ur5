@@ -76,7 +76,7 @@ GRIPPER_BODY_NAMES = {
 
 DEFAULT_HOME_QPOS = [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0]
 DEFAULT_DT = 0.02
-GRIPPER_DRIVER_LIMIT = 0.87
+GRIPPER_DRIVER_LIMIT = 0.9
 ARM_COMMAND_BLEND_PER_STEP = 0.12
 GRIPPER_COMMAND_BLEND_PER_STEP = 0.16
 TOOL_SITE_CANDIDATES = ["tool0"]
@@ -121,10 +121,10 @@ DEFAULT_CAMERA_ALIGNMENT_MAX_DELTA_MS = 5.0
 DEFAULT_CAMERA_DEBUG_OBJECTS = ["camera_base", "camera"]
 REALTIME_SOURCE_MIN_PHYSICS_HORIZON_S = 0.02
 REALTIME_COMMAND_BLEND_PER_STEP = 0.92
-REALTIME_ARM_MAX_DELTA_RAD = 0.16
-REALTIME_GRIPPER_MAX_DELTA_OPENING = 0.14
+REALTIME_ARM_MAX_DELTA_RAD = 0.28
+REALTIME_GRIPPER_MAX_DELTA_OPENING = 0.38
 PASSIVE_ADVANCE_MAX_STEPS = 80
-INTERACTIVE_SOURCE_MAX_BLOCKING_STEPS = 4
+INTERACTIVE_SOURCE_MAX_BLOCKING_STEPS = 5
 SLIDER_COMMIT_MAX_BLOCKING_STEPS = 24
 STREAMING_CONTROL_HOLD_TIMEOUT_S = 0.18
 FRONTEND_SLIDER_OVERWRITE_GUARD_S = 2.0
@@ -134,18 +134,18 @@ SERVO_BRAKE_ARM_ERROR_RAD = 0.022
 SERVO_BRAKE_GRIPPER_ERROR_OPENING = 0.022
 SERVO_BRAKE_ARM_QVEL_RAD_S = 0.12
 SERVO_BRAKE_GRIPPER_QVEL_OPENING_S = 0.06
-SERVO_CTRL_ARM_MAX_SPEED_RAD_S = 2.8
-SERVO_CTRL_GRIPPER_MAX_SPEED_OPENING_S = 2.2
-SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2 = 80.0
-SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2 = 35.0
-REALTIME_EE_MAX_DELTA_M = 0.09
-IK_MAX_ITERATIONS = 10
+SERVO_CTRL_ARM_MAX_SPEED_RAD_S = 4.2
+SERVO_CTRL_GRIPPER_MAX_SPEED_OPENING_S = 6.0
+SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2 = 120.0
+SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2 = 120.0
+REALTIME_EE_MAX_DELTA_M = 0.24
+IK_MAX_ITERATIONS = 24
 IK_POSITION_TOLERANCE_M = 0.003
-IK_ORIENTATION_TOLERANCE_RAD = 0.055
+IK_ORIENTATION_TOLERANCE_RAD = 0.035
 IK_DAMPING = 0.08
-IK_MAX_STEP_RAD = 0.16
+IK_MAX_STEP_RAD = 0.34
 IK_POSITION_WEIGHT = 1.0
-IK_ORIENTATION_WEIGHT = 0.22
+IK_ORIENTATION_WEIGHT = 0.42
 GRIPPER_GRASP_ENGAGE_OPENING = 0.52
 GRIPPER_GRASP_RELEASE_OPENING = 0.18
 GRIPPER_GRASP_CONTACT_MARGIN_M = 0.015
@@ -2343,7 +2343,7 @@ class SimulationCore:
             not self._using_mujoco_model()
             or self._mj_model is None
             or self._mj_data is None
-            or self._tool_body_id is None
+            or (self._tool_site_id is None and self._tool_body_id is None)
             or _mujoco is None
             or np is None
         ):
@@ -2366,6 +2366,19 @@ class SimulationCore:
             target_quat = _normalize_quaternion(target_quaternion)
             qpos_indices = [int(addr) for addr in arm_qpos_addrs if addr is not None]
             dof_indices = [int(addr) for addr in arm_dof_addrs if addr is not None]
+            tool_site_id = self._tool_site_id
+            tool_body_id = self._tool_body_id
+
+            def read_tool_pose() -> tuple[Any, list[float]]:
+                if tool_site_id is not None:
+                    return (
+                        np.asarray(self._mj_data.site_xpos[tool_site_id], dtype=float),
+                        _matrix_to_quaternion_wxyz(self._mj_data.site_xmat[tool_site_id]),
+                    )
+                return (
+                    np.asarray(self._mj_data.xpos[tool_body_id], dtype=float),
+                    [float(v) for v in self._mj_data.xquat[tool_body_id]],
+                )
 
             for idx, qpos_addr in enumerate(qpos_indices):
                 self._mj_data.qpos[qpos_addr] = float(q[idx])
@@ -2375,8 +2388,7 @@ class SimulationCore:
             final_position_error = float("inf")
             final_orientation_error = float("inf")
             for _ in range(IK_MAX_ITERATIONS):
-                current_pos = np.asarray(self._mj_data.xpos[self._tool_body_id], dtype=float)
-                current_quat = [float(v) for v in self._mj_data.xquat[self._tool_body_id]]
+                current_pos, current_quat = read_tool_pose()
                 position_error = target_pos - current_pos
                 orientation_error = np.asarray(
                     _quaternion_error_vector(target_quat, current_quat),
@@ -2392,7 +2404,10 @@ class SimulationCore:
 
                 jacp = np.zeros((3, self._mj_model.nv), dtype=float)
                 jacr = np.zeros((3, self._mj_model.nv), dtype=float)
-                _mujoco.mj_jacBody(self._mj_model, self._mj_data, jacp, jacr, int(self._tool_body_id))
+                if tool_site_id is not None:
+                    _mujoco.mj_jacSite(self._mj_model, self._mj_data, jacp, jacr, int(tool_site_id))
+                else:
+                    _mujoco.mj_jacBody(self._mj_model, self._mj_data, jacp, jacr, int(tool_body_id))
                 task_error = np.concatenate(
                     [
                         position_error * IK_POSITION_WEIGHT,
@@ -2422,8 +2437,7 @@ class SimulationCore:
                 self._mj_data.qvel[:] = 0.0
                 _mujoco.mj_forward(self._mj_model, self._mj_data)
 
-            current_pos = np.asarray(self._mj_data.xpos[self._tool_body_id], dtype=float)
-            current_quat = [float(v) for v in self._mj_data.xquat[self._tool_body_id]]
+            current_pos, current_quat = read_tool_pose()
             final_position_error = float(np.linalg.norm(target_pos - current_pos))
             final_orientation_error = float(
                 np.linalg.norm(np.asarray(_quaternion_error_vector(target_quat, current_quat), dtype=float))
@@ -2453,6 +2467,13 @@ class SimulationCore:
         if ee_target is None:
             return target_positions
 
+        if isinstance(self._last_normalized_input, dict):
+            self._last_normalized_input.update(
+                {
+                    "ik_target_position": [float(v) for v in ee_target[0][:3]],
+                    "ik_target_quaternion": [float(v) for v in ee_target[1][:4]],
+                }
+            )
         solved_target, ik_info = self._solve_ee_ik_locked(ee_target[0], ee_target[1])
         if isinstance(self._last_normalized_input, dict):
             self._last_normalized_input.update(
