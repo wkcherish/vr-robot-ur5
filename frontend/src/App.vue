@@ -746,8 +746,9 @@ const fetchedValue = ref(null); // 新增用于存储从后端获取的数值
 const jointAngles = ref([]); // 新增用于存储关节角度的变量
 const setAnglesResponse = ref([]); // 用于存储设置的角度值的响应
 const gripperAngleDeg = ref(0);
+const STRICT_MUJOCO_RENDER_AUTHORITY = true;
 const sliderJointValues = computed(() => {
-  const draft = getFreshRealtimeSliderDraft();
+  const draft = STRICT_MUJOCO_RENDER_AUTHORITY ? null : getFreshRealtimeSliderDraft();
   if (draft && Array.isArray(draft.arm) && draft.arm.length >= ARM_JOINT_COUNT) {
     const armAngles = draft.arm
       .slice(0, ARM_JOINT_COUNT)
@@ -778,7 +779,7 @@ const lastRealtimeSliderSendAt = ref(0);
 const pendingManualTarget = ref(null);
 const realtimeSliderDraft = ref(null);
 const realtimeSliderFallbackInFlight = ref(false);
-const backendPoseSmoothingEnabled = ref(true);
+const backendPoseSmoothingEnabled = ref(!STRICT_MUJOCO_RENDER_AUTHORITY);
 const backendPoseSmoothingAlpha = ref(0.18);
 const backendRenderTarget = ref(null);
 const questRenderPreviewTarget = ref(null);
@@ -831,7 +832,7 @@ const networkLatency = ref(0); // 网络延迟
 const stateSyncErrors = ref(0); // 状态同步错误计数
 const lastStateUpdate = ref(0); // 最后状态更新时间
 const lastAcceptedBackendStateTimestampMs = ref(0);
-const stateInterpolationEnabled = ref(true); // 启用状态插值
+const stateInterpolationEnabled = ref(!STRICT_MUJOCO_RENDER_AUTHORITY); // 启用状态插值
 const targetUpdateRate = ref(50); // 目标更新率 (Hz)
 const actualUpdateRate = ref(0); // 实际更新率
 const stateBufferSize = ref(10); // 状态缓冲区大小
@@ -2808,6 +2809,11 @@ function buildQuestHandControlPayload(mapped) {
 }
 
 function stageQuestRenderTarget(payload) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    clearQuestRenderPreview();
+    return;
+  }
+
   if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
     clearQuestRenderPreview();
     return;
@@ -2834,6 +2840,12 @@ function stageQuestRenderTarget(payload) {
 }
 
 function applyQuestCommandLocally(payload = {}) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    clearPendingManualTarget();
+    clearQuestRenderPreview();
+    return;
+  }
+
   if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
     clearPendingManualTarget();
     stageQuestRenderTarget(payload);
@@ -3387,7 +3399,7 @@ function rememberPendingManualTarget(armRadians, gripperOpening, options = {}) {
     gripper: opening * GRIPPER_MAX_RAD,
   };
 
-  if (options.updateRenderTarget === true) {
+  if (!STRICT_MUJOCO_RENDER_AUTHORITY && options.updateRenderTarget === true) {
     backendRenderTarget.value = {
       timestamp: pendingManualTarget.value.sentAt,
       arm: [...pendingManualTarget.value.arm],
@@ -3409,6 +3421,11 @@ function clearQuestRenderPreview() {
 }
 
 function getFreshQuestRenderPreview() {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    clearQuestRenderPreview();
+    return null;
+  }
+
   const preview = questRenderPreviewTarget.value;
   if (!preview || typeof preview !== "object") return null;
   if (Date.now() - Number(preview.timestamp || 0) > QUEST_RENDER_PREVIEW_TTL_MS) {
@@ -3586,6 +3603,13 @@ function isQuestBackendStateStaleForPreview(state) {
 }
 
 function applyQuestBackendStateToScene(state, options = {}) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    clearPendingManualTarget();
+    clearQuestRenderPreview();
+    applyBackendStateToScene(state, options);
+    return;
+  }
+
   if (isQuestBackendStateStaleForPreview(state)) {
     applySceneObjectsFromBackendState(state);
     return;
@@ -3691,6 +3715,8 @@ function isBackendTargetAlignedWithRealtimeSliderDraft(state) {
 }
 
 function shouldKeepRealtimeSliderPreview(state) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) return false;
+
   const draft = getFreshRealtimeSliderDraft();
   if (!draft) return false;
   if (isSliderDrivenState(state)) {
@@ -3743,6 +3769,11 @@ function isBackendTargetAlignedWithPendingTarget(state) {
 }
 
 function shouldApplyIncomingBackendState(state, nowMs = Date.now()) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    clearPendingManualTarget();
+    return true;
+  }
+
   if (isQuestControlBackendState(state)) {
     clearPendingManualTarget();
     clearRealtimeSliderDraft();
@@ -3998,6 +4029,11 @@ function getLatestBackendArmRadians() {
 }
 
 function getAuthoritativeArmRadians() {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    const backendArm = getLatestBackendArmRadians();
+    return backendArm || getCurrentSceneArmRadians();
+  }
+
   const pending = pendingManualTarget.value;
   if (Array.isArray(pending?.arm) && pending.arm.length >= ARM_JOINT_COUNT) {
     return pending.arm.slice(0, ARM_JOINT_COUNT);
@@ -4111,6 +4147,14 @@ function predictBackendScalar(current, velocity, target, leadSec, maxVelocityAbs
 }
 
 function getAuthoritativeGripperOpening() {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    const backendGripper = getLatestBackendGripperRadians();
+    if (backendGripper !== null) {
+      return toGripperOpening(backendGripper);
+    }
+    return toGripperOpening(getCurrentGripperRadians());
+  }
+
   const pending = pendingManualTarget.value;
   if (Number.isFinite(Number(pending?.gripper))) {
     return toGripperOpening(Number(pending.gripper));
@@ -4127,6 +4171,8 @@ function getAuthoritativeGripperOpening() {
 }
 
 function shouldPredictBackendMotion(state) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) return false;
+
   const source = String(state?.source || "").trim();
   if (!source) return true;
   if (state?.collision_blocked) return false;
@@ -4137,6 +4183,18 @@ function shouldPredictBackendMotion(state) {
 function buildBackendRenderTarget(state, nowMs = Date.now()) {
   const armRadians = getBackendArmRadiansFromState(state);
   if (!armRadians) return null;
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    const gripperRadians = getGripperRadiansFromBackendState(state);
+    return {
+      timestamp: nowMs,
+      arm: armRadians.slice(0, ARM_JOINT_COUNT),
+      gripper:
+        gripperRadians === null
+          ? clamp(getCurrentGripperRadians(), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD)
+          : clamp(Number(gripperRadians), GRIPPER_MIN_RAD, GRIPPER_MAX_RAD),
+    };
+  }
+
   const armTargetRadians = getBackendArmTargetFromState(state);
   const armVelocities = getBackendArmVelocitiesFromState(state);
   const allowPrediction = shouldPredictBackendMotion(state);
@@ -4240,6 +4298,8 @@ function getAdaptiveRenderAlpha(baseAlpha, errorRad) {
 }
 
 function getSceneJointInterpolationAlpha(dtSec = 1 / 60, errorRad = 0) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) return 1.0;
+
   if (isVrModeEntered.value) {
     return scaleInterpolationAlpha(
       getAdaptiveRenderAlpha(VR_RENDER_SMOOTHING_ALPHA, errorRad),
@@ -4365,11 +4425,13 @@ function applyBackendStateToScene(state, options = {}) {
 
   const renderTarget = buildBackendRenderTarget(state, Date.now());
   const previewTarget =
-    options.preferQuestPreview === true ? getFreshQuestRenderPreview() : null;
+    !STRICT_MUJOCO_RENDER_AUTHORITY && options.preferQuestPreview === true
+      ? getFreshQuestRenderPreview()
+      : null;
   const visualTarget = previewTarget || renderTarget;
   if (visualTarget) {
     backendRenderTarget.value = visualTarget;
-    if (options.immediate === true) {
+    if (STRICT_MUJOCO_RENDER_AUTHORITY || options.immediate === true) {
       applySmoothedBackendPose({ immediate: true });
     }
   }
@@ -4975,7 +5037,7 @@ function updateRealtimeSliderDraft(name, value, options = {}) {
     gripperOpening,
   };
   realtimeSliderDraft.value = nextDraft;
-  if (options.applyPreview !== false) {
+  if (!STRICT_MUJOCO_RENDER_AUTHORITY && options.applyPreview !== false) {
     backendRenderTarget.value = {
       timestamp: nextDraft.updatedAt,
       arm: arm.slice(0, ARM_JOINT_COUNT),
@@ -5802,6 +5864,16 @@ const resetStateSync = () => {
 
 // 切换状态插值
 const toggleStateInterpolation = () => {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    stateInterpolationEnabled.value = false;
+    backendPoseSmoothingEnabled.value = false;
+    if (simulationState.value) {
+      applyBackendStateToScene(simulationState.value, { immediate: true });
+    }
+    console.log("状态插值: 禁用（MuJoCo物理状态权威）");
+    return;
+  }
+
   stateInterpolationEnabled.value = !stateInterpolationEnabled.value;
   backendPoseSmoothingEnabled.value = stateInterpolationEnabled.value;
   console.log(`状态插值: ${stateInterpolationEnabled.value ? '启用' : '禁用'}`);

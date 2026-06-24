@@ -6,7 +6,7 @@
         friction="1.0 0.02 0.002"
         solimp="0.95 0.99 0.001"
         solref="0.01 1"
-        condim="4"
+        condim="6"
       />
     </default>
   </default>
@@ -28,7 +28,6 @@
       pos="0.48 0.2 1.0"
       euler="0 0 -1.5707963267948966"
     >
-      <freejoint/>
       <inertial pos="-0.002 0.037 0.105" mass="1.2" diaginertia="0.008 0.010 0.009"/>
       <geom
         class="toolbox_contact"
