@@ -1,6 +1,12 @@
 const CONTROL_GROUP = "end_effector";
 const CONTROL_GROUP_LABEL = "末端执行器";
 const BASE_STEP_DT_SEC = 1 / 50;
+const FRONTEND_TO_BACKEND_QUAT_WXYZ = [
+  Math.SQRT1_2,
+  Math.SQRT1_2,
+  0,
+  0,
+];
 
 function clamp(value, min, max) {
   return Math.min(Math.max(Number(value) || 0, min), max);
@@ -41,6 +47,111 @@ function cloneEePose(pose) {
   const quaternion = cloneQuat(pose?.quaternion);
   if (!position || !quaternion) return null;
   return { position, quaternion };
+}
+
+function normalizeQuatWxyz(quaternion) {
+  const q = cloneQuat(quaternion);
+  if (!q) return null;
+  const [w, x, y, z] = q;
+  const norm = Math.sqrt(w * w + x * x + y * y + z * z);
+  if (norm <= 1e-8) return [1, 0, 0, 0];
+  return [w / norm, x / norm, y / norm, z / norm];
+}
+
+function quatMultiplyWxyz(lhs, rhs) {
+  const a = normalizeQuatWxyz(lhs);
+  const b = normalizeQuatWxyz(rhs);
+  if (!a || !b) return null;
+  const [aw, ax, ay, az] = a;
+  const [bw, bx, by, bz] = b;
+  return normalizeQuatWxyz([
+    aw * bw - ax * bx - ay * by - az * bz,
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+  ]);
+}
+
+function quatConjugateWxyz(quaternion) {
+  const q = normalizeQuatWxyz(quaternion);
+  if (!q) return null;
+  return [q[0], -q[1], -q[2], -q[3]];
+}
+
+function quatDotWxyz(lhs, rhs) {
+  const a = normalizeQuatWxyz(lhs);
+  const b = normalizeQuatWxyz(rhs);
+  if (!a || !b) return 1;
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+}
+
+function quatAngleDistanceRad(lhs, rhs) {
+  const dot = Math.abs(clamp(quatDotWxyz(lhs, rhs), -1, 1));
+  return 2 * Math.acos(dot);
+}
+
+function slerpQuatWxyz(from, to, alpha) {
+  const a = normalizeQuatWxyz(from);
+  let b = normalizeQuatWxyz(to);
+  if (!a || !b) return b || a || [1, 0, 0, 0];
+  let dot = quatDotWxyz(a, b);
+  if (dot < 0) {
+    b = b.map((value) => -value);
+    dot = -dot;
+  }
+  const t = clamp(alpha, 0, 1);
+  if (dot > 0.9995) {
+    return normalizeQuatWxyz([
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+      a[3] + (b[3] - a[3]) * t,
+    ]);
+  }
+  const theta0 = Math.acos(clamp(dot, -1, 1));
+  const sinTheta0 = Math.sin(theta0);
+  const theta = theta0 * t;
+  const sinTheta = Math.sin(theta);
+  const s0 = Math.cos(theta) - dot * sinTheta / sinTheta0;
+  const s1 = sinTheta / sinTheta0;
+  return normalizeQuatWxyz([
+    a[0] * s0 + b[0] * s1,
+    a[1] * s0 + b[1] * s1,
+    a[2] * s0 + b[2] * s1,
+    a[3] * s0 + b[3] * s1,
+  ]);
+}
+
+function clampQuatStepWxyz(previous, next, maxStepRad) {
+  const prev = normalizeQuatWxyz(previous);
+  const target = normalizeQuatWxyz(next);
+  if (!prev || !target) return target || prev || [1, 0, 0, 0];
+  const angle = quatAngleDistanceRad(prev, target);
+  const maxStep = Math.max(0, Number(maxStepRad) || 0);
+  if (angle <= maxStep || angle <= 1e-8 || maxStep <= 0) {
+    return target;
+  }
+  return slerpQuatWxyz(prev, target, maxStep / angle);
+}
+
+function scaleQuatRotationWxyz(quaternion, gain) {
+  let q = normalizeQuatWxyz(quaternion);
+  if (!q) return null;
+  if (q[0] < 0) {
+    q = q.map((value) => -value);
+  }
+  const safeW = clamp(q[0], -1, 1);
+  const halfSin = Math.sqrt(Math.max(0, 1 - safeW * safeW));
+  if (halfSin <= 1e-8) return q;
+  const angle = 2 * Math.acos(safeW);
+  const scaledAngle = clamp(angle * Math.max(0, Number(gain) || 1), 0, Math.PI);
+  const scale = Math.sin(scaledAngle / 2) / halfSin;
+  return normalizeQuatWxyz([
+    Math.cos(scaledAngle / 2),
+    q[1] * scale,
+    q[2] * scale,
+    q[3] * scale,
+  ]);
 }
 
 function vecSub(a, b) {
@@ -113,6 +224,13 @@ function frontendDeltaToBackend(delta) {
   return [delta[0], -delta[2], delta[1]];
 }
 
+function frontendQuatToBackendWxyz(quaternionXyzw) {
+  const q = cloneQuat(quaternionXyzw);
+  if (!q) return null;
+  const frontendWxyz = [q[3], q[0], q[1], q[2]];
+  return quatMultiplyWxyz(FRONTEND_TO_BACKEND_QUAT_WXYZ, frontendWxyz);
+}
+
 function estimateFallbackFist(handState) {
   const pinch = handState?.pinch || {};
   const values = ["index", "middle", "ring", "little"].map((name) =>
@@ -128,19 +246,31 @@ export function createQuestHandTeleop(options = {}) {
       : 0.003,
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
-      : 0.72,
+      : 1.05,
     movement_gain: Number.isFinite(Number(options.sensitivity))
-      ? Number(options.sensitivity) * 2.8
-      : 4.2,
+      ? Number(options.sensitivity) * 3.8
+      : 5.4,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
-      : 0.62,
+      : 0.70,
+    orientation_smoothing: Number.isFinite(Number(options.orientation_smoothing))
+      ? Number(options.orientation_smoothing)
+      : 0.70,
+    max_orientation_step_rad: Number.isFinite(Number(options.max_orientation_step_rad))
+      ? Number(options.max_orientation_step_rad)
+      : 0.48,
+    orientation_gain: Number.isFinite(Number(options.orientation_gain))
+      ? Number(options.orientation_gain)
+      : 1.35,
+    orientation_activity_epsilon_rad: Number.isFinite(Number(options.orientation_activity_epsilon_rad))
+      ? Number(options.orientation_activity_epsilon_rad)
+      : 0.014,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
-      : 0.12,
+      : 0.18,
     anchor_reset_threshold_m: Number.isFinite(Number(options.anchor_reset_threshold_m))
       ? Number(options.anchor_reset_threshold_m)
-      : 0.38,
+      : 0.85,
     tracking_grace_ms: 560,
     tracking_stable_enter_threshold: Number.isFinite(Number(options.tracking_stable_enter_threshold))
       ? Number(options.tracking_stable_enter_threshold)
@@ -150,14 +280,14 @@ export function createQuestHandTeleop(options = {}) {
       : 0.14,
     fist_engage_threshold: Number.isFinite(Number(options.fist_engage_threshold))
       ? Number(options.fist_engage_threshold)
-      : 0.62,
+      : 0.56,
     fist_release_threshold: Number.isFinite(Number(options.fist_release_threshold))
       ? Number(options.fist_release_threshold)
-      : 0.36,
-    fist_smoothing: 0.35,
-    gripper_smoothing: 0.24,
+      : 0.30,
+    fist_smoothing: 0.52,
+    gripper_smoothing: 0.78,
     gripper_min: 0,
-    gripper_max: 0.9,
+    gripper_max: 1.0,
     ee_activity_epsilon_m: 0.0015,
     gripper_activity_epsilon: Number.isFinite(Number(options.gripper_activity_epsilon))
       ? Number(options.gripper_activity_epsilon)
@@ -165,6 +295,7 @@ export function createQuestHandTeleop(options = {}) {
   };
 
   let anchorPalm = null;
+  let anchorPalmQuaternion = null;
   let anchorEePose = null;
   let targetEePose = null;
   let smoothedBackendDelta = [0, 0, 0];
@@ -185,27 +316,34 @@ export function createQuestHandTeleop(options = {}) {
     };
   }
 
-  function resetAnchor(rightPalm, currentEePose) {
+  function resetAnchor(rightPalm, currentEePose, rightPalmQuaternion) {
     anchorPalm = cloneVec3(rightPalm);
+    anchorPalmQuaternion = frontendQuatToBackendWxyz(rightPalmQuaternion);
     anchorEePose = cloneEePose(currentEePose);
     targetEePose = cloneEePose(currentEePose);
     smoothedBackendDelta = [0, 0, 0];
   }
 
-  function ensureAnchor(rightPalm, currentEePose) {
+  function ensureAnchor(rightPalm, currentEePose, rightPalmQuaternion) {
     if (!anchorPalm || !anchorEePose || !targetEePose) {
-      resetAnchor(rightPalm, currentEePose);
+      resetAnchor(rightPalm, currentEePose, rightPalmQuaternion);
       return;
     }
 
     const drift = vecNorm(vecSub(targetEePose.position, currentEePose.position));
     if (drift > cfg.anchor_reset_threshold_m) {
-      resetAnchor(rightPalm, currentEePose);
+      resetAnchor(rightPalm, currentEePose, rightPalmQuaternion);
+      return;
+    }
+
+    if (!anchorPalmQuaternion && cloneQuat(rightPalmQuaternion)) {
+      anchorPalmQuaternion = frontendQuatToBackendWxyz(rightPalmQuaternion);
     }
   }
 
   function clearTrackingLatch() {
     anchorPalm = null;
+    anchorPalmQuaternion = null;
     anchorEePose = null;
     targetEePose = null;
     smoothedBackendDelta = [0, 0, 0];
@@ -235,6 +373,7 @@ export function createQuestHandTeleop(options = {}) {
     const rightHand = snapshot?.hands?.right || {};
     const rightTracked = Boolean(rightHand.tracked || rightHand.recently_tracked);
     const rightPalm = cloneVec3(rightHand.palm_position);
+    const rightPalmQuaternion = cloneQuat(rightHand.palm_quaternion);
     const trackingStability = clamp(rightHand.stability ?? snapshot?.tracking_stability, 0, 1);
     const trackingPresent = Boolean(rightTracked && rightPalm);
     let trackingStable = false;
@@ -282,7 +421,7 @@ export function createQuestHandTeleop(options = {}) {
     }
 
     lastTrackedAt = now;
-    ensureAnchor(rightPalm, currentPose);
+    ensureAnchor(rightPalm, currentPose, rightPalmQuaternion);
 
     const rawPalmDelta = applyVecDeadzone(vecSub(rightPalm, anchorPalm), cfg.movement_deadzone);
     const backendDelta = clampVecMagnitude(
@@ -302,9 +441,33 @@ export function createQuestHandTeleop(options = {}) {
       desiredPosition,
       maxStep
     );
+    let desiredQuaternion = anchorEePose.quaternion.slice(0, 4);
+    const palmQuaternionBackend = frontendQuatToBackendWxyz(rightPalmQuaternion);
+    if (anchorPalmQuaternion && palmQuaternionBackend) {
+      const palmDeltaRaw = quatMultiplyWxyz(
+        palmQuaternionBackend,
+        quatConjugateWxyz(anchorPalmQuaternion)
+      );
+      const palmDelta = scaleQuatRotationWxyz(palmDeltaRaw, cfg.orientation_gain) || palmDeltaRaw;
+      desiredQuaternion = quatMultiplyWxyz(palmDelta, anchorEePose.quaternion) || desiredQuaternion;
+    }
+    const maxOrientationStep = Math.max(
+      0.02,
+      cfg.max_orientation_step_rad * normalizeDtScale(dtSec)
+    );
+    const limitedQuaternion = clampQuatStepWxyz(
+      targetEePose?.quaternion || currentPose.quaternion,
+      desiredQuaternion,
+      maxOrientationStep
+    );
+    const smoothedQuaternion = slerpQuatWxyz(
+      targetEePose?.quaternion || currentPose.quaternion,
+      limitedQuaternion,
+      cfg.orientation_smoothing
+    );
     targetEePose = {
       position: limitedPosition,
-      quaternion: anchorEePose.quaternion.slice(0, 4),
+      quaternion: smoothedQuaternion,
     };
 
     const rawFist = Number.isFinite(Number(rightHand.fist))
@@ -324,10 +487,12 @@ export function createQuestHandTeleop(options = {}) {
     const nextGripper = clamp(gripper, cfg.gripper_min, cfg.gripper_max);
 
     const eeError = vecNorm(vecSub(targetEePose.position, currentPose.position));
+    const orientationError = quatAngleDistanceRad(targetEePose.quaternion, currentPose.quaternion);
     const handMotion = vecNorm(smoothedBackendDelta);
     const hasEeActivity =
       eeError > cfg.ee_activity_epsilon_m ||
-      handMotion > cfg.ee_activity_epsilon_m;
+      handMotion > cfg.ee_activity_epsilon_m ||
+      orientationError > cfg.orientation_activity_epsilon_rad;
     const hasGripperActivity =
       Math.abs(nextGripper - currentGripper) > cfg.gripper_activity_epsilon;
     const hasCommand = hasEeActivity || hasGripperActivity;
@@ -356,6 +521,10 @@ export function createQuestHandTeleop(options = {}) {
         target_dy: smoothedBackendDelta[1],
         target_dz: smoothedBackendDelta[2],
         ee_error_m: eeError,
+        orientation_error_rad: orientationError,
+        movement_gain: cfg.movement_gain,
+        orientation_gain: cfg.orientation_gain,
+        max_control_offset_m: cfg.max_control_offset,
         fist: smoothedFist,
         fist_active: fistLatched ? 1 : 0,
         grip: gripRaw,
@@ -367,6 +536,7 @@ export function createQuestHandTeleop(options = {}) {
 
   function reset() {
     anchorPalm = null;
+    anchorPalmQuaternion = null;
     anchorEePose = null;
     targetEePose = null;
     smoothedBackendDelta = [0, 0, 0];

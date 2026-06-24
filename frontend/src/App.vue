@@ -249,6 +249,23 @@
                   R T={{ Number(questControllerRawInput.right?.trigger || 0).toFixed(2) }}
                 </span>
               </div>
+              <div class="network-status-row" v-if="questControllerNormalizedInput">
+                <span class="network-label">活跃/目标:</span>
+                <span class="network-value">
+                  {{ questControllerNormalizedInput.active_hand || "-" }}
+                  Δ=({{ Number(questControllerNormalizedInput.target_dx || 0).toFixed(2) }},
+                  {{ Number(questControllerNormalizedInput.target_dy || 0).toFixed(2) }},
+                  {{ Number(questControllerNormalizedInput.target_dz || 0).toFixed(2) }})m
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questControllerNormalizedInput">
+                <span class="network-label">末端误差:</span>
+                <span class="network-value">
+                  pos={{ Number(questControllerNormalizedInput.ee_error_m || 0).toFixed(3) }}m,
+                  rot={{ Number(questControllerNormalizedInput.orientation_error_rad || 0).toFixed(2) }}rad,
+                  IK={{ questControllerNormalizedInput.ik_status || "-" }}
+                </span>
+              </div>
               <div class="network-status-row">
                 <span class="network-label">灵敏度:</span>
                 <span class="network-value">
@@ -319,6 +336,29 @@
               <div class="network-status-row">
                 <span class="network-label">控制目标:</span>
                 <span class="network-value">{{ vrSelectedJointGroupText }}</span>
+              </div>
+              <div class="network-status-row" v-if="questHandNormalizedInput">
+                <span class="network-label">手掌目标:</span>
+                <span class="network-value">
+                  Δ=({{ Number(questHandNormalizedInput.target_dx || 0).toFixed(2) }},
+                  {{ Number(questHandNormalizedInput.target_dy || 0).toFixed(2) }},
+                  {{ Number(questHandNormalizedInput.target_dz || 0).toFixed(2) }})m
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questHandNormalizedInput">
+                <span class="network-label">末端误差:</span>
+                <span class="network-value">
+                  pos={{ Number(questHandNormalizedInput.ee_error_m || 0).toFixed(3) }}m,
+                  rot={{ Number(questHandNormalizedInput.orientation_error_rad || 0).toFixed(2) }}rad,
+                  IK={{ questHandNormalizedInput.ik_status || "-" }}
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questHandNormalizedInput">
+                <span class="network-label">拳握/夹爪:</span>
+                <span class="network-value">
+                  fist={{ Number(questHandNormalizedInput.fist || 0).toFixed(2) }},
+                  grip={{ Number(questHandNormalizedInput.grip || 0).toFixed(2) }}
+                </span>
               </div>
               <div class="network-status-row">
                 <span class="network-label">手势灵敏度:</span>
@@ -662,7 +702,7 @@ const showD405Panel = ref(false); // D405 观测面板默认不显示
 const ARM_JOINT_COUNT = 6;
 const TOTAL_INPUT_JOINT_COUNT = 7;
 const GRIPPER_MIN_RAD = 0;
-const GRIPPER_MAX_RAD = 0.87;
+const GRIPPER_MAX_RAD = 0.9;
 const GRIPPER_MIN_DEG = 0;
 const GRIPPER_MAX_DEG = (GRIPPER_MAX_RAD * 180) / Math.PI;
 const DEFAULT_ANGLES_DEG = [0, -90, 90, -90, -90, 0, 0];
@@ -827,6 +867,7 @@ const questControllerDeadzone = ref(0.1);
 const questControllerGroupToast = ref("");
 const questControllerGroupToastAt = ref(0);
 const questControllerRawInput = ref(null);
+const questControllerNormalizedInput = ref(null);
 const questControllerFallbackInFlight = ref(false);
 const lastQuestControllerTickAt = ref(0);
 const lastQuestControllerSentAt = ref(0);
@@ -842,6 +883,7 @@ const questHandInputMode = ref("right_hand_ee_ik");
 const questHandGroupToast = ref("");
 const questHandGroupToastAt = ref(0);
 const questHandRawInput = ref(null);
+const questHandNormalizedInput = ref(null);
 const questHandFallbackInFlight = ref(false);
 const lastQuestHandTickAt = ref(0);
 const lastQuestHandSentAt = ref(0);
@@ -940,6 +982,11 @@ const uiLastPoseSyncAt = ref(0);
 
 let questControllerTeleop = createQuestControllerTeleop({
   sensitivity: clamp(questControllerSensitivity.value, 0.4, 3.0),
+  grip_engage_threshold: clamp(questControllerDeadzone.value, 0.02, 0.3),
+  grip_release_threshold: Math.max(0.01, clamp(questControllerDeadzone.value, 0.02, 0.3) * 0.55),
+  trigger_engage_threshold: clamp(questControllerDeadzone.value, 0.02, 0.3),
+  trigger_release_threshold: Math.max(0.01, clamp(questControllerDeadzone.value, 0.02, 0.3) * 0.55),
+  stick_activity_epsilon: clamp(questControllerDeadzone.value, 0.02, 0.3),
 });
 let questHandTeleop = createQuestHandTeleop({
   sensitivity: clamp(questHandSensitivity.value, 0.4, 3.0),
@@ -1596,6 +1643,15 @@ function applyVrStateFromBackend(state) {
     questControllerRawInput.value = state.raw_input;
     questHandRawInput.value = state.raw_input;
   }
+  if (state?.normalized_input && typeof state.normalized_input === "object") {
+    const normalizedInput = { ...state.normalized_input };
+    const questSource = getQuestSourceFromBackendState(state);
+    if (questSource === "quest3_controller") {
+      questControllerNormalizedInput.value = normalizedInput;
+    } else if (questSource === "quest3_hand") {
+      questHandNormalizedInput.value = normalizedInput;
+    }
+  }
   updateHandTrackingFromBackend(state);
 }
 
@@ -1750,6 +1806,172 @@ function buildQuestControllerRay() {
   return line;
 }
 
+function buildQuestControllerFallbackModel(handedness = "") {
+  const group = new THREE.Group();
+  group.name = "quest_controller_fallback_model";
+  group.userData.handedness = normalizeXrHandedness(handedness);
+
+  const accentColor = group.userData.handedness === "left" ? 0x7bdff2 : 0xffc857;
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2f343c,
+    roughness: 0.62,
+    metalness: 0.08,
+  });
+  const accentMaterial = new THREE.MeshStandardMaterial({
+    color: accentColor,
+    roughness: 0.5,
+    metalness: 0.05,
+  });
+  const darkMaterial = new THREE.MeshStandardMaterial({
+    color: 0x101317,
+    roughness: 0.72,
+    metalness: 0.04,
+  });
+
+  const grip = new THREE.Mesh(new THREE.CapsuleGeometry(0.024, 0.092, 8, 16), bodyMaterial);
+  grip.name = "quest_controller_fallback_grip";
+  grip.rotation.x = Math.PI / 2;
+  grip.position.set(0, -0.035, -0.015);
+  group.add(grip);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.034, 20, 12), bodyMaterial);
+  head.name = "quest_controller_fallback_head";
+  head.scale.set(1.25, 0.72, 1.0);
+  head.position.set(0, 0.018, -0.048);
+  group.add(head);
+
+  const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.032), accentMaterial);
+  trigger.name = "quest_controller_fallback_trigger";
+  trigger.position.set(0, -0.002, -0.082);
+  trigger.rotation.x = -0.38;
+  group.add(trigger);
+
+  const thumbPad = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.008, 20), darkMaterial);
+  thumbPad.name = "quest_controller_fallback_thumbpad";
+  thumbPad.rotation.x = Math.PI / 2;
+  thumbPad.position.set(0, 0.034, -0.036);
+  group.add(thumbPad);
+
+  const halo = new THREE.Mesh(
+    new THREE.TorusGeometry(0.045, 0.004, 10, 36),
+    new THREE.MeshStandardMaterial({
+      color: accentColor,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.45,
+    })
+  );
+  halo.name = "quest_controller_fallback_halo";
+  halo.rotation.x = Math.PI / 2;
+  halo.position.set(0, 0.016, -0.055);
+  group.add(halo);
+
+  group.scale.setScalar(1.12);
+  return group;
+}
+
+const QUEST_HAND_JOINT_NAMES = [
+  "wrist",
+  "thumb-metacarpal",
+  "thumb-phalanx-proximal",
+  "thumb-phalanx-distal",
+  "thumb-tip",
+  "index-finger-metacarpal",
+  "index-finger-phalanx-proximal",
+  "index-finger-phalanx-intermediate",
+  "index-finger-phalanx-distal",
+  "index-finger-tip",
+  "middle-finger-metacarpal",
+  "middle-finger-phalanx-proximal",
+  "middle-finger-phalanx-intermediate",
+  "middle-finger-phalanx-distal",
+  "middle-finger-tip",
+  "ring-finger-metacarpal",
+  "ring-finger-phalanx-proximal",
+  "ring-finger-phalanx-intermediate",
+  "ring-finger-phalanx-distal",
+  "ring-finger-tip",
+  "pinky-finger-metacarpal",
+  "pinky-finger-phalanx-proximal",
+  "pinky-finger-phalanx-intermediate",
+  "pinky-finger-phalanx-distal",
+  "pinky-finger-tip",
+];
+
+const QUEST_HAND_BONE_PAIRS = [
+  ["wrist", "thumb-metacarpal"],
+  ["thumb-metacarpal", "thumb-phalanx-proximal"],
+  ["thumb-phalanx-proximal", "thumb-phalanx-distal"],
+  ["thumb-phalanx-distal", "thumb-tip"],
+  ["wrist", "index-finger-metacarpal"],
+  ["index-finger-metacarpal", "index-finger-phalanx-proximal"],
+  ["index-finger-phalanx-proximal", "index-finger-phalanx-intermediate"],
+  ["index-finger-phalanx-intermediate", "index-finger-phalanx-distal"],
+  ["index-finger-phalanx-distal", "index-finger-tip"],
+  ["wrist", "middle-finger-metacarpal"],
+  ["middle-finger-metacarpal", "middle-finger-phalanx-proximal"],
+  ["middle-finger-phalanx-proximal", "middle-finger-phalanx-intermediate"],
+  ["middle-finger-phalanx-intermediate", "middle-finger-phalanx-distal"],
+  ["middle-finger-phalanx-distal", "middle-finger-tip"],
+  ["wrist", "ring-finger-metacarpal"],
+  ["ring-finger-metacarpal", "ring-finger-phalanx-proximal"],
+  ["ring-finger-phalanx-proximal", "ring-finger-phalanx-intermediate"],
+  ["ring-finger-phalanx-intermediate", "ring-finger-phalanx-distal"],
+  ["ring-finger-phalanx-distal", "ring-finger-tip"],
+  ["wrist", "pinky-finger-metacarpal"],
+  ["pinky-finger-metacarpal", "pinky-finger-phalanx-proximal"],
+  ["pinky-finger-phalanx-proximal", "pinky-finger-phalanx-intermediate"],
+  ["pinky-finger-phalanx-intermediate", "pinky-finger-phalanx-distal"],
+  ["pinky-finger-phalanx-distal", "pinky-finger-tip"],
+];
+
+function buildQuestHandSkeletonFallback() {
+  const group = new THREE.Group();
+  group.name = "quest_hand_skeleton_fallback";
+  group.visible = false;
+
+  const jointMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf6f2df,
+    roughness: 0.54,
+    metalness: 0.02,
+  });
+  const tipMaterial = new THREE.MeshStandardMaterial({
+    color: 0x65d6ad,
+    roughness: 0.48,
+    metalness: 0.02,
+  });
+  const jointMeshes = {};
+  QUEST_HAND_JOINT_NAMES.forEach((jointName) => {
+    const isTip = jointName.endsWith("tip");
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(isTip ? 0.009 : 0.0065, 10, 8),
+      isTip ? tipMaterial : jointMaterial
+    );
+    mesh.name = `quest_hand_joint_${jointName}`;
+    jointMeshes[jointName] = mesh;
+    group.add(mesh);
+  });
+
+  const boneGeometry = new THREE.BufferGeometry();
+  boneGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(new Array(QUEST_HAND_BONE_PAIRS.length * 2 * 3).fill(0), 3)
+  );
+  const boneLines = new THREE.LineSegments(
+    boneGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0x65d6ad,
+      transparent: true,
+      opacity: 0.82,
+    })
+  );
+  boneLines.name = "quest_hand_bone_lines";
+  group.add(boneLines);
+  group.userData.jointMeshes = jointMeshes;
+  group.userData.boneLines = boneLines;
+  return group;
+}
+
 function normalizeXrHandedness(value) {
   const handedness = String(value || "").toLowerCase();
   if (handedness === "left" || handedness === "right") return handedness;
@@ -1779,6 +2001,92 @@ function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
   node.addEventListener("disconnected", () => {
     node.userData.connected = false;
     node.visible = false;
+  });
+}
+
+function ensureQuestControllerGripVisuals(controllerGrip, handedness = "") {
+  if (!controllerGrip) return;
+  if (!controllerGrip.userData.questControllerModelAttached) {
+    try {
+      const profileModel = xrControllerModelFactory.createControllerModel(controllerGrip);
+      profileModel.name = "quest_controller_profile_model";
+      controllerGrip.add(profileModel);
+    } catch (error) {
+      console.warn("Quest controller profile model unavailable:", error?.message || error);
+    }
+    controllerGrip.userData.questControllerModelAttached = true;
+  }
+  if (!controllerGrip.userData.questControllerFallbackAttached) {
+    controllerGrip.add(buildQuestControllerFallbackModel(handedness));
+    controllerGrip.userData.questControllerFallbackAttached = true;
+  }
+}
+
+function ensureQuestHandNodeVisuals(handNode) {
+  if (!handNode) return;
+  if (!handNode.userData.questHandModelAttached) {
+    try {
+      handNode.add(xrHandModelFactory.createHandModel(handNode, "mesh"));
+    } catch (error) {
+      console.warn("Quest hand mesh model unavailable:", error?.message || error);
+      try {
+        handNode.add(xrHandModelFactory.createHandModel(handNode, "boxes"));
+      } catch (_) {
+        // The local skeleton below still gives a usable hand visualization.
+      }
+    }
+    handNode.userData.questHandModelAttached = true;
+  }
+  if (!handNode.userData.questHandSkeletonFallbackAttached) {
+    handNode.add(buildQuestHandSkeletonFallback());
+    handNode.userData.questHandSkeletonFallbackAttached = true;
+  }
+}
+
+function updateQuestHandSkeletonFallbacks() {
+  const tmpPosition = new THREE.Vector3();
+  Object.values(xrVisualNodes.hands).forEach((handNode) => {
+    if (!handNode) return;
+    const skeleton = handNode.getObjectByName("quest_hand_skeleton_fallback");
+    if (!skeleton) return;
+    const joints = handNode.joints || {};
+    const jointMeshes = skeleton.userData.jointMeshes || {};
+    const boneLines = skeleton.userData.boneLines || null;
+    const positions = boneLines?.geometry?.attributes?.position;
+    let visibleJointCount = 0;
+
+    QUEST_HAND_JOINT_NAMES.forEach((jointName) => {
+      const joint = joints[jointName];
+      const mesh = jointMeshes[jointName];
+      if (!joint || !mesh) return;
+      tmpPosition.setFromMatrixPosition(joint.matrixWorld);
+      handNode.worldToLocal(tmpPosition);
+      mesh.position.copy(tmpPosition);
+      const radius = Number(joint.jointRadius);
+      if (Number.isFinite(radius) && radius > 0) {
+        const scale = clamp(radius / 0.0065, 0.7, 1.8);
+        mesh.scale.setScalar(scale);
+      }
+      mesh.visible = handNode.visible;
+      visibleJointCount += 1;
+    });
+
+    if (positions) {
+      let offset = 0;
+      QUEST_HAND_BONE_PAIRS.forEach(([fromName, toName]) => {
+        const from = jointMeshes[fromName];
+        const to = jointMeshes[toName];
+        const fromVisible = Boolean(from?.visible);
+        const toVisible = Boolean(to?.visible);
+        const fromPos = fromVisible ? from.position : new THREE.Vector3();
+        const toPos = toVisible ? to.position : fromPos;
+        positions.setXYZ(offset, fromPos.x, fromPos.y, fromPos.z);
+        positions.setXYZ(offset + 1, toPos.x, toPos.y, toPos.z);
+        offset += 2;
+      });
+      positions.needsUpdate = true;
+    }
+    skeleton.visible = Boolean(handNode.visible && visibleJointCount >= 6);
   });
 }
 
@@ -1816,10 +2124,7 @@ function ensureQuestXrVisualNodes() {
         controllerGrip.userData.connected = true;
       }
       const nodeKey = resolveXrNodeKey(controllerGrip, key);
-      if (!controllerGrip.userData.questControllerModelAttached) {
-        controllerGrip.add(xrControllerModelFactory.createControllerModel(controllerGrip));
-        controllerGrip.userData.questControllerModelAttached = true;
-      }
+      ensureQuestControllerGripVisuals(controllerGrip, nodeKey);
       if (!controllerGrip.parent) {
         scene.add(controllerGrip);
       }
@@ -1834,10 +2139,7 @@ function ensureQuestXrVisualNodes() {
         handNode.userData.connected = true;
       }
       const nodeKey = resolveXrNodeKey(handNode, key);
-      if (!handNode.userData.questHandModelAttached) {
-        handNode.add(xrHandModelFactory.createHandModel(handNode, "spheres"));
-        handNode.userData.questHandModelAttached = true;
-      }
+      ensureQuestHandNodeVisuals(handNode);
       if (!handNode.parent) {
         scene.add(handNode);
       }
@@ -1866,6 +2168,92 @@ function updateQuestXrVisualVisibility() {
   if (rightHandNode) {
     rightHandNode.visible = showRightHand;
   }
+}
+
+function hasVisibleControllerProfile(controllerGrip) {
+  const profile = controllerGrip?.getObjectByName?.("quest_controller_profile_model");
+  if (!profile) return false;
+  let hasMesh = false;
+  profile.traverse((child) => {
+    if (child?.isMesh) {
+      hasMesh = true;
+    }
+  });
+  return hasMesh;
+}
+
+function readQuestControllerVisualInput(hand) {
+  const normalizedHand = normalizeXrHandedness(hand);
+  const raw = questControllerRawInput.value || {};
+  const normalized = questControllerNormalizedInput.value || {};
+  const input = raw?.[normalizedHand] || {};
+  const activeHand =
+    normalizeXrHandedness(normalized.active_hand) ||
+    normalizeXrHandedness(raw.active_hand);
+  return {
+    trigger: clamp(Number(input.trigger || 0), 0, 1),
+    grip: clamp(Number(input.grip || 0), 0, 1),
+    active: activeHand === normalizedHand,
+  };
+}
+
+function setMaterialOpacity(object, opacity) {
+  const material = object?.material;
+  const materials = Array.isArray(material) ? material : material ? [material] : [];
+  materials.forEach((item) => {
+    item.transparent = true;
+    item.opacity = clamp(opacity, 0, 1);
+    item.needsUpdate = true;
+  });
+}
+
+function updateQuestControllerFallbackVisual(controllerGrip, hand) {
+  const fallback = controllerGrip?.getObjectByName?.("quest_controller_fallback_model");
+  if (!fallback) return;
+  const input = readQuestControllerVisualInput(hand);
+  const showFallback = Boolean(controllerGrip.visible && !hasVisibleControllerProfile(controllerGrip));
+  fallback.visible = showFallback;
+  if (!showFallback) return;
+
+  const triggerMesh = fallback.getObjectByName("quest_controller_fallback_trigger");
+  if (triggerMesh) {
+    triggerMesh.position.z = -0.082 + input.trigger * 0.016;
+    triggerMesh.rotation.x = -0.38 + input.trigger * 0.32;
+    triggerMesh.scale.set(1 + input.trigger * 0.12, 1, 1 + input.trigger * 0.08);
+  }
+
+  const gripMesh = fallback.getObjectByName("quest_controller_fallback_grip");
+  if (gripMesh) {
+    const gripScale = 1 + input.grip * 0.10;
+    gripMesh.scale.set(gripScale, gripScale, 1);
+  }
+
+  const halo = fallback.getObjectByName("quest_controller_fallback_halo");
+  if (halo) {
+    const activity = Math.max(input.trigger, input.grip, input.active ? 0.45 : 0);
+    halo.scale.setScalar(1 + activity * 0.28);
+    setMaterialOpacity(halo, input.active ? 0.68 : 0.32 + activity * 0.24);
+  }
+}
+
+function updateQuestControllerRayVisual(controllerRay, hand) {
+  const ray = controllerRay?.getObjectByName?.("quest_controller_ray");
+  if (!ray) return;
+  const input = readQuestControllerVisualInput(hand);
+  const activity = Math.max(input.trigger, input.grip, input.active ? 0.35 : 0);
+  ray.scale.z = 1.0 + activity * 1.35;
+  ray.visible = Boolean(controllerRay.visible && activity > 0.02);
+  setMaterialOpacity(ray, input.active ? 0.86 : 0.36 + activity * 0.32);
+}
+
+function updateQuestControllerVisualState() {
+  if (!renderer?.xr?.isPresenting || vrModeState.value !== "vr_controller_mode") return;
+  Object.entries(xrVisualNodes.controllerGrips).forEach(([hand, node]) => {
+    updateQuestControllerFallbackVisual(node, hand);
+  });
+  Object.entries(xrVisualNodes.controllerRays).forEach(([hand, node]) => {
+    updateQuestControllerRayVisual(node, hand);
+  });
 }
 
 function detachQuestXrSessionListeners() {
@@ -2192,8 +2580,14 @@ function isQuestHandModeActive() {
 }
 
 function rebuildQuestControllerTeleop() {
+  const deadzone = clamp(questControllerDeadzone.value, 0.02, 0.3);
   questControllerTeleop = createQuestControllerTeleop({
     sensitivity: clamp(questControllerSensitivity.value, 0.4, 3.0),
+    grip_engage_threshold: deadzone,
+    grip_release_threshold: Math.max(0.01, deadzone * 0.55),
+    trigger_engage_threshold: deadzone,
+    trigger_release_threshold: Math.max(0.01, deadzone * 0.55),
+    stick_activity_epsilon: deadzone,
   });
 }
 
@@ -2643,6 +3037,7 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
     getAuthoritativeEePoseBackend(),
     dtSec
   );
+  questControllerNormalizedInput.value = mapped?.normalized_input || null;
 
   if (mapped?.selected_joint_group) {
     if (vrSelectedJointGroup.value !== mapped.selected_joint_group) {
@@ -2711,6 +3106,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   lastQuestHandTickAt.value = nowMs;
 
   if (!status.ready) {
+    questHandNormalizedInput.value = null;
     markQuestHandSafeHold("手势会话未就绪", "session_not_ready");
     return;
   }
@@ -2720,6 +3116,12 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   questHandTrackingStability.value = clamp(snapshot?.tracking_stability || 0, 0, 1);
 
   if (!snapshot?.available) {
+    questHandNormalizedInput.value = {
+      has_command: 0,
+      reason: snapshot?.reason || "hand_not_tracked",
+      tracking_stable: 0,
+      tracking_stability: clamp(snapshot?.tracking_stability || 0, 0, 1),
+    };
     if (questHandUnavailableSinceAt.value <= 0) {
       questHandUnavailableSinceAt.value = nowMs;
     }
@@ -2760,6 +3162,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
     getAuthoritativeEePoseBackend(),
     dtSec
   );
+  questHandNormalizedInput.value = mapped?.normalized_input || null;
 
   questHandTrackingStable.value = Boolean(mapped?.tracking_stable);
   questHandInputMode.value = mapped?.hand_input_mode || "right_hand_ee_ik";
@@ -2893,6 +3296,7 @@ function stopQuestControllerLoop() {
   questControllerAvailable.value = false;
   questControllerStatusText.value = "未激活";
   questControllerRawInput.value = null;
+  questControllerNormalizedInput.value = null;
   questControllerPendingMapped.value = null;
   lastQuestControllerSentAt.value = 0;
   resetQuestControllerQueuedFlushTimer();
@@ -2912,6 +3316,7 @@ function stopQuestHandLoop() {
   questHandTrackingStability.value = 0;
   questHandInputMode.value = "right_hand_ee_ik";
   questHandRawInput.value = null;
+  questHandNormalizedInput.value = null;
   questHandPendingMapped.value = null;
   lastQuestHandSentAt.value = 0;
   questHandUnstableSinceAt.value = 0;
@@ -4921,6 +5326,8 @@ function render(_, xrFrame) {
   // In immersive XR, browser timer throttling can stall setInterval-based teleop loops.
   // Drive Quest teleop ticks from the XR render loop to match AR-UR5 control behavior.
   runQuestVrControlFrame(xrFrame);
+  updateQuestControllerVisualState();
+  updateQuestHandSkeletonFallbacks();
   renderer.render(scene, camera);
   if (controls && !(renderer?.xr && renderer.xr.isPresenting)) {
     controls.update();
