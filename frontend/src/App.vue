@@ -832,6 +832,7 @@ const lastRealtimeSliderSendAt = ref(0);
 const pendingManualTarget = ref(null);
 const realtimeSliderDraft = ref(null);
 const realtimeSliderFallbackInFlight = ref(false);
+const desktopSliderControlSeq = ref(0);
 const backendPoseSmoothingEnabled = ref(!STRICT_MUJOCO_RENDER_AUTHORITY);
 const backendPoseSmoothingAlpha = ref(0.18);
 const backendRenderTarget = ref(null);
@@ -5598,6 +5599,7 @@ function sendRealtimeSliderControl(options = {}) {
     mode: "open_close",
     value: gripperOpening,
   };
+  const controlSeq = Number(options.controlSeq) || (desktopSliderControlSeq.value += 1);
   rememberPendingManualTarget(armRadians, gripperOpening, { updateRenderTarget: true });
 
   const sent = websocketManager.isConnected
@@ -5610,6 +5612,9 @@ function sendRealtimeSliderControl(options = {}) {
         raw_input: {
           origin: "frontend",
           input_source: inputSource,
+        },
+        normalized_input: {
+          control_seq: controlSeq,
         },
         expect_result: expectResult,
         ack: expectResult,
@@ -5644,6 +5649,9 @@ function sendRealtimeSliderControl(options = {}) {
       raw_input: {
         origin: "frontend",
         input_source: inputSource,
+      },
+      normalized_input: {
+        control_seq: controlSeq,
       },
     })
       .then((resp) => {
