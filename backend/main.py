@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -51,6 +52,8 @@ DEFAULT_ARM_ACTUATOR_NAMES = [
 DEFAULT_GRIPPER_ACTUATOR_NAME = "act_gripper_driver"
 DEFAULT_VIEWER_CAMERA_OVERLAY = None
 DEFAULT_CAMERA_PREVIEW_FPS = 15.0
+DEFAULT_VIEWER_FPS = 30.0
+DEFAULT_VIEWER_LOCAL_PHYSICS_SUBSTEPS = 2
 VIEWER_FREE_CAMERA_NAMES = {"", "free", "none", "off"}
 VIEWER_CAMERA_OVERLAY_ASPECT = 4.0 / 3.0
 VIEWER_CAMERA_OVERLAY_FRACTION = 0.45
@@ -178,6 +181,79 @@ def _resolve_path(raw: str | None, default_path: Path) -> Path:
     if candidate.is_absolute():
         return candidate
     return (REPO_ROOT / candidate).resolve()
+
+
+def _is_running_under_mjpython() -> bool:
+    if sys.platform != "darwin":
+        return True
+    try:
+        import mujoco.viewer as mujoco_viewer
+    except Exception:
+        return False
+
+    mjpython_base = getattr(mujoco_viewer, "_MjPythonBase", None)
+    if mjpython_base is None:
+        return False
+    return isinstance(getattr(mujoco_viewer, "_MJPYTHON", None), mjpython_base)
+
+
+def _find_mjpython() -> Path | None:
+    candidates: list[Path] = []
+
+    executable = Path(sys.executable).expanduser()
+    candidates.append(executable.with_name("mjpython"))
+
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.append(Path(conda_prefix).expanduser() / "bin" / "mjpython")
+
+    candidates.append(Path(sys.prefix).expanduser() / "bin" / "mjpython")
+
+    path_mjpython = shutil.which("mjpython")
+    if path_mjpython:
+        candidates.append(Path(path_mjpython).expanduser())
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return resolved
+    return None
+
+
+def _argv_with_open_viewer(choice: str) -> list[str]:
+    argv = list(sys.argv[1:])
+    for idx, value in enumerate(argv):
+        if value == "--open-viewer":
+            if idx + 1 < len(argv):
+                return argv[: idx + 1] + [choice] + argv[idx + 2 :]
+            return argv + [choice]
+        if value.startswith("--open-viewer="):
+            argv[idx] = f"--open-viewer={choice}"
+            return argv
+    return [*argv, "--open-viewer", choice]
+
+
+def _restart_with_mjpython_if_needed(open_viewer: bool, argv: list[str] | None = None) -> None:
+    if not open_viewer or sys.platform != "darwin" or _is_running_under_mjpython():
+        return
+
+    mjpython = _find_mjpython()
+    if mjpython is None:
+        raise RuntimeError(
+            "MuJoCo viewer on macOS requires `mjpython`, but it was not found for "
+            f"the active Python environment: {sys.executable}. Activate the Conda "
+            "environment and run `mjpython ./main.py --open-viewer yes`."
+        )
+
+    script_path = Path(__file__).resolve()
+    next_argv = argv if argv is not None else sys.argv[1:]
+    cmd = [str(mjpython), str(script_path), *next_argv]
+    print("[launcher] macOS MuJoCo viewer requires mjpython; restarting with:", " ".join(cmd), flush=True)
+    os.execv(str(mjpython), cmd)
 
 
 def _read_home_pose(manifest_path: Path) -> tuple[list[str], list[float]]:
@@ -1173,6 +1249,17 @@ def _state_is_remote_desktop_slider(state: dict[str, object] | None) -> bool:
     return source == "desktop_manual" and input_source in {"slider", "joint_slider", "slider_commit"}
 
 
+def _state_is_quest_realtime_control(state: dict[str, object] | None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    source = str(state.get("source", "")).strip()
+    input_source = str(state.get("input_source", "")).strip()
+    return source in {"quest3_controller", "quest3_hand"} or input_source in {
+        "quest3_controller",
+        "quest3_hand",
+    }
+
+
 def _state_command_count(state: dict[str, object] | None) -> int:
     if not isinstance(state, dict):
         return -1
@@ -1247,6 +1334,7 @@ def run_viewer(
     viewer_camera: str | None = None,
     viewer_camera_overlay: str | None = DEFAULT_VIEWER_CAMERA_OVERLAY,
     viewer_camera_overlay_fps: float = VIEWER_CAMERA_OVERLAY_FPS,
+    max_local_physics_substeps: int = DEFAULT_VIEWER_LOCAL_PHYSICS_SUBSTEPS,
 ) -> None:
     # On Wayland, prefer X11 backend when available to reduce libdecor warnings.
     # Leave room for manual override by respecting existing env values.
@@ -1270,7 +1358,11 @@ def run_viewer(
     model_timestep = max(1e-4, float(model.opt.timestep))
     local_physics_substeps = max(
         1,
-        min(MAX_VIEWER_LOCAL_PHYSICS_SUBSTEPS, int(round(dt / model_timestep))),
+        min(
+            MAX_VIEWER_LOCAL_PHYSICS_SUBSTEPS,
+            max(1, int(max_local_physics_substeps)),
+            int(round(dt / model_timestep)),
+        ),
     )
     state_poll_interval = max(0.005, 1.0 / min(max(fps, 1.0), 60.0))
     state_fetch_timeout = max(MIN_STATE_FETCH_TIMEOUT_S, min(MAX_STATE_FETCH_TIMEOUT_S, 2.5 * dt))
@@ -1554,6 +1646,7 @@ def run_viewer(
                         local_ctrl_target_pose = pending_ctrl_pose
 
                 if last_state is not None:
+                    quest_realtime_state = _state_is_quest_realtime_control(last_state)
                     if should_apply_backend:
                         if backend_state_dirty:
                             backend_pose = _extract_pose_from_backend_state(last_state)
@@ -1580,15 +1673,18 @@ def run_viewer(
                                     ctrl_servo_state,
                                 )
                         else:
-                            _step_viewer_local_physics(
-                                model,
-                                data,
-                                local_physics_substeps,
-                                None,
-                                arm_actuator_ids,
-                                gripper_actuator_id,
-                                ctrl_servo_state,
-                            )
+                            if quest_realtime_state:
+                                mujoco.mj_forward(model, data)
+                            else:
+                                _step_viewer_local_physics(
+                                    model,
+                                    data,
+                                    local_physics_substeps,
+                                    None,
+                                    arm_actuator_ids,
+                                    gripper_actuator_id,
+                                    ctrl_servo_state,
+                                )
                     else:
                         if step_local_physics or (
                             isinstance(pending_viewer_push, dict)
@@ -1764,8 +1860,8 @@ def main() -> None:
     parser.add_argument(
         "--fps",
         type=float,
-        default=60.0,
-        help="Viewer stepping FPS (default: 60).",
+        default=DEFAULT_VIEWER_FPS,
+        help=f"Viewer stepping FPS (default: {DEFAULT_VIEWER_FPS:g}; use 60 for visual debugging).",
     )
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Backend host (default: 0.0.0.0).")
     parser.add_argument("--port", type=int, default=8000, help="Backend port (default: 8000).")
@@ -1814,8 +1910,8 @@ def main() -> None:
     parser.add_argument(
         "--camera-preview-window",
         choices=["yes", "no"],
-        default="yes",
-        help="Open a separate draggable D405 RGB preview window when MuJoCo viewer opens (default: yes).",
+        default="no",
+        help="Open a separate draggable D405 RGB preview window when MuJoCo viewer opens (default: no).",
     )
     parser.add_argument(
         "--camera-preview-fps",
@@ -1824,11 +1920,40 @@ def main() -> None:
         help="Target FPS for the separate D405 RGB preview window (default: 15).",
     )
     parser.add_argument(
+        "--viewer-local-physics-substeps",
+        type=int,
+        default=DEFAULT_VIEWER_LOCAL_PHYSICS_SUBSTEPS,
+        help=(
+            "Max local MuJoCo physics substeps per viewer frame "
+            f"(default: {DEFAULT_VIEWER_LOCAL_PHYSICS_SUBSTEPS}; raise only for viewer-side slider debugging)."
+        ),
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable uvicorn --reload for backend development (default: off to reduce Quest/viewer latency).",
+    )
+    parser.add_argument(
         "--no-reload",
         action="store_true",
-        help="Disable uvicorn --reload (enabled by default to match current dev command).",
+        help="Deprecated compatibility flag; reload is already disabled unless --reload is passed.",
     )
     args = parser.parse_args()
+
+    if args.open_viewer == "yes":
+        _restart_with_mjpython_if_needed(open_viewer=True)
+    elif args.open_viewer == "ask" and sys.platform == "darwin" and not _is_running_under_mjpython():
+        should_open_viewer = _ask_yes_no(
+            "是否加载 MuJoCo 仿真环境? 输入 yes 才加载，其他输入均不加载: ",
+        )
+        if should_open_viewer:
+            _restart_with_mjpython_if_needed(
+                open_viewer=True,
+                argv=_argv_with_open_viewer("yes"),
+            )
+            args.open_viewer = "yes"
+        else:
+            args.open_viewer = "no"
 
     model_path = _resolve_path(args.model, DEFAULT_MODEL)
     manifest_path = _resolve_path(args.manifest, DEFAULT_MANIFEST)
@@ -1844,7 +1969,7 @@ def main() -> None:
         backend_process = _start_backend(
             host=args.host,
             port=selected_port,
-            reload_enabled=not args.no_reload,
+            reload_enabled=bool(args.reload and not args.no_reload),
             ssl_certfile=args.ssl_certfile,
             ssl_keyfile=args.ssl_keyfile,
         )
@@ -1895,6 +2020,7 @@ def main() -> None:
                     viewer_camera=args.viewer_camera,
                     viewer_camera_overlay=args.viewer_camera_overlay,
                     viewer_camera_overlay_fps=args.viewer_camera_overlay_fps,
+                    max_local_physics_substeps=args.viewer_local_physics_substeps,
                 )
             finally:
                 _stop_backend(camera_preview_process)

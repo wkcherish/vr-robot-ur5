@@ -141,6 +141,12 @@ SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2 = 12.0
 SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2 = 14.0
 SERVO_CTRL_ARM_MAX_JERK_RAD_S3 = 80.0
 SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3 = 110.0
+REALTIME_SERVO_CTRL_ARM_MAX_SPEED_RAD_S = 3.2
+REALTIME_SERVO_CTRL_GRIPPER_MAX_SPEED_OPENING_S = 3.8
+REALTIME_SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2 = 36.0
+REALTIME_SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2 = 34.0
+REALTIME_SERVO_CTRL_ARM_MAX_JERK_RAD_S3 = 260.0
+REALTIME_SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3 = 260.0
 REALTIME_EE_MAX_DELTA_M = 0.08
 IK_MAX_ITERATIONS = 24
 IK_POSITION_TOLERANCE_M = 0.003
@@ -259,6 +265,26 @@ def _should_servo_snap_to_target(
     if abs_velocity <= min_brake_velocity:
         return True
     return float(error) * float(velocity) < 0.0
+
+
+def _resolve_servo_motion_limits(source: str, input_source: str | None = None) -> dict[str, float]:
+    if _is_realtime_source(source, input_source=input_source):
+        return {
+            "arm_speed": REALTIME_SERVO_CTRL_ARM_MAX_SPEED_RAD_S,
+            "arm_accel": REALTIME_SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2,
+            "arm_jerk": REALTIME_SERVO_CTRL_ARM_MAX_JERK_RAD_S3,
+            "gripper_speed": REALTIME_SERVO_CTRL_GRIPPER_MAX_SPEED_OPENING_S,
+            "gripper_accel": REALTIME_SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2,
+            "gripper_jerk": REALTIME_SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3,
+        }
+    return {
+        "arm_speed": SERVO_CTRL_ARM_MAX_SPEED_RAD_S,
+        "arm_accel": SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2,
+        "arm_jerk": SERVO_CTRL_ARM_MAX_JERK_RAD_S3,
+        "gripper_speed": SERVO_CTRL_GRIPPER_MAX_SPEED_OPENING_S,
+        "gripper_accel": SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2,
+        "gripper_jerk": SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3,
+    }
 
 
 def _is_slider_commit_input(input_source: str | None) -> bool:
@@ -610,6 +636,7 @@ class SimulationCore:
             "camera_drops": 0,
         }
         self._latest_realtime_seq_by_source: dict[str, int] = {}
+        self._pending_realtime_futures_by_source: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._last_streaming_command_at: float | None = None
         self._frontend_slider_guard_until: float = 0.0
 
@@ -643,10 +670,36 @@ class SimulationCore:
         async with self._lock:
             self._close_mujoco_renderer()
 
+    def _track_realtime_future(
+        self,
+        request: StepRequest,
+        future: asyncio.Future[dict[str, Any]],
+        return_state: bool,
+    ) -> None:
+        if return_state:
+            return
+
+        source = str(getattr(request, "source", "") or "").strip().lower()
+        if source not in {"quest3_controller", "quest3_hand"}:
+            return
+
+        previous = self._pending_realtime_futures_by_source.get(source)
+        if previous is not None and previous is not future and not previous.done():
+            previous.cancel()
+
+        self._pending_realtime_futures_by_source[source] = future
+
+        def _clear_done(done_future: asyncio.Future[dict[str, Any]]) -> None:
+            if self._pending_realtime_futures_by_source.get(source) is done_future:
+                self._pending_realtime_futures_by_source.pop(source, None)
+
+        future.add_done_callback(_clear_done)
+
     def queue_step(self, request: StepRequest, return_state: bool = True) -> asyncio.Future[dict[str, Any]]:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._remember_realtime_command_seq(request)
+        self._track_realtime_future(request, future, return_state=bool(return_state))
         self._command_queue.put_nowait(
             _QueuedCommand(
                 request=request,
@@ -1754,6 +1807,7 @@ class SimulationCore:
         if len(self._arm_servo_ctrl_qaccel) < arm_count:
             self._arm_servo_ctrl_qaccel = [0.0 for _ in range(arm_count)]
 
+        limits = _resolve_servo_motion_limits(self._source, self._last_input_source)
         for idx, actuator_name in enumerate(DEFAULT_ARM_ACTUATOR_NAMES):
             actuator_id = self._arm_actuator_ids.get(actuator_name)
             if actuator_id is None or idx >= len(self._arm_command_qpos):
@@ -1771,9 +1825,9 @@ class SimulationCore:
                     velocity=self._arm_servo_ctrl_qvel[idx],
                     acceleration=self._arm_servo_ctrl_qaccel[idx],
                     dt=dt,
-                    max_speed=SERVO_CTRL_ARM_MAX_SPEED_RAD_S,
-                    max_accel=SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2,
-                    max_jerk=SERVO_CTRL_ARM_MAX_JERK_RAD_S3,
+                    max_speed=limits["arm_speed"],
+                    max_accel=limits["arm_accel"],
+                    max_jerk=limits["arm_jerk"],
                 )
             self._mj_data.ctrl[actuator_id] = float(next_ctrl)
             self._arm_servo_ctrl_qpos[idx] = float(next_ctrl)
@@ -1796,9 +1850,9 @@ class SimulationCore:
                 velocity=self._gripper_servo_ctrl_velocity,
                 acceleration=self._gripper_servo_ctrl_accel,
                 dt=dt,
-                max_speed=SERVO_CTRL_GRIPPER_MAX_SPEED_OPENING_S,
-                max_accel=SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2,
-                max_jerk=SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3,
+                max_speed=limits["gripper_speed"],
+                max_accel=limits["gripper_accel"],
+                max_jerk=limits["gripper_jerk"],
             )
         self._gripper_servo_ctrl_opening = float(next_opening)
         self._gripper_servo_ctrl_velocity = float(next_velocity)
@@ -3527,6 +3581,7 @@ class SimulationCore:
             "ee_pose": self._compute_ee_pose_locked(),
             "gripper_opening": float(self._gripper_opening),
             "gripper_joints": dict(self._gripper_joints),
+            "objects": deepcopy(self._objects_state),
             "source": self._source,
             "input_source": self._last_input_source,
             "selected_joint_group": self._last_selected_joint_group,

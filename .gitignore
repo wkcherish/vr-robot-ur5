@@ -1,6 +1,9 @@
 public/battery/meshes/base_link.STL
 public/rack/meshes/base_link.STL
 node_modules
+.npm-cache/
+.pip-cache/
+.python-deps/
 **/__pycache__/
 *.pyc
 backend/MUJOCO_LOG.TXT

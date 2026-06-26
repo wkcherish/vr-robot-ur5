@@ -14,7 +14,8 @@
   - `POST /sim/step/`
   - `POST /sim/reset/`
   - `WebSocket /sim/ws`
-- 周期状态广播：`state_broadcast`（默认 20Hz）
+- 周期状态广播：`motion_broadcast` 默认 30Hz，`state_broadcast` 默认 6Hz；可用
+  `STATE_BROADCAST_HZ` / `STATUS_BROADCAST_HZ` 覆盖。
 - 兼容接口：`GET /data/`
 
 ## 里程碑 C 新增内容
@@ -94,9 +95,18 @@ python backend/main.py
 可选参数：
 
 ```bash
-python backend/main.py --open-viewer ask --model backend/mujoco_models/environment.xml --fps 60
-python backend/main.py --open-viewer no --no-reload
+python backend/main.py --open-viewer ask --model backend/mujoco_models/environment.xml
+python backend/main.py --open-viewer no
 ```
+
+为 Quest3 采集优化后的默认值：
+
+- 后端默认不启用 `uvicorn --reload`，减少额外 Python 进程和文件监听开销；开发时可显式加 `--reload`。
+- MuJoCo viewer 默认 30 FPS；视觉调试时可加 `--fps 60`。
+- viewer 默认不打开单独 D405 预览窗口；需要检查相机画面时加 `--camera-preview-window yes`。
+- viewer 在 Quest3 手势/手柄实时控制时只同步后端状态，不再重复跑本地 MuJoCo 物理，避免与后端仿真抢 CPU。
+
+macOS 上 MuJoCo viewer 需要 `mjpython`。当前启动器会在需要打开 viewer 时自动切换到同一 Conda 环境里的 `mjpython`；也可以手动执行 `mjpython backend/main.py --open-viewer yes`。
 
 Wayland 环境提示：
 

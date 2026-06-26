@@ -392,6 +392,9 @@
               <span class="dataset-pill" :class="datasetEpisodeActive ? 'status-checking' : 'status-unknown'">
                 {{ datasetEpisodeActive ? "episode录制中" : "episode空闲" }}
               </span>
+              <span class="dataset-pill" :class="datasetAutoCollecting ? 'status-checking' : 'status-unknown'">
+                {{ datasetAutoCollecting ? `连续采集 episode${datasetAutoEpisodeIndex}` : "连续采集空闲" }}
+              </span>
             </div>
             <div class="network-status-row">
               <span class="network-label">D405:</span>
@@ -523,14 +526,14 @@
             <div class="dataset-action-row">
               <button
                 class="dataset-button primary"
-                :disabled="!datasetCanStartEpisode"
+                :disabled="!datasetCanStartEpisode || datasetAutoCollecting"
                 @click="startDatasetEpisode"
               >
                 {{ datasetEpisodeInFlight ? "处理中..." : "开始episode" }}
               </button>
               <button
                 class="dataset-button danger"
-                :disabled="!datasetCanStopEpisode"
+                :disabled="!datasetCanStopEpisode || datasetAutoCollecting"
                 @click="stopDatasetEpisode"
               >
                 停止并标记
@@ -543,6 +546,56 @@
                 更新结果
               </button>
             </div>
+            <div class="dataset-form-grid compact">
+              <label class="dataset-field">
+                <span class="dataset-label">单轮秒数</span>
+                <input
+                  class="dataset-select"
+                  type="number"
+                  min="3"
+                  max="3600"
+                  step="1"
+                  v-model.number="datasetAutoEpisodeDurationSec"
+                  :disabled="datasetAutoCollecting"
+                />
+              </label>
+              <label class="dataset-field">
+                <span class="dataset-label">轮数(0不限)</span>
+                <input
+                  class="dataset-select"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  step="1"
+                  v-model.number="datasetAutoMaxEpisodes"
+                  :disabled="datasetAutoCollecting"
+                />
+              </label>
+            </div>
+            <div class="dataset-auto-row">
+              <label class="dataset-toggle">
+                <input type="checkbox" v-model="datasetVoiceEnabled" />
+                <span>语音提示</span>
+              </label>
+              <span class="dataset-auto-status">{{ datasetAutoStatusText }}</span>
+            </div>
+            <div class="dataset-action-row dataset-auto-actions">
+              <button
+                class="dataset-button primary"
+                :disabled="!datasetCanStartAutoCollection"
+                @click="startDatasetAutoCollection"
+              >
+                开始连续采集
+              </button>
+              <button
+                class="dataset-button danger"
+                :disabled="!datasetCanStopAutoCollection"
+                @click="stopDatasetAutoCollection"
+              >
+                停止连续采集
+              </button>
+            </div>
+            <div v-if="datasetAutoVoiceText" class="dataset-message">{{ datasetAutoVoiceText }}</div>
             <div v-if="datasetActiveEpisodeId || datasetLastEpisodeId" class="dataset-episode-id">
               {{
                 datasetEpisodeActive
@@ -804,7 +857,7 @@ const UI_SYNC_INTERVAL_MS = 33;
 const UI_POSE_SYNC_INTERVAL_MS = 50;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
 const VR_COMMAND_MIN_INTERVAL_MS = 16;
-const VR_COMMAND_STEPS = 8;
+const VR_COMMAND_STEPS = 4;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
 const VR_CONTROL_WATCHDOG_INTERVAL_MS = 33;
 const VR_CONTROL_WATCHDOG_STALE_MS = 55;
@@ -822,6 +875,8 @@ const RENDER_GRIPPER_EPSILON_RAD = 2e-4;
 const RENDER_ADAPTIVE_LOW_ERROR_RAD = 0.006;
 const RENDER_ADAPTIVE_HIGH_ERROR_RAD = 0.18;
 const DEBUG_VR_CONTROL_RESULTS = false;
+const DATASET_CONTROLLER_NEXT_THRESHOLD = 0.65;
+const DATASET_CONTROLLER_NEXT_COOLDOWN_MS = 900;
 
 // WebSocket 状态同步相关
 const isWebSocketConnected = ref(false);
@@ -919,6 +974,19 @@ const datasetLastError = ref("");
 const datasetResultStatus = ref("success");
 const datasetQualityLabel = ref("debug_only");
 const datasetInstructionEdited = ref(false);
+const datasetAutoCollecting = ref(false);
+const datasetAutoStopRequested = ref(false);
+const datasetAutoEpisodeIndex = ref(0);
+const datasetAutoEpisodeDurationSec = ref(30);
+const datasetAutoResetDelaySec = ref(2);
+const datasetAutoMaxEpisodes = ref(0);
+const datasetAutoStatus = ref("未启动");
+const datasetAutoVoiceText = ref("");
+const datasetVoiceEnabled = ref(true);
+const datasetAutoDelayTimer = ref(null);
+const datasetControllerNextWasPressed = ref(false);
+const lastDatasetControllerNextAt = ref(0);
+let datasetAutoDelayResolver = null;
 
 datasetTemplates.value = [
   {
@@ -1107,6 +1175,24 @@ const datasetCanStopEpisode = computed(() => {
 
 const datasetCanUpdateResult = computed(() => {
   return Boolean(datasetLastEpisodeId.value) && !datasetEpisodeInFlight.value;
+});
+
+const datasetCanStartAutoCollection = computed(() => {
+  if (datasetAutoCollecting.value || datasetEpisodeInFlight.value || datasetEpisodeActive.value) return false;
+  if (!isVrModeEntered.value) return false;
+  if (!selectedDatasetTaskType.value || !selectedDatasetTargetTool.value) return false;
+  return Boolean(String(datasetInstructionText.value || "").trim());
+});
+
+const datasetCanStopAutoCollection = computed(() => {
+  return datasetAutoCollecting.value || datasetAutoStopRequested.value;
+});
+
+const datasetAutoStatusText = computed(() => {
+  if (datasetAutoCollecting.value) {
+    return `${datasetAutoStatus.value} | episode${datasetAutoEpisodeIndex.value}`;
+  }
+  return datasetAutoStatus.value || "未启动";
 });
 
 // 兼容旧 UI 关节名(link*_joint)与当前 URDF 关节名
@@ -1506,7 +1592,7 @@ function buildDatasetEpisodeStartPayload() {
 }
 
 async function startDatasetEpisode() {
-  if (!datasetCanStartEpisode.value) return;
+  if (!datasetCanStartEpisode.value) return null;
   datasetEpisodeInFlight.value = true;
   datasetLastError.value = "";
   datasetLastMessage.value = "正在开始 episode...";
@@ -1519,23 +1605,25 @@ async function startDatasetEpisode() {
       datasetLastError.value = data.message || "episode 启动失败";
       datasetLastMessage.value = datasetLastError.value;
       applyDatasetPrecheckPayload(data.precheck);
-      return;
+      return data;
     }
     applyDatasetPrecheckPayload(data.precheck);
     datasetActiveEpisodeId.value = String(data.episode_id || "");
     datasetLastEpisodeId.value = datasetActiveEpisodeId.value;
     datasetLastEpisodeDir.value = String(data.episode_dir || "");
     datasetLastMessage.value = `episode 已开始: ${datasetActiveEpisodeId.value}`;
+    return data;
   } catch (error) {
     datasetLastError.value = "episode 启动失败: " + (error?.message || error);
     datasetLastMessage.value = datasetLastError.value;
+    return null;
   } finally {
     datasetEpisodeInFlight.value = false;
   }
 }
 
 async function stopDatasetEpisode() {
-  if (!datasetCanStopEpisode.value) return;
+  if (!datasetCanStopEpisode.value) return null;
   datasetEpisodeInFlight.value = true;
   datasetLastError.value = "";
   datasetLastMessage.value = "正在停止 episode...";
@@ -1551,7 +1639,7 @@ async function stopDatasetEpisode() {
     if (data.status !== "success") {
       datasetLastError.value = data.message || "episode 停止失败";
       datasetLastMessage.value = datasetLastError.value;
-      return;
+      return data;
     }
     datasetLastEpisodeId.value = episodeId;
     datasetLastEpisodeDir.value = String(data.episode_dir || datasetLastEpisodeDir.value || "");
@@ -1559,9 +1647,11 @@ async function stopDatasetEpisode() {
     datasetLastMessage.value = `episode 已停止并标记: ${datasetResultStatus.value}`;
     applyDatasetPrecheckPayload(data.precheck);
     datasetActiveEpisodeId.value = "";
+    return data;
   } catch (error) {
     datasetLastError.value = "episode 停止失败: " + (error?.message || error);
     datasetLastMessage.value = datasetLastError.value;
+    return null;
   } finally {
     datasetEpisodeInFlight.value = false;
   }
@@ -1583,14 +1673,286 @@ async function updateDatasetEpisodeResult() {
     if (data.status !== "success") {
       datasetLastError.value = data.message || "结果更新失败";
       datasetLastMessage.value = datasetLastError.value;
-      return;
+      return data;
     }
     datasetLastMessage.value = `结果已更新: ${datasetResultStatus.value}`;
+    return data;
   } catch (error) {
     datasetLastError.value = "结果更新失败: " + (error?.message || error);
     datasetLastMessage.value = datasetLastError.value;
+    return null;
   } finally {
     datasetEpisodeInFlight.value = false;
+  }
+}
+
+function normalizeDatasetAutoSeconds(value, fallback, min, max) {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return clamp(parsed, min, max);
+}
+
+function normalizeDatasetAutoMaxEpisodes(value) {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return clamp(parsed, 0, 9999);
+}
+
+function clearDatasetAutoDelay(resolveNow = false) {
+  if (datasetAutoDelayTimer.value) {
+    clearTimeout(datasetAutoDelayTimer.value);
+    datasetAutoDelayTimer.value = null;
+  }
+  const resolver = datasetAutoDelayResolver;
+  datasetAutoDelayResolver = null;
+  if (resolveNow && typeof resolver === "function") {
+    resolver();
+  }
+}
+
+function waitDatasetAutoDelay(ms) {
+  clearDatasetAutoDelay(false);
+  const delayMs = Math.max(0, Math.floor(Number(ms) || 0));
+  return new Promise((resolve) => {
+    datasetAutoDelayResolver = resolve;
+    datasetAutoDelayTimer.value = setTimeout(() => {
+      clearDatasetAutoDelay(true);
+    }, delayMs);
+  });
+}
+
+function speakDatasetPrompt(text) {
+  const message = String(text || "").trim();
+  if (!message) return false;
+  datasetAutoVoiceText.value = message;
+
+  if (!datasetVoiceEnabled.value || typeof window === "undefined") return false;
+  const synth = window.speechSynthesis;
+  const Utterance = window.SpeechSynthesisUtterance;
+  if (!synth || typeof Utterance !== "function") return false;
+
+  try {
+    synth.cancel();
+    const utterance = new Utterance(message);
+    utterance.lang = "zh-CN";
+    utterance.rate = 0.98;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    synth.speak(utterance);
+    return true;
+  } catch (error) {
+    console.warn("采集语音提示失败:", error?.message || error);
+    return false;
+  }
+}
+
+function stopDatasetVoicePrompt() {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  try {
+    window.speechSynthesis.cancel();
+  } catch (error) {
+    console.warn("停止采集语音失败:", error?.message || error);
+  }
+}
+
+function getDatasetAutoInputMode() {
+  if (selectedVrInputMode.value === "hand" || vrModeState.value === "vr_hand_mode") {
+    return "hand";
+  }
+  return "controller";
+}
+
+async function restoreQuestModeAfterDatasetReset(inputMode) {
+  const mode = inputMode === "hand" ? "hand" : "controller";
+  if (!isVrModeEntered.value && !renderer?.xr?.isPresenting) return;
+  setVrModeLocally("vr_ready");
+  await chooseVrInputMode(mode);
+}
+
+async function resetDatasetSceneForNextEpisode() {
+  const inputMode = getDatasetAutoInputMode();
+  datasetAutoStatus.value = "重置场景";
+  datasetLastMessage.value = "正在重置场景并随机工具位置...";
+
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
+  const response = await post("/sim/reset/", {}, { timeout: 12000 });
+  const data = response?.data || {};
+  if (data.status !== "success") {
+    throw new Error(data.message || "场景重置失败");
+  }
+
+  if (data.state && typeof data.state === "object") {
+    const now = Date.now();
+    simulationState.value = data.state;
+    const stateTimestampMs = getBackendStateTimestampMs(data.state);
+    if (Number.isFinite(Number(stateTimestampMs))) {
+      lastAcceptedBackendStateTimestampMs.value = Number(stateTimestampMs);
+    }
+    applyBackendStateToScene(data.state, { immediate: true });
+    checkD405ObservationReady(data.state);
+    checkRecordingBindingReady(data.state);
+    updateSafetyFeedbackFromState(data.state);
+    lastStateUpdate.value = now;
+  }
+
+  await restoreQuestModeAfterDatasetReset(inputMode);
+  updateNetworkPrereq();
+  return data;
+}
+
+function startDatasetAutoCollection() {
+  if (!datasetCanStartAutoCollection.value) return;
+  datasetAutoCollecting.value = true;
+  datasetAutoStopRequested.value = false;
+  datasetAutoEpisodeIndex.value = 0;
+  datasetAutoStatus.value = "准备中";
+  datasetLastError.value = "";
+  datasetLastMessage.value = "连续采集准备中...";
+  datasetControllerNextWasPressed.value = false;
+  lastDatasetControllerNextAt.value = 0;
+  datasetAutoEpisodeDurationSec.value = normalizeDatasetAutoSeconds(
+    datasetAutoEpisodeDurationSec.value,
+    30,
+    3,
+    3600
+  );
+  datasetAutoResetDelaySec.value = normalizeDatasetAutoSeconds(
+    datasetAutoResetDelaySec.value,
+    2,
+    0,
+    60
+  );
+  datasetAutoMaxEpisodes.value = normalizeDatasetAutoMaxEpisodes(datasetAutoMaxEpisodes.value);
+  void runDatasetAutoCollectionLoop();
+}
+
+function stopDatasetAutoCollection() {
+  if (!datasetCanStopAutoCollection.value) return;
+  datasetAutoStopRequested.value = true;
+  datasetAutoStatus.value = "正在停止";
+  datasetLastMessage.value = "正在停止连续采集...";
+  datasetControllerNextWasPressed.value = false;
+  clearDatasetAutoDelay(true);
+}
+
+function readDatasetControllerNextValue(snapshot) {
+  const controlValue = Number(snapshot?.controls?.next_episode);
+  const rawValue = Number(snapshot?.raw?.right?.next_episode);
+  const values = [controlValue, rawValue].filter((value) => Number.isFinite(value));
+  return values.length > 0 ? Math.max(...values) : 0;
+}
+
+function requestDatasetAutoNextFromController(nowMs = Date.now()) {
+  if (!datasetAutoCollecting.value || datasetAutoStopRequested.value) return;
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  if (now - Number(lastDatasetControllerNextAt.value || 0) < DATASET_CONTROLLER_NEXT_COOLDOWN_MS) {
+    return;
+  }
+  lastDatasetControllerNextAt.value = now;
+  datasetAutoStatus.value = datasetEpisodeActive.value ? "提前结束当前轮" : "跳过等待";
+  datasetLastMessage.value = datasetEpisodeActive.value
+    ? `手柄触发: 结束 episode${datasetAutoEpisodeIndex.value} 并进入下一轮`
+    : "手柄触发: 准备进入下一轮";
+  speakDatasetPrompt(datasetEpisodeActive.value ? "已收到，进入下一轮" : "已收到，准备下一轮");
+  clearDatasetAutoDelay(true);
+}
+
+function handleDatasetControllerNextButton(snapshot, nowMs = Date.now()) {
+  const nextValue = readDatasetControllerNextValue(snapshot);
+  const pressed = nextValue >= DATASET_CONTROLLER_NEXT_THRESHOLD;
+  if (pressed && !datasetControllerNextWasPressed.value) {
+    requestDatasetAutoNextFromController(nowMs);
+  }
+  datasetControllerNextWasPressed.value = pressed;
+}
+
+async function runDatasetAutoCollectionLoop() {
+  try {
+    if (selectedDatasetCollectionStage.value !== "debug_trial" && !datasetRecordingReady.value) {
+      const precheck = await runDatasetPrecheck();
+      if (!precheck?.recording_ready) {
+        throw new Error("precheck 未通过，不能开始正式连续采集");
+      }
+    }
+
+    while (datasetAutoCollecting.value && !datasetAutoStopRequested.value) {
+      const maxEpisodes = normalizeDatasetAutoMaxEpisodes(datasetAutoMaxEpisodes.value);
+      if (maxEpisodes > 0 && datasetAutoEpisodeIndex.value >= maxEpisodes) {
+        datasetAutoStatus.value = "已完成";
+        datasetLastMessage.value = `连续采集完成: ${maxEpisodes} 轮`;
+        speakDatasetPrompt("连续采集完成");
+        break;
+      }
+
+      const currentIndex = datasetAutoEpisodeIndex.value;
+      const episodeSeconds = normalizeDatasetAutoSeconds(
+        datasetAutoEpisodeDurationSec.value,
+        30,
+        3,
+        3600
+      );
+      datasetAutoEpisodeDurationSec.value = episodeSeconds;
+      datasetAutoStatus.value = "采集中";
+      datasetLastMessage.value = `开始采集 episode${currentIndex}`;
+      speakDatasetPrompt(`开始采集数据 episode ${currentIndex}`);
+
+      const startData = await startDatasetEpisode();
+      if (startData?.status !== "success") {
+        throw new Error(startData?.message || datasetLastError.value || "episode 启动失败");
+      }
+
+      await waitDatasetAutoDelay(episodeSeconds * 1000);
+
+      datasetAutoStatus.value = "结束当前轮";
+      speakDatasetPrompt(`episode ${currentIndex} 采集结束，请重置场景`);
+      const stopData = await stopDatasetEpisode();
+      if (stopData?.status !== "success") {
+        throw new Error(stopData?.message || datasetLastError.value || "episode 停止失败");
+      }
+
+      if (datasetAutoStopRequested.value) {
+        break;
+      }
+
+      datasetAutoEpisodeIndex.value = currentIndex + 1;
+      const nextMaxEpisodes = normalizeDatasetAutoMaxEpisodes(datasetAutoMaxEpisodes.value);
+      if (nextMaxEpisodes > 0 && datasetAutoEpisodeIndex.value >= nextMaxEpisodes) {
+        datasetAutoStatus.value = "已完成";
+        datasetLastMessage.value = `连续采集完成: ${nextMaxEpisodes} 轮`;
+        speakDatasetPrompt("连续采集完成");
+        break;
+      }
+
+      await resetDatasetSceneForNextEpisode();
+      if (datasetAutoStopRequested.value) {
+        break;
+      }
+
+      speakDatasetPrompt(`场景已重置，准备采集数据 episode ${datasetAutoEpisodeIndex.value}`);
+      const resetDelaySeconds = normalizeDatasetAutoSeconds(datasetAutoResetDelaySec.value, 2, 0, 60);
+      datasetAutoResetDelaySec.value = resetDelaySeconds;
+      await waitDatasetAutoDelay(resetDelaySeconds * 1000);
+    }
+
+    if (datasetAutoStopRequested.value) {
+      datasetAutoStatus.value = "已停止";
+      datasetLastMessage.value = "连续采集已停止";
+      speakDatasetPrompt("连续采集已停止");
+    }
+  } catch (error) {
+    const message = error?.message || String(error);
+    datasetAutoStatus.value = "异常";
+    datasetLastError.value = "连续采集异常: " + message;
+    datasetLastMessage.value = datasetLastError.value;
+    speakDatasetPrompt("连续采集异常，流程已停止");
+  } finally {
+    if (datasetAutoStopRequested.value && datasetEpisodeActive.value && !datasetEpisodeInFlight.value) {
+      await stopDatasetEpisode();
+    }
+    clearDatasetAutoDelay(false);
+    datasetAutoCollecting.value = false;
+    datasetAutoStopRequested.value = false;
   }
 }
 
@@ -1812,11 +2174,13 @@ function buildQuestControllerFallbackModel(handedness = "") {
   group.name = "quest_controller_fallback_model";
   group.userData.handedness = normalizeXrHandedness(handedness);
 
-  const accentColor = group.userData.handedness === "left" ? 0x7bdff2 : 0xffc857;
+  const isLeft = group.userData.handedness === "left";
+  const sideSign = isLeft ? -1 : 1;
+  const accentColor = isLeft ? 0x7bdff2 : 0xffc857;
   const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2f343c,
-    roughness: 0.62,
-    metalness: 0.08,
+    color: 0xf2f1ea,
+    roughness: 0.48,
+    metalness: 0.02,
   });
   const accentMaterial = new THREE.MeshStandardMaterial({
     color: accentColor,
@@ -1829,43 +2193,56 @@ function buildQuestControllerFallbackModel(handedness = "") {
     metalness: 0.04,
   });
 
-  const grip = new THREE.Mesh(new THREE.CapsuleGeometry(0.024, 0.092, 8, 16), bodyMaterial);
+  const grip = new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.105, 8, 18), darkMaterial);
   grip.name = "quest_controller_fallback_grip";
-  grip.rotation.x = Math.PI / 2;
-  grip.position.set(0, -0.035, -0.015);
+  grip.rotation.set(Math.PI / 2 + 0.18, 0, sideSign * 0.08);
+  grip.position.set(sideSign * 0.006, -0.044, -0.02);
   group.add(grip);
 
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.034, 20, 12), bodyMaterial);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.038, 24, 14), bodyMaterial);
   head.name = "quest_controller_fallback_head";
-  head.scale.set(1.25, 0.72, 1.0);
-  head.position.set(0, 0.018, -0.048);
+  head.scale.set(1.18, 0.66, 1.0);
+  head.position.set(sideSign * 0.005, 0.018, -0.044);
   group.add(head);
 
-  const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.032), accentMaterial);
+  const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.020, 0.013, 0.034), accentMaterial);
   trigger.name = "quest_controller_fallback_trigger";
-  trigger.position.set(0, -0.002, -0.082);
-  trigger.rotation.x = -0.38;
+  trigger.position.set(sideSign * 0.002, -0.003, -0.079);
+  trigger.rotation.set(-0.42, 0, 0);
   group.add(trigger);
 
-  const thumbPad = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.008, 20), darkMaterial);
+  const thumbPad = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.009, 24), darkMaterial);
   thumbPad.name = "quest_controller_fallback_thumbpad";
-  thumbPad.rotation.x = Math.PI / 2;
-  thumbPad.position.set(0, 0.034, -0.036);
+  thumbPad.rotation.set(Math.PI / 2, 0, 0);
+  thumbPad.position.set(sideSign * 0.015, 0.037, -0.036);
   group.add(thumbPad);
 
-  const halo = new THREE.Mesh(
-    new THREE.TorusGeometry(0.045, 0.004, 10, 36),
+  ["upper", "lower"].forEach((name, index) => {
+    const button = new THREE.Mesh(new THREE.CylinderGeometry(0.0065, 0.0065, 0.004, 16), darkMaterial);
+    button.name = `quest_controller_fallback_${name}_button`;
+    button.rotation.set(Math.PI / 2, 0, 0);
+    button.position.set(sideSign * -0.012, 0.034 + index * 0.014, -0.034);
+    group.add(button);
+  });
+
+  const sideGrip = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.026, 0.035), accentMaterial);
+  sideGrip.name = "quest_controller_fallback_side_grip";
+  sideGrip.position.set(sideSign * -0.028, -0.018, -0.03);
+  sideGrip.rotation.set(0.08, 0, sideSign * 0.12);
+  group.add(sideGrip);
+
+  const status = new THREE.Mesh(
+    new THREE.SphereGeometry(0.007, 16, 8),
     new THREE.MeshStandardMaterial({
       color: accentColor,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.58,
       roughness: 0.45,
     })
   );
-  halo.name = "quest_controller_fallback_halo";
-  halo.rotation.x = Math.PI / 2;
-  halo.position.set(0, 0.016, -0.055);
-  group.add(halo);
+  status.name = "quest_controller_fallback_status";
+  status.position.set(sideSign * 0.03, 0.018, -0.046);
+  group.add(status);
 
   group.scale.setScalar(1.12);
   return group;
@@ -1945,13 +2322,51 @@ function buildQuestHandSkeletonFallback() {
   QUEST_HAND_JOINT_NAMES.forEach((jointName) => {
     const isTip = jointName.endsWith("tip");
     const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(isTip ? 0.009 : 0.0065, 10, 8),
+      new THREE.SphereGeometry(isTip ? 0.0078 : 0.0058, 12, 8),
       isTip ? tipMaterial : jointMaterial
     );
     mesh.name = `quest_hand_joint_${jointName}`;
     jointMeshes[jointName] = mesh;
     group.add(mesh);
   });
+
+  const boneMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd8c8b4,
+    transparent: true,
+    opacity: 0.86,
+    roughness: 0.58,
+    metalness: 0.01,
+  });
+  const boneMeshes = {};
+  QUEST_HAND_BONE_PAIRS.forEach(([fromName, toName]) => {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.0045, 0.0045, 1, 10), boneMaterial);
+    mesh.name = `quest_hand_bone_${fromName}_${toName}`;
+    mesh.visible = false;
+    boneMeshes[`${fromName}:${toName}`] = mesh;
+    group.add(mesh);
+  });
+
+  const palmGeometry = new THREE.BufferGeometry();
+  palmGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(new Array(5 * 3).fill(0), 3)
+  );
+  palmGeometry.setIndex([0, 1, 2, 0, 2, 3, 0, 3, 4]);
+  palmGeometry.computeVertexNormals();
+  const palmMesh = new THREE.Mesh(
+    palmGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0xf0dfc9,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.62,
+      metalness: 0.0,
+      side: THREE.DoubleSide,
+    })
+  );
+  palmMesh.name = "quest_hand_palm_surface";
+  palmMesh.visible = false;
+  group.add(palmMesh);
 
   const boneGeometry = new THREE.BufferGeometry();
   boneGeometry.setAttribute(
@@ -1967,8 +2382,11 @@ function buildQuestHandSkeletonFallback() {
     })
   );
   boneLines.name = "quest_hand_bone_lines";
+  boneLines.visible = false;
   group.add(boneLines);
   group.userData.jointMeshes = jointMeshes;
+  group.userData.boneMeshes = boneMeshes;
+  group.userData.palmMesh = palmMesh;
   group.userData.boneLines = boneLines;
   return group;
 }
@@ -2027,14 +2445,11 @@ function ensureQuestHandNodeVisuals(handNode) {
   if (!handNode) return;
   if (!handNode.userData.questHandModelAttached) {
     try {
-      handNode.add(xrHandModelFactory.createHandModel(handNode, "mesh"));
+      const meshModel = xrHandModelFactory.createHandModel(handNode, "mesh");
+      meshModel.name = "quest_hand_mesh_model";
+      handNode.add(meshModel);
     } catch (error) {
       console.warn("Quest hand mesh model unavailable:", error?.message || error);
-      try {
-        handNode.add(xrHandModelFactory.createHandModel(handNode, "boxes"));
-      } catch (_) {
-        // The local skeleton below still gives a usable hand visualization.
-      }
     }
     handNode.userData.questHandModelAttached = true;
   }
@@ -2044,17 +2459,38 @@ function ensureQuestHandNodeVisuals(handNode) {
   }
 }
 
+function hasVisibleQuestHandMesh(handNode) {
+  const model = handNode?.getObjectByName?.("quest_hand_mesh_model");
+  if (!model) return false;
+  let hasSkinnedMesh = false;
+  model.traverse((child) => {
+    if (child?.isSkinnedMesh || child?.type === "SkinnedMesh") {
+      hasSkinnedMesh = true;
+    }
+  });
+  return hasSkinnedMesh;
+}
+
 function updateQuestHandSkeletonFallbacks() {
   const tmpPosition = new THREE.Vector3();
+  const tmpFrom = new THREE.Vector3();
+  const tmpTo = new THREE.Vector3();
+  const tmpMid = new THREE.Vector3();
+  const tmpDirection = new THREE.Vector3();
+  const tmpQuaternion = new THREE.Quaternion();
+  const yAxis = new THREE.Vector3(0, 1, 0);
   Object.values(xrVisualNodes.hands).forEach((handNode) => {
     if (!handNode) return;
     const skeleton = handNode.getObjectByName("quest_hand_skeleton_fallback");
     if (!skeleton) return;
     const joints = handNode.joints || {};
     const jointMeshes = skeleton.userData.jointMeshes || {};
+    const boneMeshes = skeleton.userData.boneMeshes || {};
+    const palmMesh = skeleton.userData.palmMesh || null;
     const boneLines = skeleton.userData.boneLines || null;
     const positions = boneLines?.geometry?.attributes?.position;
     let visibleJointCount = 0;
+    const useFallback = Boolean(handNode.visible && !hasVisibleQuestHandMesh(handNode));
 
     QUEST_HAND_JOINT_NAMES.forEach((jointName) => {
       const joint = joints[jointName];
@@ -2068,9 +2504,53 @@ function updateQuestHandSkeletonFallbacks() {
         const scale = clamp(radius / 0.0065, 0.7, 1.8);
         mesh.scale.setScalar(scale);
       }
-      mesh.visible = handNode.visible;
+      mesh.visible = useFallback;
       visibleJointCount += 1;
     });
+
+    QUEST_HAND_BONE_PAIRS.forEach(([fromName, toName]) => {
+      const boneMesh = boneMeshes[`${fromName}:${toName}`];
+      const from = jointMeshes[fromName];
+      const to = jointMeshes[toName];
+      const visible = Boolean(useFallback && from?.visible && to?.visible);
+      if (!boneMesh) return;
+      boneMesh.visible = visible;
+      if (!visible) return;
+      tmpFrom.copy(from.position);
+      tmpTo.copy(to.position);
+      tmpMid.addVectors(tmpFrom, tmpTo).multiplyScalar(0.5);
+      tmpDirection.subVectors(tmpTo, tmpFrom);
+      const length = tmpDirection.length();
+      if (length <= 1e-5) {
+        boneMesh.visible = false;
+        return;
+      }
+      tmpDirection.normalize();
+      tmpQuaternion.setFromUnitVectors(yAxis, tmpDirection);
+      boneMesh.position.copy(tmpMid);
+      boneMesh.quaternion.copy(tmpQuaternion);
+      boneMesh.scale.set(1, length, 1);
+    });
+
+    if (palmMesh?.geometry?.attributes?.position) {
+      const palmJoints = [
+        jointMeshes.wrist,
+        jointMeshes["index-finger-metacarpal"],
+        jointMeshes["middle-finger-metacarpal"],
+        jointMeshes["ring-finger-metacarpal"],
+        jointMeshes["pinky-finger-metacarpal"],
+      ];
+      const palmVisible = Boolean(useFallback && palmJoints.every((mesh) => mesh?.visible));
+      palmMesh.visible = palmVisible;
+      if (palmVisible) {
+        const palmPositions = palmMesh.geometry.attributes.position;
+        palmJoints.forEach((mesh, index) => {
+          palmPositions.setXYZ(index, mesh.position.x, mesh.position.y, mesh.position.z);
+        });
+        palmPositions.needsUpdate = true;
+        palmMesh.geometry.computeVertexNormals();
+      }
+    }
 
     if (positions) {
       let offset = 0;
@@ -2087,7 +2567,10 @@ function updateQuestHandSkeletonFallbacks() {
       });
       positions.needsUpdate = true;
     }
-    skeleton.visible = Boolean(handNode.visible && visibleJointCount >= 6);
+    if (boneLines) {
+      boneLines.visible = Boolean(useFallback && visibleJointCount >= 6);
+    }
+    skeleton.visible = Boolean(useFallback && visibleJointCount >= 6);
   });
 }
 
@@ -2152,7 +2635,7 @@ function ensureQuestXrVisualNodes() {
 function updateQuestXrVisualVisibility() {
   const xrPresenting = Boolean(renderer?.xr?.isPresenting);
   const showControllers = xrPresenting && vrModeState.value === "vr_controller_mode";
-  const showRightHand = xrPresenting && vrModeState.value === "vr_hand_mode";
+  const showHands = xrPresenting && vrModeState.value === "vr_hand_mode";
   const applyVisible = (nodeMap, visible) => {
     Object.values(nodeMap).forEach((node) => {
       if (!node) return;
@@ -2161,14 +2644,7 @@ function updateQuestXrVisualVisibility() {
   };
   applyVisible(xrVisualNodes.controllerRays, showControllers);
   applyVisible(xrVisualNodes.controllerGrips, showControllers);
-  applyVisible(xrVisualNodes.hands, false);
-  const rightHandNode =
-    xrVisualNodes.hands.right ||
-    Object.values(xrVisualNodes.hands).find((node) => node && node.userData.connected !== false) ||
-    null;
-  if (rightHandNode) {
-    rightHandNode.visible = showRightHand;
-  }
+  applyVisible(xrVisualNodes.hands, showHands);
 }
 
 function hasVisibleControllerProfile(controllerGrip) {
@@ -2229,11 +2705,17 @@ function updateQuestControllerFallbackVisual(controllerGrip, hand) {
     gripMesh.scale.set(gripScale, gripScale, 1);
   }
 
-  const halo = fallback.getObjectByName("quest_controller_fallback_halo");
-  if (halo) {
+  const status = fallback.getObjectByName("quest_controller_fallback_status");
+  if (status) {
     const activity = Math.max(input.trigger, input.grip, input.active ? 0.45 : 0);
-    halo.scale.setScalar(1 + activity * 0.28);
-    setMaterialOpacity(halo, input.active ? 0.68 : 0.32 + activity * 0.24);
+    status.scale.setScalar(1 + activity * 0.55);
+    setMaterialOpacity(status, input.active ? 0.76 : 0.34 + activity * 0.28);
+  }
+
+  const sideGrip = fallback.getObjectByName("quest_controller_fallback_side_grip");
+  if (sideGrip) {
+    sideGrip.position.z = -0.03 + input.grip * 0.01;
+    sideGrip.scale.set(1, 1 + input.grip * 0.12, 1);
   }
 }
 
@@ -2472,6 +2954,7 @@ function ensureVrModeActive() {
 }
 
 function exitVrMode() {
+  stopDatasetAutoCollection();
   stopQuestControllerLoop();
   stopQuestHandLoop();
   stopQuestVrControlWatchdog();
@@ -3033,10 +3516,12 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
       left_grip: 0,
       right_trigger: 0,
       right_grip: 0,
+      next_episode: 0,
       active_hand: "",
     },
     raw: null,
   };
+  handleDatasetControllerNextButton(snapshot, nowMs);
   questControllerRawInput.value = snapshot?.raw || null;
   questControllerAvailable.value = true;
   questControllerStatusText.value = snapshot?.has_device ? "采样中" : "运行中(等待输入)";
@@ -3924,6 +4409,32 @@ function backendQuaternionToFrontend(quaternionWXYZ) {
   return BACKEND_TO_FRONTEND_ROT.clone().multiply(qBackend).normalize();
 }
 
+function getManifestQuaternion(transform) {
+  const rotation = normalizeManifestVector(transform?.rotation, 3, [0, 0, 0]);
+  return new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(rotation[0], rotation[1], rotation[2], "XYZ")
+  );
+}
+
+function getSceneObjectVisualQuaternion(model, physicsQuaternion) {
+  if (!model.userData.physicsToVisualQuaternion) {
+    const visualQuaternion =
+      model.userData.manifestQuaternion instanceof THREE.Quaternion
+        ? model.userData.manifestQuaternion
+        : model.quaternion;
+    model.userData.physicsToVisualQuaternion = physicsQuaternion
+      .clone()
+      .invert()
+      .multiply(visualQuaternion)
+      .normalize();
+  }
+
+  return physicsQuaternion
+    .clone()
+    .multiply(model.userData.physicsToVisualQuaternion)
+    .normalize();
+}
+
 function frontendPositionToBackend(position) {
   if (!Array.isArray(position) || position.length < 3) {
     return null;
@@ -4409,7 +4920,7 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
 
   const quaternionFrontend = backendQuaternionToFrontend(objectState.quaternion);
   if (quaternionFrontend) {
-    model.quaternion.copy(quaternionFrontend);
+    model.quaternion.copy(getSceneObjectVisualQuaternion(model, quaternionFrontend));
   }
 }
 
@@ -5460,6 +5971,7 @@ function initSceneObjects() {
       result.scale.set(scale[0], scale[1], scale[2]);
       result.position.set(position[0], position[1], position[2]);
       result.rotation.set(rotation[0], rotation[1], rotation[2]);
+      result.userData.manifestQuaternion = getManifestQuaternion(config.transform);
       scene.add(result);
       sceneObjectModels.set(config.id, result);
       const latestState =
@@ -5989,6 +6501,9 @@ watch(isVrModeEntered, (entered) => {
 });
 
 onBeforeUnmount(() => {
+  stopDatasetAutoCollection();
+  clearDatasetAutoDelay(true);
+  stopDatasetVoicePrompt();
   stopQuestControllerLoop();
   stopQuestHandLoop();
   stopQuestVrControlWatchdog();
@@ -6473,6 +6988,34 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
   margin-top: 9px;
+}
+
+.dataset-action-row.dataset-auto-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dataset-auto-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.dataset-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #d7ebff;
+  white-space: nowrap;
+}
+
+.dataset-auto-status {
+  min-width: 0;
+  color: #b4d7f1;
+  text-align: right;
+  word-break: break-word;
 }
 
 .dataset-button {
