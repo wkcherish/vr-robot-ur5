@@ -679,19 +679,19 @@ class SimulationCore:
         if return_state:
             return
 
-        source = str(getattr(request, "source", "") or "").strip().lower()
-        if source not in {"quest3_controller", "quest3_hand"}:
+        source_key = self._realtime_queue_source_key(request)
+        if source_key is None:
             return
 
-        previous = self._pending_realtime_futures_by_source.get(source)
+        previous = self._pending_realtime_futures_by_source.get(source_key)
         if previous is not None and previous is not future and not previous.done():
             previous.cancel()
 
-        self._pending_realtime_futures_by_source[source] = future
+        self._pending_realtime_futures_by_source[source_key] = future
 
         def _clear_done(done_future: asyncio.Future[dict[str, Any]]) -> None:
-            if self._pending_realtime_futures_by_source.get(source) is done_future:
-                self._pending_realtime_futures_by_source.pop(source, None)
+            if self._pending_realtime_futures_by_source.get(source_key) is done_future:
+                self._pending_realtime_futures_by_source.pop(source_key, None)
 
         future.add_done_callback(_clear_done)
 
@@ -3625,13 +3625,22 @@ class SimulationCore:
             finally:
                 self._command_queue.task_done()
 
+    def _realtime_queue_source_key(self, request: StepRequest) -> str | None:
+        source = str(getattr(request, "source", "") or "").strip().lower()
+        input_source = str(getattr(request, "input_source", "") or "").strip().lower()
+        if source in {"quest3_controller", "quest3_hand"}:
+            return source
+        if source in {"manual", "desktop_manual"} and input_source in {"slider", "joint_slider", "slider_commit"}:
+            return "desktop_manual_slider"
+        return None
+
     def _extract_realtime_command_seq(self, request: StepRequest) -> tuple[str, int] | None:
         """
-        Return (source, sequence) for Quest realtime commands that carry an
+        Return (source_key, sequence) for realtime commands that carry an
         anti-replay sequence number.
         """
-        source = str(getattr(request, "source", "") or "").strip().lower()
-        if source not in {"quest3_controller", "quest3_hand"}:
+        source_key = self._realtime_queue_source_key(request)
+        if source_key is None:
             return None
 
         normalized = request.normalized_input
@@ -3644,7 +3653,7 @@ class SimulationCore:
         except (TypeError, ValueError):
             return None
 
-        return source, seq
+        return source_key, seq
 
     def _remember_realtime_command_seq(self, request: StepRequest) -> None:
         seq_info = self._extract_realtime_command_seq(request)
