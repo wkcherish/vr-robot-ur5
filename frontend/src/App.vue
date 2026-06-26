@@ -3064,6 +3064,10 @@ function isQuestHandModeActive() {
   );
 }
 
+function isQuestTeleopControlActive() {
+  return isQuestControllerModeActive() || isQuestHandModeActive();
+}
+
 function rebuildQuestControllerTeleop() {
   const deadzone = clamp(questControllerDeadzone.value, 0.02, 0.3);
   questControllerTeleop = createQuestControllerTeleop({
@@ -5679,10 +5683,10 @@ function sendRealtimeSliderControl(options = {}) {
 }
 
 function scheduleRealtimeSliderSync() {
-  if (isVrModeEntered.value) {
-    // In VR mode, Quest teleop is the active control source.
-    // Block desktop slider auto-sync to avoid sending stale desktop commands
-    // that can pull the robot back after a few seconds.
+  if (isQuestTeleopControlActive()) {
+    // Only block desktop slider sync while Quest is actively teleoperating.
+    // This keeps PC sliders available during VR ready/standby, but prevents
+    // stale desktop commands from fighting the live Quest control stream.
     return;
   }
   if (sliderSyncTimer.value) {
@@ -5695,7 +5699,7 @@ function scheduleRealtimeSliderSync() {
 }
 
 function flushRealtimeSliderSync() {
-  if (isVrModeEntered.value) {
+  if (isQuestTeleopControlActive()) {
     return;
   }
   if (sliderSyncTimer.value) {
@@ -5707,7 +5711,7 @@ function flushRealtimeSliderSync() {
 
 // 修改sliderInput函数，确保每次角度变化时更新位置信息
 function sliderInput(value, name, options = {}) {
-  const skipBackendSync = options.skipBackendSync === true || isVrModeEntered.value;
+  const skipBackendSync = options.skipBackendSync === true || isQuestTeleopControlActive();
   const skipPoseUpdate = options.skipPoseUpdate === true;
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return;
@@ -5764,7 +5768,7 @@ function sliderInput(value, name, options = {}) {
 
 function sliderCommit(value, name) {
   sliderInput(value, name);
-  if (websocketManager.isConnected && !isVrModeEntered.value) {
+  if (websocketManager.isConnected && !isQuestTeleopControlActive()) {
     if (sliderSyncTimer.value) {
       clearTimeout(sliderSyncTimer.value);
       sliderSyncTimer.value = null;
