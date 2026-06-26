@@ -117,15 +117,26 @@
           </select>
         </div>
 
-        <!-- 添加任务进度显示 -->
-        <div class="task-progress" v-show="showTaskProgress">
-          <div class="progress-bar">
-            <div
-              class="progress-fill"
-              :style="{ width: `${taskProgress}%` }"
-            ></div>
+        <div class="scene-restore-panel" v-show="showTaskProgress">
+          <div class="scene-restore-header">
+            <div class="scene-restore-title">场景复原</div>
           </div>
-          <div class="progress-text">任务进度: {{ taskProgress }}%</div>
+          <button
+            class="scene-restore-button"
+            :disabled="sceneRestorePending || datasetEpisodeActive || datasetEpisodeInFlight || datasetAutoCollecting"
+            @click="restoreSceneToInitialState"
+          >
+            {{ sceneRestorePending ? "复原中..." : "恢复初始场景" }}
+          </button>
+          <div
+            class="scene-restore-status"
+            :class="{
+              'status-success': sceneRestoreStatusTone === 'success',
+              'status-error': sceneRestoreStatusTone === 'error',
+            }"
+          >
+            {{ sceneRestoreStatusMessage }}
+          </div>
         </div>
 
         <D405ObservationPanel
@@ -687,7 +698,7 @@
             class="panel-control-button"
             :class="{ active: showTaskProgress }"
           >
-            <span class="panel-icon">📊</span> 任务进度
+            <span class="panel-icon">♻️</span> 场景复原
           </button>
           <button
             @click="togglePanel('d405')"
@@ -741,15 +752,16 @@ import sceneManifest from "../../shared/scene_manifest.json";
 
 // 修改视角控制为下拉菜单
 const selectedView = ref("perspective"); // 默认选择透视视角
-// 新增任务进度变量
-const taskProgress = ref(0);
+const sceneRestorePending = ref(false);
+const sceneRestoreStatusMessage = ref("碰撞后可一键恢复 MuJoCo 与前端初始场景。");
+const sceneRestoreStatusTone = ref("idle");
 
 // 各面板显示状态控制
 const showSlider = ref(false); // 滑块面板默认不显示
 const showRobotPanel = ref(false); // 机器人控制面板默认不显示
 const showControlPanel = ref(false); // 仿真控制面板默认不显示
 const showViewControls = ref(true); // 视角控制默认显示
-const showTaskProgress = ref(true); // 任务进度默认显示
+const showTaskProgress = ref(true); // 场景复原面板默认显示
 const showVrControlPanel = ref(false); // VR控制中心默认不显示
 const showD405Panel = ref(false); // D405 观测面板默认不显示
 const ARM_JOINT_COUNT = 6;
@@ -4051,6 +4063,75 @@ function commitDesktopControlStateSnapshot(state, nowMs = Date.now()) {
   return true;
 }
 
+function applyRestoredSceneState(state) {
+  if (!state || typeof state !== "object") return false;
+
+  sendCommandPending.value = false;
+  clearPendingManualTarget();
+  clearRealtimeSliderDraft();
+  clearQuestRenderPreview();
+  lastRealtimeSliderSendAt.value = 0;
+
+  const applied = commitBackendStateSnapshot(state, {
+    immediate: true,
+    clearPendingManualTarget: true,
+  });
+  if (!applied) {
+    return false;
+  }
+
+  applyVrStateFromBackend(state);
+  checkD405ObservationReady(state);
+  checkRecordingBindingReady(state);
+  checkWebSocketReady();
+  updateNetworkPrereq();
+  return true;
+}
+
+async function restoreSceneToInitialState() {
+  if (sceneRestorePending.value) return;
+  if (datasetEpisodeActive.value || datasetEpisodeInFlight.value || datasetAutoCollecting.value) {
+    sceneRestoreStatusTone.value = "error";
+    sceneRestoreStatusMessage.value = "采集进行中，当前不允许执行场景复原。";
+    receivedText.value = sceneRestoreStatusMessage.value;
+    return;
+  }
+
+  sceneRestorePending.value = true;
+  sceneRestoreStatusTone.value = "idle";
+  sceneRestoreStatusMessage.value = "正在复原场景...";
+  receivedText.value = "正在复原场景...";
+
+  stopQuestControllerLoop();
+  stopQuestHandLoop();
+
+  try {
+    const response = await post("/sim/reset/", {}, { timeout: 12000 });
+    const data = response?.data || {};
+    if (String(data.status || "").toLowerCase() !== "success") {
+      throw new Error(data.message || "场景复原失败");
+    }
+    if (!applyRestoredSceneState(data.state)) {
+      throw new Error("场景复原后未收到有效状态");
+    }
+
+    sceneRestoreStatusTone.value = "success";
+    sceneRestoreStatusMessage.value = "场景已恢复到初始状态。";
+    receivedText.value = data.message || sceneRestoreStatusMessage.value;
+  } catch (error) {
+    sceneRestoreStatusTone.value = "error";
+    sceneRestoreStatusMessage.value = "场景复原失败: " + (error?.message || error);
+    receivedText.value = sceneRestoreStatusMessage.value;
+    if (websocketManager.isConnected) {
+      websocketManager.requestState();
+    }
+  } finally {
+    sceneRestorePending.value = false;
+    checkWebSocketReady();
+    updateNetworkPrereq();
+  }
+}
+
 function isBackendStateAlignedWithQuestPreview(state) {
   const preview = getFreshQuestRenderPreview();
   if (!preview) return true;
@@ -4988,18 +5069,6 @@ function applyAnglesToRobot(anglesDeg, options = {}) {
   };
 }
 
-// 用于更新任务进度的函数（示例）
-const updateTaskProgress = () => {
-  // 这里可以根据实际需求更新任务进度
-  // 例如：连接后端获取实际进度或根据当前操作阶段设置不同的进度值
-  if (taskProgress.value < 100) {
-    taskProgress.value += 5;
-    if (taskProgress.value > 100) {
-      taskProgress.value = 100;
-    }
-  }
-};
-
 // 修改fetchData函数，优先使用 /sim/state/，失败时回退到 /data/，并实现简单退避
 const fetchData = async () => {
   if (!isFetching.value) return;
@@ -5022,7 +5091,6 @@ const fetchData = async () => {
     // data 应包含 qpos 数组与对象状态
     if (data && typeof data === "object") {
       commitBackendStateSnapshot(data);
-      updateTaskProgress();
       fetchFailures.value = 0;
       return;
     }
@@ -5039,7 +5107,6 @@ const fetchData = async () => {
       if (normalizedAngles) {
         setRobotAngles(normalizedAngles);
       }
-      updateTaskProgress();
       syncEndEffectorPoseIfNeeded(true);
       fetchFailures.value = 0;
       return;
@@ -5166,7 +5233,6 @@ const testSendData = async () => {
       syncEndEffectorPoseIfNeeded(true);
       receivedText.value = "已在本地设置角度（未接入仿真）";
       setAnglesResponse.value = [...normalizedAngles];
-      updateTaskProgress();
       return;
     }
 
@@ -5177,7 +5243,6 @@ const testSendData = async () => {
     });
     receivedText.value = result.message;
     setAnglesResponse.value = [...normalizedAngles];
-    updateTaskProgress();
   } catch (error) {
     receivedText.value = "命令发送失败: " + error.message;
     console.error("发送测试命令失败:", error);
@@ -5198,8 +5263,6 @@ const startFetchingData = () => {
     fetchInterval.value = setInterval(fetchData, HTTP_STATE_FALLBACK_INTERVAL_MS); // fallback
   }
   console.log("已连接机器人，开始同步位置");
-  // 重置任务进度
-  taskProgress.value = 0;
   checkWebSocketReady();
   updateNetworkPrereq();
 };
@@ -5219,7 +5282,6 @@ const stopFetchingData = () => {
     websocketManager.disconnect();
   }
   console.log("已断开机器人连接");
-  taskProgress.value = 100;
 
   if (vrControlOwner.value === "quest3_controller" || vrControlOwner.value === "quest3_hand") {
     handleQuestDisconnected();
@@ -5277,7 +5339,6 @@ async function inputRobotAngles() {
     syncEndEffectorPoseIfNeeded(true);
     receivedText.value = "已在本地设置角度（未接入仿真）";
     setAnglesResponse.value = [...normalizedAngles];
-    updateTaskProgress();
 
     if (enableAutoReturn.value) {
       setTimeout(() => {
@@ -5307,8 +5368,6 @@ async function inputRobotAngles() {
   }
 
   setAnglesResponse.value = [...normalizedAngles];
-
-  updateTaskProgress();
 }
 
 function normalizeManifestVector(values, expectedLength, fallback) {
@@ -6139,6 +6198,24 @@ const setupWebSocketStateSync = () => {
     flushQueuedQuestHandControlCommand();
   });
 
+  websocketManager.on('resetResult', (data) => {
+    sendCommandPending.value = false;
+    if (data?.status && String(data.status).toLowerCase() !== "success") {
+      sceneRestoreStatusTone.value = "error";
+      sceneRestoreStatusMessage.value = data?.message || "场景复原失败。";
+      receivedText.value = sceneRestoreStatusMessage.value;
+      if (websocketManager.isConnected) {
+        websocketManager.requestState();
+      }
+      return;
+    }
+    if (applyRestoredSceneState(data?.state)) {
+      sceneRestoreStatusTone.value = "success";
+      sceneRestoreStatusMessage.value = "场景已恢复到初始状态。";
+      receivedText.value = data?.message || sceneRestoreStatusMessage.value;
+    }
+  });
+
   // 错误处理
   websocketManager.on('error', (error) => {
     sendCommandPending.value = false;
@@ -6464,8 +6541,6 @@ const handleWindowResize = () => {
   renderer.setPixelRatio(getRenderPixelRatio());
 };
 
-const taskProgressInterval = ref(null);
-
 onMounted(() => {
   localHostname.value = typeof window !== "undefined" ? window.location.hostname : "";
   localHostIp.value = readHostCandidate();
@@ -6497,12 +6572,6 @@ onMounted(() => {
   window.addEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
   window.addEventListener("gamepaddisconnected", handleQuestGamepadConnectionEvent);
 
-  taskProgressInterval.value = setInterval(() => {
-    if (isFetching.value && taskProgress.value < 95) {
-      updateTaskProgress();
-    }
-  }, 2000);
-
   loadDatasetTemplates();
   runQuest3AccessChecks();
 });
@@ -6532,10 +6601,6 @@ onBeforeUnmount(() => {
     clearTimeout(sliderSyncTimer.value);
     sliderSyncTimer.value = null;
   }
-  if (taskProgressInterval.value) {
-    clearInterval(taskProgressInterval.value);
-    taskProgressInterval.value = null;
-  }
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("gamepadconnected", handleQuestGamepadConnectionEvent);
   window.removeEventListener("gamepaddisconnected", handleQuestGamepadConnectionEvent);
@@ -6545,6 +6610,7 @@ onBeforeUnmount(() => {
   websocketManager.off('motionUpdate');
   websocketManager.off('sceneUpdate');
   websocketManager.off('controlResult');
+  websocketManager.off('resetResult');
   websocketManager.off('vrStateResult');
   websocketManager.off('error');
   websocketManager.off('disconnected');
@@ -6677,8 +6743,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.5);
 }
 
-/* 任务进度样式 */
-.task-progress {
+.scene-restore-panel {
   position: fixed;
   bottom: 20px;
   left: 20px;
@@ -6687,29 +6752,52 @@ onBeforeUnmount(() => {
   padding: 15px;
   border-radius: 10px;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-  width: 200px;
+  width: 220px;
 }
 
-.progress-bar {
+.scene-restore-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.scene-restore-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.scene-restore-button {
   width: 100%;
-  height: 15px;
-  background-color: #e0e0e0;
-  border-radius: 10px;
-  overflow: hidden;
-  margin-bottom: 5px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background-color: #409eff;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.2s ease;
 }
 
-.progress-fill {
-  height: 100%;
-  background-color: #4caf50;
-  border-radius: 10px;
-  transition: width 0.3s ease;
+.scene-restore-button:hover:not(:disabled) {
+  background-color: #66b1ff;
+  transform: translateY(-1px);
 }
 
-.progress-text {
-  text-align: center;
-  font-weight: bold;
-  color: #333;
+.scene-restore-button:disabled {
+  background-color: #a0cfff;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.scene-restore-status {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #606266;
 }
 
 .vr-control-panel {
@@ -7414,6 +7502,16 @@ onBeforeUnmount(() => {
 .panel-control-button.active {
   background-color: rgba(72, 113, 157, 0.8);
   color: white;
+}
+
+.panel-control-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.panel-control-button:disabled:hover {
+  background-color: transparent;
+  color: #ccc;
 }
 
 .panel-icon {
