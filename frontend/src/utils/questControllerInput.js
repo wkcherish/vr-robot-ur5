@@ -15,6 +15,7 @@ const LEFT_BUTTON_INDEX = {
 const RIGHT_BUTTON_INDEX = {
   trigger: [0],
   grip: [1],
+  next_episode: [4, 5],
 };
 
 function asConnectedPads() {
@@ -294,6 +295,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
         left_grip: 0,
         right_trigger: 0,
         right_grip: 0,
+        next_episode: 0,
         active_hand: "",
       },
       raw: null,
@@ -307,6 +309,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
   const selectForearm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_forearm);
   const selectWrist = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_wrist);
   const precision = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.precision);
+  const nextEpisode = readButtonValue(rightPad, RIGHT_BUTTON_INDEX.next_episode);
   const raw = {
     source,
     roles: {
@@ -329,7 +332,10 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       select_wrist: selectWrist,
       precision,
     },
-    right: buildControllerRaw("right", rightPad, RIGHT_BUTTON_INDEX),
+    right: {
+      ...buildControllerRaw("right", rightPad, RIGHT_BUTTON_INDEX),
+      next_episode: nextEpisode,
+    },
   };
   const activeHand = pickActiveController(raw);
   raw.roles.control = activeHand;
@@ -354,6 +360,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       left_grip: raw.left.grip,
       right_trigger: raw.right.trigger,
       right_grip: raw.right.grip,
+      next_episode: raw.right.next_episode,
       active_hand: activeHand,
     },
     raw,

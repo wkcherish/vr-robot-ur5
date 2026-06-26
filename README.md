@@ -51,6 +51,8 @@ cd backend
 python ./main.py --open-viewer yes --viewer-camera d405_rgb
 ```
 
+macOS 上 MuJoCo viewer 需要 `mjpython`。当前启动器会在需要打开 viewer 时自动切换到同一 Conda 环境里的 `mjpython`；也可以手动执行 `mjpython ./main.py --open-viewer yes`。
+
 `Sensor` 面板显示的是传感器数值，不是 RGB-D 相机画面。D405 固定相机名称为 `d405_rgb` / `d405_depth`。独立窗口可用 `--camera-preview-window no` 关闭；如需旧的 MuJoCo 内嵌贴图调试，可用 `--viewer-camera-overlay d405_rgb`。训练画面也可从前端 D405 面板或 `/sim/camera/rgb/`、`/sim/camera/depth/` 接口查看。
 
 ### 3. 启动前端（按当前约定）

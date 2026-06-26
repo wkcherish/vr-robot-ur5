@@ -28,6 +28,7 @@
       pos="0.48 0.2 1.0"
       euler="0 0 -1.5707963267948966"
     >
+      <freejoint/>
       <inertial pos="-0.002 0.037 0.105" mass="1.2" diaginertia="0.008 0.010 0.009"/>
       <geom
         class="toolbox_contact"

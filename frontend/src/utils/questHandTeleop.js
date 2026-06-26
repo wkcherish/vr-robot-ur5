@@ -246,10 +246,10 @@ export function createQuestHandTeleop(options = {}) {
       : 0.003,
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
-      : 1.05,
+      : 0.42,
     movement_gain: Number.isFinite(Number(options.sensitivity))
-      ? Number(options.sensitivity) * 3.8
-      : 5.4,
+      ? Number(options.sensitivity) * 2.2
+      : 3.3,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
       : 0.70,
@@ -258,7 +258,7 @@ export function createQuestHandTeleop(options = {}) {
       : 0.70,
     max_orientation_step_rad: Number.isFinite(Number(options.max_orientation_step_rad))
       ? Number(options.max_orientation_step_rad)
-      : 0.48,
+      : 0.24,
     orientation_gain: Number.isFinite(Number(options.orientation_gain))
       ? Number(options.orientation_gain)
       : 1.35,
@@ -267,7 +267,7 @@ export function createQuestHandTeleop(options = {}) {
       : 0.014,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
-      : 0.18,
+      : 0.045,
     anchor_reset_threshold_m: Number.isFinite(Number(options.anchor_reset_threshold_m))
       ? Number(options.anchor_reset_threshold_m)
       : 0.85,

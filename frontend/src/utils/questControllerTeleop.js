@@ -369,10 +369,10 @@ export function createQuestControllerTeleop(options = {}) {
       : 0.003,
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
-      : 0.95,
+      : 0.48,
     movement_gain: Number.isFinite(Number(options.sensitivity))
-      ? Number(options.sensitivity) * 3.4
-      : 5.2,
+      ? Number(options.sensitivity) * 2.4
+      : 3.4,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
       : 0.72,
@@ -381,7 +381,7 @@ export function createQuestControllerTeleop(options = {}) {
       : 0.70,
     max_orientation_step_rad: Number.isFinite(Number(options.max_orientation_step_rad))
       ? Number(options.max_orientation_step_rad)
-      : 0.52,
+      : 0.28,
     orientation_gain: Number.isFinite(Number(options.orientation_gain))
       ? Number(options.orientation_gain)
       : 1.15,
@@ -390,7 +390,7 @@ export function createQuestControllerTeleop(options = {}) {
       : 0.012,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
-      : 0.17,
+      : 0.05,
     anchor_reset_threshold_m: Number.isFinite(Number(options.anchor_reset_threshold_m))
       ? Number(options.anchor_reset_threshold_m)
       : 0.78,
