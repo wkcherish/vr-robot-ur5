@@ -84,9 +84,13 @@
         "rotation_rpy": [-1.5707963267948966, 0.0, -1.5707963267948966],
         "scale": [1.0, 1.0, 1.0]
       },
+      "visual_alignment": {
+        "support_plane_at_body_origin_y": true
+      },
       "reset_policy": {
         "mode": "random_in_region",
-        "region_id": "toolbox_workspace_region"
+        "region_id": "toolbox_workspace_region",
+        "preserve_height": true
       },
       "notes": "Target container for tool sorting."
     },
@@ -102,7 +106,8 @@
       },
       "reset_policy": {
         "mode": "random_in_region",
-        "region_id": "wrench_workspace_region"
+        "region_id": "wrench_workspace_region",
+        "preserve_height": true
       }
     },
     {
@@ -117,7 +122,8 @@
       },
       "reset_policy": {
         "mode": "random_in_region",
-        "region_id": "screwdriver_workspace_region"
+        "region_id": "screwdriver_workspace_region",
+        "preserve_height": true
       }
     },
     {
@@ -132,7 +138,8 @@
       },
       "reset_policy": {
         "mode": "random_in_region",
-        "region_id": "pliers_workspace_region"
+        "region_id": "pliers_workspace_region",
+        "preserve_height": true
       }
     }
   ],

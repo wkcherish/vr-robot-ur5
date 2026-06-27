@@ -1375,6 +1375,10 @@ class SimulationCore:
         x_frontend, y_frontend, z_frontend = frontend_position
         return [x_frontend, -z_frontend, y_frontend + BACKEND_FRAME_Z_OFFSET]
 
+    def _backend_to_frontend_position(self, backend_position: list[float]) -> list[float]:
+        x_backend, y_backend, z_backend = backend_position
+        return [x_backend, z_backend - BACKEND_FRAME_Z_OFFSET, -y_backend]
+
     def _resolve_model_path(self, model_path: str | None) -> Path:
         if model_path is None:
             return self._default_model_path
@@ -2356,6 +2360,18 @@ class SimulationCore:
                 random.uniform(min_pos[1], max_pos[1]),
                 random.uniform(min_pos[2], max_pos[2]),
             ]
+            preserve_height = bool(policy.get("preserve_height", False))
+            template_state = self._scene_objects_template.get(obj_id)
+            template_position = (
+                template_state.get("position", [0.0, 0.0, BACKEND_FRAME_Z_OFFSET])
+                if isinstance(template_state, dict)
+                else [0.0, 0.0, BACKEND_FRAME_Z_OFFSET]
+            )
+            if preserve_height and isinstance(template_position, list) and len(template_position) >= 3:
+                if region["frame"] == "frontend":
+                    sampled[1] = float(self._backend_to_frontend_position(template_position)[1])
+                else:
+                    sampled[2] = float(template_position[2])
             backend_position = (
                 self._frontend_to_backend_position(sampled)
                 if region["frame"] == "frontend"
