@@ -4521,6 +4521,38 @@ function getSceneObjectVisualQuaternion(model, physicsQuaternion) {
     .normalize();
 }
 
+function getSceneObjectVisualOffsetWorld(model) {
+  const localOffset = model?.userData?.visualOffsetLocal;
+  if (!(localOffset instanceof THREE.Vector3)) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+  return localOffset.clone().applyQuaternion(model.quaternion);
+}
+
+function calibrateSceneObjectVisualAlignment(model, config) {
+  if (!model || !config?.visualAlignment?.support_plane_at_body_origin_y) {
+    return;
+  }
+
+  const box = new THREE.Box3().setFromObject(model);
+  if (box.isEmpty()) return;
+
+  const targetY = Number(config?.transform?.position?.[1]);
+  if (!Number.isFinite(targetY)) return;
+
+  const deltaY = targetY - box.min.y;
+  if (!Number.isFinite(deltaY) || Math.abs(deltaY) <= 1e-6) return;
+
+  const manifestQuaternion =
+    model.userData.manifestQuaternion instanceof THREE.Quaternion
+      ? model.userData.manifestQuaternion
+      : getManifestQuaternion(config.transform);
+  model.userData.visualOffsetLocal = new THREE.Vector3(0, deltaY, 0).applyQuaternion(
+    manifestQuaternion.clone().invert()
+  );
+  model.position.y += deltaY;
+}
+
 function frontendPositionToBackend(position) {
   if (!Array.isArray(position) || position.length < 3) {
     return null;
@@ -4995,18 +5027,19 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
   if (!model) return;
   if (!objectState || typeof objectState !== "object") return;
 
-  const positionFrontend = backendPositionToFrontend(objectState.position);
-  if (positionFrontend) {
-    model.position.set(
-      positionFrontend[0],
-      positionFrontend[1],
-      positionFrontend[2]
-    );
-  }
-
   const quaternionFrontend = backendQuaternionToFrontend(objectState.quaternion);
   if (quaternionFrontend) {
     model.quaternion.copy(getSceneObjectVisualQuaternion(model, quaternionFrontend));
+  }
+
+  const positionFrontend = backendPositionToFrontend(objectState.position);
+  if (positionFrontend) {
+    const offsetWorld = getSceneObjectVisualOffsetWorld(model);
+    model.position.set(
+      positionFrontend[0] + offsetWorld.x,
+      positionFrontend[1] + offsetWorld.y,
+      positionFrontend[2] + offsetWorld.z
+    );
   }
 }
 
@@ -5480,6 +5513,10 @@ const manifestObjectConfigs = Array.isArray(sceneManifest?.objects)
             rotation: [0, 0, 0],
             scale: [1, 1, 1],
           }),
+          visualAlignment:
+            item?.visual_alignment && typeof item.visual_alignment === "object"
+              ? { ...item.visual_alignment }
+              : null,
         };
       })
       .filter((item) => item && item.assetPath)
@@ -6043,6 +6080,7 @@ function initSceneObjects() {
       result.position.set(position[0], position[1], position[2]);
       result.rotation.set(rotation[0], rotation[1], rotation[2]);
       result.userData.manifestQuaternion = getManifestQuaternion(config.transform);
+      calibrateSceneObjectVisualAlignment(result, config);
       scene.add(result);
       sceneObjectModels.set(config.id, result);
       const latestState =
