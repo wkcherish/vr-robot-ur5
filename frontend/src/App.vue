@@ -4529,15 +4529,52 @@ function getSceneObjectVisualOffsetWorld(model) {
   return localOffset.clone().applyQuaternion(model.quaternion);
 }
 
-function calibrateSceneObjectVisualAlignment(model, config) {
-  if (!model || !config?.visualAlignment?.support_plane_at_body_origin_y) {
-    return;
+function resolveSceneObjectSupportPlaneTargetY(config) {
+  const bodyOriginY = Number(config?.transform?.position?.[1]);
+  if (!Number.isFinite(bodyOriginY)) return null;
+
+  const explicitOffsetY = Number(config?.visualAlignment?.support_plane_offset_y);
+  if (Number.isFinite(explicitOffsetY)) {
+    return bodyOriginY + explicitOffsetY;
   }
+
+  if (config?.visualAlignment?.support_plane_at_body_origin_y) {
+    return bodyOriginY;
+  }
+
+  return null;
+}
+
+function resolveSceneObjectMinWorldY(config) {
+  const minWorldY = Number(config?.visualAlignment?.min_world_y);
+  if (Number.isFinite(minWorldY)) {
+    return minWorldY;
+  }
+  return null;
+}
+
+function enforceSceneObjectVisualMinWorldY(model, config) {
+  if (!model) return;
+
+  const minWorldY = resolveSceneObjectMinWorldY(config);
+  if (!Number.isFinite(minWorldY)) return;
 
   const box = new THREE.Box3().setFromObject(model);
   if (box.isEmpty()) return;
 
-  const targetY = Number(config?.transform?.position?.[1]);
+  const deltaY = minWorldY - box.min.y;
+  if (!Number.isFinite(deltaY) || deltaY <= 1e-6) return;
+
+  model.position.y += deltaY;
+}
+
+function calibrateSceneObjectVisualAlignment(model, config) {
+  if (!model) return;
+
+  const box = new THREE.Box3().setFromObject(model);
+  if (box.isEmpty()) return;
+
+  const targetY = resolveSceneObjectSupportPlaneTargetY(config);
   if (!Number.isFinite(targetY)) return;
 
   const deltaY = targetY - box.min.y;
@@ -4551,6 +4588,7 @@ function calibrateSceneObjectVisualAlignment(model, config) {
     manifestQuaternion.clone().invert()
   );
   model.position.y += deltaY;
+  enforceSceneObjectVisualMinWorldY(model, config);
 }
 
 function frontendPositionToBackend(position) {
@@ -5026,6 +5064,7 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
   const model = sceneObjectModels.get(objectId);
   if (!model) return;
   if (!objectState || typeof objectState !== "object") return;
+  const config = SCENE_OBJECT_CONFIGS.find((item) => item?.id === objectId) || null;
 
   const quaternionFrontend = backendQuaternionToFrontend(objectState.quaternion);
   if (quaternionFrontend) {
@@ -5041,6 +5080,8 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
       positionFrontend[2] + offsetWorld.z
     );
   }
+
+  enforceSceneObjectVisualMinWorldY(model, config);
 }
 
 function applySceneObjectsFromBackendState(state) {
@@ -6081,6 +6122,7 @@ function initSceneObjects() {
       result.rotation.set(rotation[0], rotation[1], rotation[2]);
       result.userData.manifestQuaternion = getManifestQuaternion(config.transform);
       calibrateSceneObjectVisualAlignment(result, config);
+      enforceSceneObjectVisualMinWorldY(result, config);
       scene.add(result);
       sceneObjectModels.set(config.id, result);
       const latestState =

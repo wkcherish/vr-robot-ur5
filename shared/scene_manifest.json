@@ -85,7 +85,8 @@
         "scale": [1.0, 1.0, 1.0]
       },
       "visual_alignment": {
-        "support_plane_at_body_origin_y": true
+        "support_plane_offset_y": 0.0,
+        "min_world_y": 0.5
       },
       "reset_policy": {
         "mode": "random_in_region",
@@ -104,6 +105,10 @@
         "rotation_rpy": [0.0, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },
+      "visual_alignment": {
+        "support_plane_offset_y": -0.0240336800934792,
+        "min_world_y": 0.5
+      },
       "reset_policy": {
         "mode": "random_in_region",
         "region_id": "wrench_workspace_region",
@@ -120,6 +125,10 @@
         "rotation_rpy": [-1.5707963267948966, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },
+      "visual_alignment": {
+        "support_plane_offset_y": 0.0,
+        "min_world_y": 0.5
+      },
       "reset_policy": {
         "mode": "random_in_region",
         "region_id": "screwdriver_workspace_region",
@@ -135,6 +144,10 @@
         "position": [0.28, 0.5100852437109232, 0.12],
         "rotation_rpy": [0.0, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
+      },
+      "visual_alignment": {
+        "support_plane_offset_y": -0.0100852437109232,
+        "min_world_y": 0.5
       },
       "reset_policy": {
         "mode": "random_in_region",
