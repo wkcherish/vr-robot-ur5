@@ -121,9 +121,17 @@ DEFAULT_CAMERA_ALIGNMENT_MODE = "same_tick"
 DEFAULT_CAMERA_ALIGNMENT_MAX_DELTA_MS = 5.0
 DEFAULT_CAMERA_DEBUG_OBJECTS = ["camera_base", "camera"]
 REALTIME_SOURCE_MIN_PHYSICS_HORIZON_S = 0.024
-REALTIME_COMMAND_BLEND_PER_STEP = 0.92
+REALTIME_COMMAND_BLEND_PER_STEP = 1.0
 REALTIME_ARM_MAX_DELTA_RAD = 0.12
 REALTIME_GRIPPER_MAX_DELTA_OPENING = 0.18
+# Conservative realtime EE tracking defaults. These favor smooth, stable
+# teleoperation over aggressive goal chasing when XR pose input is noisy.
+REALTIME_EE_TARGET_MAX_STEP_M = 0.05
+REALTIME_EE_TARGET_MAX_STEP_RAD = 0.20
+REALTIME_EE_POSITION_DEADBAND_M = 1.5e-3
+REALTIME_EE_ORIENTATION_DEADBAND_RAD = 0.018
+REALTIME_EE_RESEED_DRIFT_M = 0.22
+REALTIME_EE_RESEED_DRIFT_RAD = 0.70
 PASSIVE_ADVANCE_MAX_STEPS = 80
 INTERACTIVE_SOURCE_MAX_BLOCKING_STEPS = 5
 SLIDER_COMMIT_MAX_BLOCKING_STEPS = 24
@@ -147,14 +155,13 @@ REALTIME_SERVO_CTRL_ARM_MAX_ACCEL_RAD_S2 = 36.0
 REALTIME_SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2 = 34.0
 REALTIME_SERVO_CTRL_ARM_MAX_JERK_RAD_S3 = 260.0
 REALTIME_SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3 = 260.0
-REALTIME_EE_MAX_DELTA_M = 0.08
 IK_MAX_ITERATIONS = 24
 IK_POSITION_TOLERANCE_M = 0.003
 IK_ORIENTATION_TOLERANCE_RAD = 0.035
-IK_DAMPING = 0.08
-IK_MAX_STEP_RAD = 0.34
+IK_DAMPING = 0.10
+IK_MAX_STEP_RAD = 0.24
 IK_POSITION_WEIGHT = 1.0
-IK_ORIENTATION_WEIGHT = 0.42
+IK_ORIENTATION_WEIGHT = 0.30
 GRASP_ASSIST_MODE = str(os.getenv("SIM_GRASP_ASSIST_MODE", "strict")).strip().lower()
 GRIPPER_GRASP_ENGAGE_OPENING = 0.70
 GRIPPER_GRASP_RELEASE_OPENING = 0.24
@@ -318,6 +325,49 @@ def _request_origin(raw_input: dict[str, Any] | None) -> str:
 def _move_toward(value: float, target: float, max_delta: float) -> float:
     delta = float(target) - float(value)
     return float(value) + _clamp(delta, -abs(float(max_delta)), abs(float(max_delta)))
+
+
+def _vec_distance(lhs: list[float], rhs: list[float]) -> float:
+    return math.sqrt(
+        sum(
+            math.pow(float(lhs[idx]) - float(rhs[idx]), 2.0)
+            for idx in range(min(len(lhs), len(rhs), 3))
+        )
+    )
+
+
+def _quaternion_angle_distance_rad(lhs: list[float], rhs: list[float]) -> float:
+    left = _normalize_quaternion(lhs)
+    right = _normalize_quaternion(rhs)
+    dot = abs(sum(left[idx] * right[idx] for idx in range(4)))
+    return 2.0 * math.acos(_clamp(dot, -1.0, 1.0))
+
+
+def _quaternion_slerp(lhs: list[float], rhs: list[float], alpha: float) -> list[float]:
+    left = _normalize_quaternion(lhs)
+    right = _normalize_quaternion(rhs)
+    dot = sum(left[idx] * right[idx] for idx in range(4))
+    if dot < 0.0:
+        right = [-value for value in right]
+        dot = -dot
+
+    t = _clamp(float(alpha), 0.0, 1.0)
+    if dot > 0.9995:
+        return _normalize_quaternion([
+            left[idx] + (right[idx] - left[idx]) * t
+            for idx in range(4)
+        ])
+
+    theta_0 = math.acos(_clamp(dot, -1.0, 1.0))
+    sin_theta_0 = math.sin(theta_0)
+    theta = theta_0 * t
+    sin_theta = math.sin(theta)
+    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
+    s1 = sin_theta / sin_theta_0
+    return _normalize_quaternion([
+        left[idx] * s0 + right[idx] * s1
+        for idx in range(4)
+    ])
 
 
 def _advance_smooth_servo_target(
@@ -636,7 +686,9 @@ class SimulationCore:
             "camera_drops": 0,
         }
         self._latest_realtime_seq_by_source: dict[str, int] = {}
+        self._realtime_ee_target_by_source: dict[str, dict[str, list[float]]] = {}
         self._pending_realtime_futures_by_source: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._pending_realtime_commands_by_source: dict[str, _QueuedCommand] = {}
         self._last_streaming_command_at: float | None = None
         self._frontend_slider_guard_until: float = 0.0
 
@@ -700,13 +752,25 @@ class SimulationCore:
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._remember_realtime_command_seq(request)
         self._track_realtime_future(request, future, return_state=bool(return_state))
-        self._command_queue.put_nowait(
-            _QueuedCommand(
-                request=request,
-                future=future,
-                return_state=bool(return_state),
-            )
+        source_key = self._realtime_queue_source_key(request) if not bool(return_state) else None
+        pending = self._pending_realtime_commands_by_source.get(source_key) if source_key else None
+        if pending is not None:
+            previous_future = pending.future
+            pending.request = request
+            pending.future = future
+            pending.return_state = bool(return_state)
+            if previous_future is not future and not previous_future.done():
+                previous_future.cancel()
+            return future
+
+        queued_command = _QueuedCommand(
+            request=request,
+            future=future,
+            return_state=bool(return_state),
         )
+        if source_key is not None:
+            self._pending_realtime_commands_by_source[source_key] = queued_command
+        self._command_queue.put_nowait(queued_command)
         return future
 
     async def enqueue_step(self, request: StepRequest, return_state: bool = True) -> dict[str, Any]:
@@ -789,7 +853,12 @@ class SimulationCore:
             self._last_normalized_input = (
                 dict(request.normalized_input) if isinstance(request.normalized_input, dict) else None
             )
-            if request.source == "quest3_controller":
+            if request.source in {"manual", "desktop_manual"}:
+                # Desktop/manual commands must reclaim ownership immediately,
+                # otherwise stale Quest ownership can keep the frontend stuck
+                # in a teleop-only state after XR exits unexpectedly.
+                self._vr_state["control_owner"] = "desktop_manual"
+            elif request.source == "quest3_controller":
                 self._vr_state["control_owner"] = "quest3_controller"
                 self._vr_state["last_quest_input_ts"] = time.time()
                 self._vr_state["input_source_available"]["controller"] = True
@@ -2272,6 +2341,7 @@ class SimulationCore:
         self._collision_blocked = False
         self._last_collision_contacts = []
         self._latest_realtime_seq_by_source = {}
+        self._realtime_ee_target_by_source = {}
         self._last_streaming_command_at = None
         self._frontend_slider_guard_until = 0.0
         self._sim_time = 0.0
@@ -2420,6 +2490,71 @@ class SimulationCore:
             return current
         return list(self._arm_qpos)
 
+    def _clear_realtime_ee_target_locked(self, source_key: str | None = None) -> None:
+        if source_key:
+            self._realtime_ee_target_by_source.pop(str(source_key), None)
+            return
+        self._realtime_ee_target_by_source = {}
+
+    def _stabilize_realtime_ee_target_locked(
+        self,
+        source_key: str,
+        target_position: list[float],
+        target_quaternion: list[float],
+        current_pose: dict[str, Any],
+    ) -> tuple[list[float], list[float]]:
+        current_position = [float(v) for v in current_pose["position"][:3]]
+        current_quaternion = _normalize_quaternion(current_pose["quaternion"])
+        previous = self._realtime_ee_target_by_source.get(source_key)
+        if previous is None:
+            base_position = list(current_position)
+            base_quaternion = list(current_quaternion)
+        else:
+            base_position = [float(v) for v in previous.get("position", current_position)[:3]]
+            base_quaternion = _normalize_quaternion(previous.get("quaternion", current_quaternion))
+            if (
+                _vec_distance(base_position, current_position) > REALTIME_EE_RESEED_DRIFT_M
+                or _quaternion_angle_distance_rad(base_quaternion, current_quaternion)
+                > REALTIME_EE_RESEED_DRIFT_RAD
+            ):
+                base_position = list(current_position)
+                base_quaternion = list(current_quaternion)
+
+        delta_position = [
+            float(target_position[idx]) - float(base_position[idx])
+            for idx in range(3)
+        ]
+        delta_norm = math.sqrt(sum(component * component for component in delta_position))
+        if delta_norm <= REALTIME_EE_POSITION_DEADBAND_M:
+            stabilized_position = list(base_position)
+        elif delta_norm <= REALTIME_EE_TARGET_MAX_STEP_M:
+            stabilized_position = [float(v) for v in target_position[:3]]
+        else:
+            scale = REALTIME_EE_TARGET_MAX_STEP_M / max(delta_norm, 1e-8)
+            stabilized_position = [
+                float(base_position[idx]) + delta_position[idx] * scale
+                for idx in range(3)
+            ]
+
+        target_quat = _normalize_quaternion(target_quaternion)
+        quat_error = _quaternion_angle_distance_rad(base_quaternion, target_quat)
+        if quat_error <= REALTIME_EE_ORIENTATION_DEADBAND_RAD:
+            stabilized_quaternion = list(base_quaternion)
+        elif quat_error <= REALTIME_EE_TARGET_MAX_STEP_RAD:
+            stabilized_quaternion = list(target_quat)
+        else:
+            stabilized_quaternion = _quaternion_slerp(
+                base_quaternion,
+                target_quat,
+                REALTIME_EE_TARGET_MAX_STEP_RAD / max(quat_error, 1e-8),
+            )
+
+        self._realtime_ee_target_by_source[source_key] = {
+            "position": [float(v) for v in stabilized_position[:3]],
+            "quaternion": [float(v) for v in stabilized_quaternion[:4]],
+        }
+        return stabilized_position, stabilized_quaternion
+
     def _extract_ee_target_pose_locked(
         self,
         request: StepRequest,
@@ -2460,18 +2595,13 @@ class SimulationCore:
             return None
 
         if _is_realtime_source(request.source, input_source=getattr(request, "input_source", None)):
-            current_position = [float(v) for v in current_pose["position"][:3]]
-            delta = [
-                target_position[axis] - current_position[axis]
-                for axis in range(3)
-            ]
-            delta_norm = math.sqrt(sum(component * component for component in delta))
-            if delta_norm > REALTIME_EE_MAX_DELTA_M and delta_norm > 1e-8:
-                scale = REALTIME_EE_MAX_DELTA_M / delta_norm
-                target_position = [
-                    current_position[axis] + delta[axis] * scale
-                    for axis in range(3)
-                ]
+            source_key = self._realtime_queue_source_key(request) or str(request.source)
+            target_position, target_quaternion = self._stabilize_realtime_ee_target_locked(
+                source_key,
+                target_position,
+                target_quaternion,
+                current_pose,
+            )
 
         return target_position, target_quaternion
 
@@ -2763,6 +2893,9 @@ class SimulationCore:
             return 0
 
         if self._should_hold_stale_streaming_control_locked():
+            self._clear_realtime_ee_target_locked(
+                self._realtime_state_source_key(self._source, self._last_input_source)
+            )
             self._hold_current_pose_targets_locked()
             self._last_streaming_command_at = None
             self._objects_state = self._collect_objects_state_locked()
@@ -3614,6 +3747,10 @@ class SimulationCore:
             except asyncio.CancelledError:
                 break
 
+            source_key = self._realtime_queue_source_key(queued.request) if not queued.return_state else None
+            if source_key is not None and self._pending_realtime_commands_by_source.get(source_key) is queued:
+                self._pending_realtime_commands_by_source.pop(source_key, None)
+
             if queued.future.cancelled():
                 self._command_queue.task_done()
                 continue
@@ -3642,11 +3779,25 @@ class SimulationCore:
                 self._command_queue.task_done()
 
     def _realtime_queue_source_key(self, request: StepRequest) -> str | None:
-        source = str(getattr(request, "source", "") or "").strip().lower()
-        input_source = str(getattr(request, "input_source", "") or "").strip().lower()
-        if source in {"quest3_controller", "quest3_hand"}:
-            return source
-        if source in {"manual", "desktop_manual"} and input_source in {"slider", "joint_slider", "slider_commit"}:
+        return self._realtime_state_source_key(
+            getattr(request, "source", None),
+            getattr(request, "input_source", None),
+        )
+
+    def _realtime_state_source_key(
+        self,
+        source: str | None,
+        input_source: str | None,
+    ) -> str | None:
+        normalized_source = str(source or "").strip().lower()
+        normalized_input = str(input_source or "").strip().lower()
+        if normalized_source in {"quest3_controller", "quest3_hand"}:
+            return normalized_source
+        if normalized_source in {"manual", "desktop_manual"} and normalized_input in {
+            "slider",
+            "joint_slider",
+            "slider_commit",
+        }:
             return "desktop_manual_slider"
         return None
 

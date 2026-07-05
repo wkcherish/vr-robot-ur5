@@ -1,228 +1,40 @@
-const CONTROL_GROUP = "end_effector";
-const CONTROL_GROUP_LABEL = "末端执行器";
-const BASE_STEP_DT_SEC = 1 / 50;
-const FRONTEND_TO_BACKEND_QUAT_WXYZ = [
-  Math.SQRT1_2,
-  Math.SQRT1_2,
-  0,
-  0,
+import {
+  BASE_STEP_DT_SEC,
+  clamp,
+  cloneEePose,
+  cloneQuat,
+  cloneVec3,
+  createQuestEePoseTargetTracker,
+  lowPass,
+  vecNorm,
+  vecSub,
+} from "./questEePoseTarget.js";
+
+const EE_CONTROL_GROUP = "end_effector";
+const EE_CONTROL_GROUP_LABEL = "末端执行器";
+const JOINT_GROUP_SEQUENCE = [
+  { key: "upper_arm", label: "大臂组", joint_indices: [0, 1] },
+  { key: "forearm", label: "前臂组", joint_indices: [2, 3] },
+  { key: "wrist", label: "腕部组", joint_indices: [4, 5] },
 ];
+const JOINT_GROUP_BY_KEY = Object.fromEntries(
+  JOINT_GROUP_SEQUENCE.map((group) => [group.key, group])
+);
 
-function clamp(value, min, max) {
-  return Math.min(Math.max(Number(value) || 0, min), max);
+function normalizeControllerStrategy(value) {
+  // Keep Quest controller teleop on a single IK-only path so tuning remains
+  // predictable and easier to maintain across frontend/backend updates.
+  return "ee_ik";
 }
 
-function lowPass(previous, next, alpha) {
-  const a = clamp(alpha, 0, 1);
-  return previous + (next - previous) * a;
+function getJointGroupMeta(groupKey) {
+  return JOINT_GROUP_BY_KEY[String(groupKey || "").trim()] || JOINT_GROUP_SEQUENCE[0];
 }
 
-function normalizeDtScale(dtSec) {
-  const dt = Number(dtSec);
-  if (!Number.isFinite(dt)) return 1;
-  const bounded = clamp(dt, 1 / 120, 1 / 10);
-  return bounded / BASE_STEP_DT_SEC;
-}
-
-function cloneVec3(value) {
-  if (!Array.isArray(value) || value.length < 3) return null;
-  const cloned = value.slice(0, 3).map((item) => Number(item));
-  return cloned.every((item) => Number.isFinite(item)) ? cloned : null;
-}
-
-function cloneQuat(value) {
-  if (!Array.isArray(value) || value.length < 4) return null;
-  const cloned = value.slice(0, 4).map((item) => Number(item));
-  return cloned.every((item) => Number.isFinite(item)) ? cloned : null;
-}
-
-function cloneEePose(pose) {
-  const position = cloneVec3(pose?.position);
-  const quaternion = cloneQuat(pose?.quaternion);
-  if (!position || !quaternion) return null;
-  return { position, quaternion };
-}
-
-function normalizeQuatWxyz(quaternion) {
-  const q = cloneQuat(quaternion);
-  if (!q) return null;
-  const [w, x, y, z] = q;
-  const norm = Math.sqrt(w * w + x * x + y * y + z * z);
-  if (norm <= 1e-8) return [1, 0, 0, 0];
-  return [w / norm, x / norm, y / norm, z / norm];
-}
-
-function quatMultiplyWxyz(lhs, rhs) {
-  const a = normalizeQuatWxyz(lhs);
-  const b = normalizeQuatWxyz(rhs);
-  if (!a || !b) return null;
-  const [aw, ax, ay, az] = a;
-  const [bw, bx, by, bz] = b;
-  return normalizeQuatWxyz([
-    aw * bw - ax * bx - ay * by - az * bz,
-    aw * bx + ax * bw + ay * bz - az * by,
-    aw * by - ax * bz + ay * bw + az * bx,
-    aw * bz + ax * by - ay * bx + az * bw,
-  ]);
-}
-
-function quatConjugateWxyz(quaternion) {
-  const q = normalizeQuatWxyz(quaternion);
-  if (!q) return null;
-  return [q[0], -q[1], -q[2], -q[3]];
-}
-
-function quatDotWxyz(lhs, rhs) {
-  const a = normalizeQuatWxyz(lhs);
-  const b = normalizeQuatWxyz(rhs);
-  if (!a || !b) return 1;
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-}
-
-function quatAngleDistanceRad(lhs, rhs) {
-  const dot = Math.abs(clamp(quatDotWxyz(lhs, rhs), -1, 1));
-  return 2 * Math.acos(dot);
-}
-
-function slerpQuatWxyz(from, to, alpha) {
-  const a = normalizeQuatWxyz(from);
-  let b = normalizeQuatWxyz(to);
-  if (!a || !b) return b || a || [1, 0, 0, 0];
-  let dot = quatDotWxyz(a, b);
-  if (dot < 0) {
-    b = b.map((value) => -value);
-    dot = -dot;
-  }
-  const t = clamp(alpha, 0, 1);
-  if (dot > 0.9995) {
-    return normalizeQuatWxyz([
-      a[0] + (b[0] - a[0]) * t,
-      a[1] + (b[1] - a[1]) * t,
-      a[2] + (b[2] - a[2]) * t,
-      a[3] + (b[3] - a[3]) * t,
-    ]);
-  }
-  const theta0 = Math.acos(clamp(dot, -1, 1));
-  const sinTheta0 = Math.sin(theta0);
-  const theta = theta0 * t;
-  const sinTheta = Math.sin(theta);
-  const s0 = Math.cos(theta) - dot * sinTheta / sinTheta0;
-  const s1 = sinTheta / sinTheta0;
-  return normalizeQuatWxyz([
-    a[0] * s0 + b[0] * s1,
-    a[1] * s0 + b[1] * s1,
-    a[2] * s0 + b[2] * s1,
-    a[3] * s0 + b[3] * s1,
-  ]);
-}
-
-function clampQuatStepWxyz(previous, next, maxStepRad) {
-  const prev = normalizeQuatWxyz(previous);
-  const target = normalizeQuatWxyz(next);
-  if (!prev || !target) return target || prev || [1, 0, 0, 0];
-  const angle = quatAngleDistanceRad(prev, target);
-  const maxStep = Math.max(0, Number(maxStepRad) || 0);
-  if (angle <= maxStep || angle <= 1e-8 || maxStep <= 0) {
-    return target;
-  }
-  return slerpQuatWxyz(prev, target, maxStep / angle);
-}
-
-function scaleQuatRotationWxyz(quaternion, gain) {
-  let q = normalizeQuatWxyz(quaternion);
-  if (!q) return null;
-  if (q[0] < 0) {
-    q = q.map((value) => -value);
-  }
-  const safeW = clamp(q[0], -1, 1);
-  const halfSin = Math.sqrt(Math.max(0, 1 - safeW * safeW));
-  if (halfSin <= 1e-8) return q;
-  const angle = 2 * Math.acos(safeW);
-  const scaledAngle = clamp(angle * Math.max(0, Number(gain) || 1), 0, Math.PI);
-  const scale = Math.sin(scaledAngle / 2) / halfSin;
-  return normalizeQuatWxyz([
-    Math.cos(scaledAngle / 2),
-    q[1] * scale,
-    q[2] * scale,
-    q[3] * scale,
-  ]);
-}
-
-function vecSub(a, b) {
-  return [
-    Number(a?.[0] || 0) - Number(b?.[0] || 0),
-    Number(a?.[1] || 0) - Number(b?.[1] || 0),
-    Number(a?.[2] || 0) - Number(b?.[2] || 0),
-  ];
-}
-
-function vecAdd(a, b) {
-  return [
-    Number(a?.[0] || 0) + Number(b?.[0] || 0),
-    Number(a?.[1] || 0) + Number(b?.[1] || 0),
-    Number(a?.[2] || 0) + Number(b?.[2] || 0),
-  ];
-}
-
-function vecScale(a, scale) {
-  const s = Number(scale) || 0;
-  return [
-    Number(a?.[0] || 0) * s,
-    Number(a?.[1] || 0) * s,
-    Number(a?.[2] || 0) * s,
-  ];
-}
-
-function vecNorm(a) {
-  const x = Number(a?.[0] || 0);
-  const y = Number(a?.[1] || 0);
-  const z = Number(a?.[2] || 0);
-  return Math.sqrt(x * x + y * y + z * z);
-}
-
-function lowPassVec(previous, next, alpha) {
-  const prev = cloneVec3(previous) || [0, 0, 0];
-  const n = cloneVec3(next) || [0, 0, 0];
-  return [
-    lowPass(prev[0], n[0], alpha),
-    lowPass(prev[1], n[1], alpha),
-    lowPass(prev[2], n[2], alpha),
-  ];
-}
-
-function clampVecMagnitude(vector, maxMagnitude) {
-  const max = Math.max(0, Number(maxMagnitude) || 0);
-  const magnitude = vecNorm(vector);
-  if (max <= 0 || magnitude <= max || magnitude <= 1e-8) {
-    return cloneVec3(vector) || [0, 0, 0];
-  }
-  return vecScale(vector, max / magnitude);
-}
-
-function clampVecStep(previous, next, maxStep) {
-  const prev = cloneVec3(previous);
-  const n = cloneVec3(next);
-  if (!prev || !n) return n || prev || [0, 0, 0];
-  const delta = vecSub(n, prev);
-  return vecAdd(prev, clampVecMagnitude(delta, maxStep));
-}
-
-function applyVecDeadzone(vector, deadzone) {
-  const magnitude = vecNorm(vector);
-  const dz = Math.max(0, Number(deadzone) || 0);
-  if (magnitude <= dz || magnitude <= 1e-8) return [0, 0, 0];
-  return vecScale(vector, (magnitude - dz) / magnitude);
-}
-
-function frontendDeltaToBackend(delta) {
-  return [delta[0], -delta[2], delta[1]];
-}
-
-function frontendQuatToBackendWxyz(quaternionXyzw) {
-  const q = cloneQuat(quaternionXyzw);
-  if (!q) return null;
-  const frontendWxyz = [q[3], q[0], q[1], q[2]];
-  return quatMultiplyWxyz(FRONTEND_TO_BACKEND_QUAT_WXYZ, frontendWxyz);
+function cloneArmJoints(value) {
+  if (!Array.isArray(value) || value.length < 6) return null;
+  const joints = value.slice(0, 6).map((item) => Number(item));
+  return joints.every((item) => Number.isFinite(item)) ? joints : null;
 }
 
 function normalizeHandedness(value) {
@@ -362,35 +174,65 @@ function isNeutralControlSnapshot(controls, cfg) {
   );
 }
 
+function readStickState(controls, hand) {
+  const normalizedHand = normalizeHandedness(hand);
+  const xKey = normalizedHand ? `${normalizedHand}_stick_x` : "stick_x";
+  const yKey = normalizedHand ? `${normalizedHand}_stick_y` : "stick_y";
+  const x = clamp(controls?.[xKey] ?? 0, -1, 1);
+  const y = clamp(controls?.[yKey] ?? 0, -1, 1);
+  return {
+    hand: normalizedHand,
+    x,
+    y,
+    magnitude: Math.abs(x) + Math.abs(y),
+  };
+}
+
+function selectJointControlStick(controls, cfg) {
+  const right = readStickState(controls, "right");
+  const left = readStickState(controls, "left");
+  const active = normalizeHandedness(controls?.active_hand);
+  const epsilon = Math.max(0.01, Number(cfg.stick_activity_epsilon) || 0);
+
+  if (right.magnitude > epsilon) return right;
+  if (left.magnitude > epsilon) return left;
+  if (active === "left") return left;
+  return right.magnitude >= left.magnitude ? right : left;
+}
+
 export function createQuestControllerTeleop(options = {}) {
+  const initialStrategy = normalizeControllerStrategy(options.control_strategy);
   const cfg = {
+    control_strategy: initialStrategy,
+    // Bias the default IK profile toward stable, low-jitter teleoperation.
+    // We can always loosen these values later if we want more aggressive motion.
     movement_deadzone: Number.isFinite(Number(options.movement_deadzone))
       ? Number(options.movement_deadzone)
-      : 0.003,
+      : 0.006,
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
-      : 0.48,
+      : 0.42,
     movement_gain: Number.isFinite(Number(options.sensitivity))
-      ? Number(options.sensitivity) * 2.4
-      : 3.4,
+      ? Number(options.sensitivity) * 2.1
+      : 3.0,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
       : 0.72,
     orientation_smoothing: Number.isFinite(Number(options.orientation_smoothing))
       ? Number(options.orientation_smoothing)
-      : 0.70,
+      : 0.68,
     max_orientation_step_rad: Number.isFinite(Number(options.max_orientation_step_rad))
       ? Number(options.max_orientation_step_rad)
-      : 0.28,
+      : 0.18,
     orientation_gain: Number.isFinite(Number(options.orientation_gain))
       ? Number(options.orientation_gain)
-      : 1.15,
+      : 0.95,
     orientation_activity_epsilon_rad: Number.isFinite(Number(options.orientation_activity_epsilon_rad))
       ? Number(options.orientation_activity_epsilon_rad)
-      : 0.012,
+      : 0.016,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
-      : 0.05,
+      : 0.04,
     anchor_reset_threshold_m: Number.isFinite(Number(options.anchor_reset_threshold_m))
       ? Number(options.anchor_reset_threshold_m)
       : 0.78,
@@ -421,13 +263,39 @@ export function createQuestControllerTeleop(options = {}) {
     gripper_activity_epsilon: Number.isFinite(Number(options.gripper_activity_epsilon))
       ? Number(options.gripper_activity_epsilon)
       : 0.01,
+    position_target_blend: Number.isFinite(Number(options.position_target_blend))
+      ? Number(options.position_target_blend)
+      : 0.84,
+    position_target_deadband_m: Number.isFinite(Number(options.position_target_deadband_m))
+      ? Number(options.position_target_deadband_m)
+      : 0.0008,
+    orientation_target_deadband_rad: Number.isFinite(Number(options.orientation_target_deadband_rad))
+      ? Number(options.orientation_target_deadband_rad)
+      : 0.010,
+    joint_step_rad_per_sec: Number.isFinite(Number(options.joint_step_rad_per_sec))
+      ? Number(options.joint_step_rad_per_sec)
+      : Math.max(0.45, clamp(Number(options.sensitivity) || 1.0, 0.4, 3.0) * 0.78),
+    joint_axis_smoothing: Number.isFinite(Number(options.joint_axis_smoothing))
+      ? Number(options.joint_axis_smoothing)
+      : 0.34,
+    joint_activity_epsilon_rad: Number.isFinite(Number(options.joint_activity_epsilon_rad))
+      ? Number(options.joint_activity_epsilon_rad)
+      : 0.0008,
   };
 
+  const eeTargetTracker = createQuestEePoseTargetTracker({
+    movement_deadzone: cfg.movement_deadzone,
+    max_control_offset: cfg.max_control_offset,
+    movement_smoothing: cfg.movement_smoothing,
+    max_ee_step_m: cfg.max_ee_step_m,
+    anchor_reset_threshold_m: cfg.anchor_reset_threshold_m,
+    max_orientation_step_rad: cfg.max_orientation_step_rad,
+    orientation_smoothing: cfg.orientation_smoothing,
+    position_target_blend: cfg.position_target_blend,
+    position_target_deadband_m: cfg.position_target_deadband_m,
+    orientation_target_deadband_rad: cfg.orientation_target_deadband_rad,
+  });
   let anchorController = null;
-  let anchorControllerQuaternion = null;
-  let anchorEePose = null;
-  let targetEePose = null;
-  let smoothedBackendDelta = [0, 0, 0];
   let smoothedTrigger = 0;
   let motionEngaged = false;
   let activeControllerHand = "";
@@ -435,48 +303,228 @@ export function createQuestControllerTeleop(options = {}) {
   let gripperInitialized = false;
   let commandGuardUntilMs = 0;
   let requireNeutralRelease = false;
+  let selectedJointGroup = JOINT_GROUP_SEQUENCE[0].key;
+  let jointTarget = null;
+  let smoothedJointAxis = { x: 0, y: 0 };
+  let selectionLatch = {
+    upper_arm: false,
+    forearm: false,
+    wrist: false,
+  };
 
   function getState() {
+    const strategy = normalizeControllerStrategy(cfg.control_strategy);
+    if (strategy === "joint_delta") {
+      const group = getJointGroupMeta(selectedJointGroup);
+      return {
+        selected_joint_group: group.key,
+        selected_joint_group_label: group.label,
+        input_mode: "controller_joint_delta",
+        group_sequence: JOINT_GROUP_SEQUENCE.map((item) => item.key),
+      };
+    }
     return {
-      selected_joint_group: CONTROL_GROUP,
-      selected_joint_group_label: CONTROL_GROUP_LABEL,
+      selected_joint_group: EE_CONTROL_GROUP,
+      selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
       input_mode: "controller_ee_ik",
-      group_sequence: [CONTROL_GROUP],
+      group_sequence: [EE_CONTROL_GROUP],
     };
   }
 
   function resetAnchor(controllerPosition, currentEePose, controllerQuaternion) {
     anchorController = cloneVec3(controllerPosition);
-    anchorControllerQuaternion = frontendQuatToBackendWxyz(controllerQuaternion);
-    anchorEePose = cloneEePose(currentEePose);
-    targetEePose = cloneEePose(currentEePose);
-    smoothedBackendDelta = [0, 0, 0];
+    eeTargetTracker.resetAnchor(controllerPosition, currentEePose, controllerQuaternion);
   }
 
   function clearAnchor() {
     anchorController = null;
-    anchorControllerQuaternion = null;
-    anchorEePose = null;
-    targetEePose = null;
-    smoothedBackendDelta = [0, 0, 0];
+    eeTargetTracker.clear();
     motionEngaged = false;
     activeControllerHand = "";
   }
 
+  function syncSelectedJointGroup(controls) {
+    const nextLatch = {
+      upper_arm: clamp(controls?.select_upper_arm ?? 0, 0, 1) >= 0.5,
+      forearm: clamp(controls?.select_forearm ?? 0, 0, 1) >= 0.5,
+      wrist: clamp(controls?.select_wrist ?? 0, 0, 1) >= 0.5,
+    };
+    let changed = false;
+    JOINT_GROUP_SEQUENCE.forEach((group) => {
+      if (nextLatch[group.key] && !selectionLatch[group.key] && selectedJointGroup !== group.key) {
+        selectedJointGroup = group.key;
+        changed = true;
+      }
+    });
+    selectionLatch = nextLatch;
+    return changed;
+  }
+
+  function buildRawInput(snapshot, controllerPoses, activePose, strategy) {
+    return {
+      ...(snapshot?.raw || {}),
+      control_strategy: strategy,
+      controller_pose: serializeControllerPose(activePose),
+      controller_poses: {
+        left: serializeControllerPose(controllerPoses.left),
+        right: serializeControllerPose(controllerPoses.right),
+        active: serializeControllerPose(activePose),
+      },
+    };
+  }
+
+  function buildJointNoCommandResult({
+    reason,
+    nowMs,
+    currentGripper,
+    rawInput,
+    precisionMode,
+    triggerRaw,
+    gripRaw,
+    changedJointGroup,
+    currentArm,
+  }) {
+    const state = getState();
+    if (!jointTarget && currentArm) {
+      jointTarget = currentArm.slice(0, 6);
+    }
+    return {
+      has_command: false,
+      reason,
+      target_positions: jointTarget ? jointTarget.slice(0, 6) : currentArm,
+      target_ee_pose: null,
+      gripper_opening: clamp(gripper, cfg.gripper_min, cfg.gripper_max),
+      control_mode: "position",
+      input_source: "quest3_controller",
+      selected_joint_group: state.selected_joint_group,
+      selected_joint_group_label: state.selected_joint_group_label,
+      changed_joint_group: changedJointGroup,
+      normalized_input: {
+        control_mode: "joint_delta",
+        ee_active: 0,
+        trigger: triggerRaw,
+        grip: gripRaw,
+        grip_active: 0,
+        precision: precisionMode ? 1 : 0,
+        joint_group: state.selected_joint_group,
+        joint_axis_x: Number(smoothedJointAxis.x || 0),
+        joint_axis_y: Number(smoothedJointAxis.y || 0),
+      },
+      raw_input: rawInput,
+      timestamp_ms: nowMs,
+    };
+  }
+
+  function applyJointDeltaSnapshot({
+    snapshot,
+    nowMs,
+    currentGripper,
+    currentArm,
+    precisionMode,
+    triggerRaw,
+    gripRaw,
+    rawInput,
+    changedJointGroup,
+  }) {
+    smoothedTrigger = lowPass(smoothedTrigger, triggerRaw, 0.65);
+    const mappedGripper = cfg.gripper_min + smoothedTrigger * (cfg.gripper_max - cfg.gripper_min);
+    gripper = lowPass(gripper, mappedGripper, cfg.gripper_smoothing);
+    const nextGripper = clamp(gripper, cfg.gripper_min, cfg.gripper_max);
+
+    if (!currentArm) {
+      return buildJointNoCommandResult({
+        reason: "invalid_arm_state",
+        nowMs,
+        currentGripper,
+        rawInput,
+        precisionMode,
+        triggerRaw,
+        gripRaw,
+        changedJointGroup,
+        currentArm,
+      });
+    }
+
+    if (!jointTarget || jointTarget.length < 6) {
+      jointTarget = currentArm.slice(0, 6);
+    }
+
+    const stick = selectJointControlStick(snapshot?.controls || {}, cfg);
+    const jointGrip = Math.max(
+      gripRaw,
+      clamp(snapshot?.controls?.right_grip ?? 0, 0, 1),
+      clamp(snapshot?.controls?.left_grip ?? 0, 0, 1)
+    );
+    const engaged = jointGrip >= cfg.grip_engage_threshold;
+    const rawAxisX = engaged ? clamp(stick.x, -1, 1) : 0;
+    const rawAxisY = engaged ? clamp(-stick.y, -1, 1) : 0;
+    smoothedJointAxis = {
+      x: lowPass(smoothedJointAxis.x, rawAxisX, cfg.joint_axis_smoothing),
+      y: lowPass(smoothedJointAxis.y, rawAxisY, cfg.joint_axis_smoothing),
+    };
+
+    const group = getJointGroupMeta(selectedJointGroup);
+    const jointStepBase =
+      cfg.joint_step_rad_per_sec *
+      Math.max(0.25, Number(precisionMode ? cfg.precision_scale : 1.0)) *
+      Math.max(BASE_STEP_DT_SEC * 0.5, Number(snapshot?.dt_sec) || BASE_STEP_DT_SEC);
+    const jointDeltaA = smoothedJointAxis.x * jointStepBase;
+    const jointDeltaB = smoothedJointAxis.y * jointStepBase;
+    const hasJointActivity =
+      engaged &&
+      (Math.abs(jointDeltaA) > cfg.joint_activity_epsilon_rad ||
+        Math.abs(jointDeltaB) > cfg.joint_activity_epsilon_rad);
+
+    if (hasJointActivity) {
+      const nextTarget = jointTarget.slice(0, 6);
+      const [jointA, jointB] = group.joint_indices;
+      nextTarget[jointA] += jointDeltaA;
+      nextTarget[jointB] += jointDeltaB;
+      jointTarget = nextTarget;
+    } else if (!engaged) {
+      jointTarget = currentArm.slice(0, 6);
+    }
+
+    const hasGripperActivity =
+      Math.abs(nextGripper - currentGripper) > cfg.gripper_activity_epsilon;
+    const hasCommand = hasJointActivity || hasGripperActivity;
+
+    return {
+      has_command: hasCommand,
+      reason: hasJointActivity ? "joint_delta_active" : hasGripperActivity ? "gripper_only" : "idle",
+      target_positions: jointTarget.slice(0, 6),
+      target_ee_pose: null,
+      gripper_opening: nextGripper,
+      control_mode: "position",
+      input_source: "quest3_controller",
+      selected_joint_group: group.key,
+      selected_joint_group_label: group.label,
+      changed_joint_group: changedJointGroup,
+      normalized_input: {
+        control_mode: "joint_delta",
+        ee_active: 0,
+        trigger: smoothedTrigger,
+        grip: gripRaw,
+        grip_active: engaged ? 1 : 0,
+        precision: precisionMode ? 1 : 0,
+        active_hand: stick.hand || normalizeHandedness(snapshot?.controls?.active_hand),
+        joint_group: group.key,
+        joint_axis_x: Number(smoothedJointAxis.x || 0),
+        joint_axis_y: Number(smoothedJointAxis.y || 0),
+        joint_delta_a: jointDeltaA,
+        joint_delta_b: jointDeltaB,
+        joint_index_a: group.joint_indices[0],
+        joint_index_b: group.joint_indices[1],
+        joint_step_rad_per_sec: cfg.joint_step_rad_per_sec,
+      },
+      raw_input: rawInput,
+      timestamp_ms: nowMs,
+    };
+  }
+
   function ensureAnchor(controllerPosition, currentEePose, controllerQuaternion) {
-    if (!anchorController || !anchorEePose || !targetEePose) {
+    if (!anchorController || !eeTargetTracker.getTargetPose()) {
       resetAnchor(controllerPosition, currentEePose, controllerQuaternion);
-      return;
-    }
-
-    const drift = vecNorm(vecSub(targetEePose.position, currentEePose.position));
-    if (drift > cfg.anchor_reset_threshold_m) {
-      resetAnchor(controllerPosition, currentEePose, controllerQuaternion);
-      return;
-    }
-
-    if (!anchorControllerQuaternion && cloneQuat(controllerQuaternion)) {
-      anchorControllerQuaternion = frontendQuatToBackendWxyz(controllerQuaternion);
     }
   }
 
@@ -485,6 +533,7 @@ export function createQuestControllerTeleop(options = {}) {
     controllerPose,
     currentGripperOpening,
     currentEePose,
+    currentArmJoints,
     dtSec = BASE_STEP_DT_SEC
   ) {
     const nowMs = Number(snapshot?.timestamp_ms) || Date.now();
@@ -494,6 +543,7 @@ export function createQuestControllerTeleop(options = {}) {
     }
 
     const currentGripper = clamp(currentGripperOpening, 0, 1);
+    const currentArm = cloneArmJoints(currentArmJoints);
     if (!gripperInitialized) {
       gripper = currentGripper;
       gripperInitialized = true;
@@ -514,15 +564,9 @@ export function createQuestControllerTeleop(options = {}) {
     const poseTracked = Boolean(motionController?.pose?.tracked && Array.isArray(motionController?.pose?.position));
     const poseQuaternion = cloneQuat(motionController?.pose?.quaternion);
     const activePose = motionController?.pose || controllerPoses.active || null;
-    const rawInput = {
-      ...(snapshot?.raw || {}),
-      controller_pose: serializeControllerPose(activePose),
-      controller_poses: {
-        left: serializeControllerPose(controllerPoses.left),
-        right: serializeControllerPose(controllerPoses.right),
-        active: serializeControllerPose(activePose),
-      },
-    };
+    const strategy = normalizeControllerStrategy(cfg.control_strategy);
+    const changedJointGroup = strategy === "joint_delta" ? syncSelectedJointGroup(controls) : false;
+    const rawInput = buildRawInput(snapshot, controllerPoses, activePose, strategy);
 
     if (requireNeutralRelease && isNeutralControlSnapshot(snapshot?.controls, cfg)) {
       requireNeutralRelease = false;
@@ -531,16 +575,29 @@ export function createQuestControllerTeleop(options = {}) {
     if (nowMs < commandGuardUntilMs || requireNeutralRelease) {
       gripper = lowPass(gripper, currentGripper, cfg.gripper_smoothing);
       clearAnchor();
+      if (strategy === "joint_delta") {
+        return buildJointNoCommandResult({
+          reason: "control_guard",
+          nowMs,
+          currentGripper,
+          rawInput,
+          precisionMode,
+          triggerRaw,
+          gripRaw,
+          changedJointGroup,
+          currentArm,
+        });
+      }
       return {
         has_command: false,
         reason: "control_guard",
         target_positions: null,
-        target_ee_pose: cloneEePose(targetEePose) || currentPose,
+        target_ee_pose: eeTargetTracker.getTargetPose() || currentPose,
         gripper_opening: clamp(gripper, cfg.gripper_min, cfg.gripper_max),
         control_mode: "ik_pose",
         input_source: "quest3_controller",
-        selected_joint_group: CONTROL_GROUP,
-        selected_joint_group_label: CONTROL_GROUP_LABEL,
+        selected_joint_group: EE_CONTROL_GROUP,
+        selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
         changed_joint_group: false,
         normalized_input: {
           trigger: 0,
@@ -559,16 +616,29 @@ export function createQuestControllerTeleop(options = {}) {
     if (!snapshot?.available || !snapshot?.has_device) {
       gripper = lowPass(gripper, currentGripper, cfg.gripper_smoothing);
       clearAnchor();
+      if (strategy === "joint_delta") {
+        return buildJointNoCommandResult({
+          reason: "controller_unavailable",
+          nowMs,
+          currentGripper,
+          rawInput,
+          precisionMode,
+          triggerRaw,
+          gripRaw,
+          changedJointGroup,
+          currentArm,
+        });
+      }
       return {
         has_command: false,
         reason: "controller_unavailable",
         target_positions: null,
-        target_ee_pose: cloneEePose(targetEePose) || currentPose,
+        target_ee_pose: eeTargetTracker.getTargetPose() || currentPose,
         gripper_opening: clamp(gripper, cfg.gripper_min, cfg.gripper_max),
         control_mode: "ik_pose",
         input_source: "quest3_controller",
-        selected_joint_group: CONTROL_GROUP,
-        selected_joint_group_label: CONTROL_GROUP_LABEL,
+        selected_joint_group: EE_CONTROL_GROUP,
+        selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
         changed_joint_group: false,
         normalized_input: {
           control_mode: "ee_ik",
@@ -583,70 +653,49 @@ export function createQuestControllerTeleop(options = {}) {
       };
     }
 
+    if (strategy === "joint_delta") {
+      clearAnchor();
+      return applyJointDeltaSnapshot({
+        snapshot: {
+          ...snapshot,
+          dt_sec: dtSec,
+        },
+        nowMs,
+        currentGripper,
+        currentArm,
+        precisionMode,
+        triggerRaw,
+        gripRaw,
+        rawInput,
+        changedJointGroup,
+      });
+    }
+
     const mappedGripper = cfg.gripper_min + smoothedTrigger * (cfg.gripper_max - cfg.gripper_min);
     gripper = lowPass(gripper, mappedGripper, cfg.gripper_smoothing);
     const nextGripper = clamp(gripper, cfg.gripper_min, cfg.gripper_max);
 
     const engaged = Boolean(motionController?.pose && motionController.engaged);
     let releaseHoldCommand = false;
+    let eeTracking = null;
+    // Default to 1:1 EE following so the controller pose maps directly to the
+    // robot target pose; precision mode only scales this down for fine adjustment.
+    const positionFollowGain = precisionMode ? cfg.precision_scale : 1;
+    const orientationFollowGain = precisionMode ? Math.max(0.55, cfg.precision_scale) : 1;
     if (engaged && poseTracked) {
       if (!motionEngaged || activeControllerHand !== motionController.hand) {
         resetAnchor(motionController.pose.position, currentPose, poseQuaternion);
       } else {
         ensureAnchor(motionController.pose.position, currentPose, poseQuaternion);
       }
-      const rawControllerDelta = applyVecDeadzone(
-        vecSub(motionController.pose.position, anchorController),
-        cfg.movement_deadzone
-      );
-      const gain = cfg.movement_gain * (precisionMode ? cfg.precision_scale : 1);
-      const backendDelta = clampVecMagnitude(
-        frontendDeltaToBackend(vecScale(rawControllerDelta, gain)),
-        cfg.max_control_offset
-      );
-      smoothedBackendDelta = lowPassVec(
-        smoothedBackendDelta,
-        backendDelta,
-        cfg.movement_smoothing
-      );
-
-      const desiredPosition = vecAdd(anchorEePose.position, smoothedBackendDelta);
-      const maxStep = Math.max(0.008, cfg.max_ee_step_m * normalizeDtScale(dtSec));
-      const limitedPosition = clampVecStep(
-        targetEePose?.position || currentPose.position,
-        desiredPosition,
-        maxStep
-      );
-      let desiredQuaternion = anchorEePose.quaternion.slice(0, 4);
-      const controllerQuaternionBackend = frontendQuatToBackendWxyz(poseQuaternion);
-      if (anchorControllerQuaternion && controllerQuaternionBackend) {
-        const controllerDeltaRaw = quatMultiplyWxyz(
-          controllerQuaternionBackend,
-          quatConjugateWxyz(anchorControllerQuaternion)
-        );
-        const controllerDelta =
-          scaleQuatRotationWxyz(controllerDeltaRaw, cfg.orientation_gain) || controllerDeltaRaw;
-        desiredQuaternion =
-          quatMultiplyWxyz(controllerDelta, anchorEePose.quaternion) || desiredQuaternion;
-      }
-      const maxOrientationStep = Math.max(
-        0.02,
-        cfg.max_orientation_step_rad * normalizeDtScale(dtSec)
-      );
-      const limitedQuaternion = clampQuatStepWxyz(
-        targetEePose?.quaternion || currentPose.quaternion,
-        desiredQuaternion,
-        maxOrientationStep
-      );
-      const smoothedQuaternion = slerpQuatWxyz(
-        targetEePose?.quaternion || currentPose.quaternion,
-        limitedQuaternion,
-        cfg.orientation_smoothing
-      );
-      targetEePose = {
-        position: limitedPosition,
-        quaternion: smoothedQuaternion,
-      };
+      eeTracking = eeTargetTracker.update({
+        inputPosition: motionController.pose.position,
+        inputQuaternion: poseQuaternion,
+        currentEePose: currentPose,
+        movementGain: positionFollowGain,
+        orientationGain: orientationFollowGain,
+        dtSec,
+      });
       motionEngaged = true;
       activeControllerHand = motionController.hand;
     } else if (motionEngaged) {
@@ -654,13 +703,10 @@ export function createQuestControllerTeleop(options = {}) {
       clearAnchor();
     }
 
-    const eeError = targetEePose
-      ? vecNorm(vecSub(targetEePose.position, currentPose.position))
-      : 0;
-    const orientationError = targetEePose
-      ? quatAngleDistanceRad(targetEePose.quaternion, currentPose.quaternion)
-      : 0;
-    const eeMotion = vecNorm(smoothedBackendDelta);
+    const targetEePose = eeTracking?.targetEePose || eeTargetTracker.getTargetPose();
+    const eeError = Number(eeTracking?.eeError) || 0;
+    const orientationError = Number(eeTracking?.orientationError) || 0;
+    const eeMotion = vecNorm(eeTracking?.smoothedBackendDelta);
     const hasEeActivity =
       releaseHoldCommand ||
       (engaged &&
@@ -688,8 +734,8 @@ export function createQuestControllerTeleop(options = {}) {
       gripper_opening: nextGripper,
       control_mode: "ik_pose",
       input_source: "quest3_controller",
-      selected_joint_group: CONTROL_GROUP,
-      selected_joint_group_label: CONTROL_GROUP_LABEL,
+      selected_joint_group: EE_CONTROL_GROUP,
+      selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
       changed_joint_group: false,
       normalized_input: {
         control_mode: "ee_ik",
@@ -704,13 +750,14 @@ export function createQuestControllerTeleop(options = {}) {
         controller_dx: Number(motionController?.pose?.position?.[0] || 0) - Number(anchorController?.[0] || 0),
         controller_dy: Number(motionController?.pose?.position?.[1] || 0) - Number(anchorController?.[1] || 0),
         controller_dz: Number(motionController?.pose?.position?.[2] || 0) - Number(anchorController?.[2] || 0),
-        target_dx: smoothedBackendDelta[0],
-        target_dy: smoothedBackendDelta[1],
-        target_dz: smoothedBackendDelta[2],
+        target_dx: Number(eeTracking?.smoothedBackendDelta?.[0] || 0),
+        target_dy: Number(eeTracking?.smoothedBackendDelta?.[1] || 0),
+        target_dz: Number(eeTracking?.smoothedBackendDelta?.[2] || 0),
         ee_error_m: eeError,
         orientation_error_rad: orientationError,
-        movement_gain: cfg.movement_gain,
-        orientation_gain: cfg.orientation_gain,
+        movement_gain: positionFollowGain,
+        orientation_gain: orientationFollowGain,
+        ee_follow_mode: "anchored_absolute",
         max_control_offset_m: cfg.max_control_offset,
       },
       raw_input: rawInput,
@@ -733,6 +780,14 @@ export function createQuestControllerTeleop(options = {}) {
     gripperInitialized = false;
     commandGuardUntilMs = 0;
     requireNeutralRelease = false;
+    selectedJointGroup = JOINT_GROUP_SEQUENCE[0].key;
+    jointTarget = null;
+    smoothedJointAxis = { x: 0, y: 0 };
+    selectionLatch = {
+      upper_arm: false,
+      forearm: false,
+      wrist: false,
+    };
   }
 
   return {

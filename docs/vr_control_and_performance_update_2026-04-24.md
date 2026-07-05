@@ -258,6 +258,9 @@
 - 按模式动态可见性：
   - `vr_controller_mode`：显示手柄（ray + grip），隐藏手部 mesh
   - `vr_hand_mode`：显示手部 mesh，隐藏手柄
+- 说明：
+  - 是否显示“简化版手柄”不由 MR / passthrough 自动决定，而是由 XR runtime 是否提供 controller profile mesh，以及前端 fallback 模型质量共同决定。
+  - 当前代码优先显示 `XRControllerModelFactory` 的 profile 模型；如果运行时未提供可见 mesh，则退回项目内的 fallback controller 视觉。
 - 在 XR 帧循环内持续校准可见性，并监听：
   - `visibilitychange`
   - `inputsourceschange`

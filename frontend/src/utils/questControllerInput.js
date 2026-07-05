@@ -6,10 +6,11 @@ const RIGHT_PAD_PATTERN = /(right|r-touch|right controller)/i;
 
 const LEFT_BUTTON_INDEX = {
   precision: [],
-  select_wrist: [1],
+  select_wrist: [3],
   select_upper_arm: [4],
   select_forearm: [5],
   grip: [1],
+  trigger: [0],
 };
 
 const RIGHT_BUTTON_INDEX = {
@@ -289,6 +290,10 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
         precision: 0,
         stick_x: 0,
         stick_y: 0,
+        left_stick_x: 0,
+        left_stick_y: 0,
+        right_stick_x: 0,
+        right_stick_y: 0,
         trigger: 0,
         grip: 0,
         left_trigger: 0,
@@ -305,10 +310,10 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
   const pads = [leftPad, rightPad].filter(Boolean);
   const selectPad = leftPad || rightPad || null;
   const leftButtons = summarizeButtons(selectPad?.buttons);
-  const selectUpperArm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_upper_arm);
-  const selectForearm = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_forearm);
-  const selectWrist = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.select_wrist);
-  const precision = readButtonValueFromPads(pads, LEFT_BUTTON_INDEX.precision);
+  const selectUpperArm = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_upper_arm);
+  const selectForearm = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_forearm);
+  const selectWrist = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_wrist);
+  const precision = readButtonValue(selectPad, LEFT_BUTTON_INDEX.precision);
   const nextEpisode = readButtonValue(rightPad, RIGHT_BUTTON_INDEX.next_episode);
   const raw = {
     source,
@@ -318,7 +323,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
     },
     left: {
       ...buildControllerRaw("left", leftPad, {
-        trigger: RIGHT_BUTTON_INDEX.trigger,
+        trigger: LEFT_BUTTON_INDEX.trigger,
         grip: LEFT_BUTTON_INDEX.grip,
       }),
       select_id: String(selectPad?.id || ""),
@@ -354,6 +359,10 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       precision: raw.left.precision,
       stick_x: activeRaw?.stick_x || 0,
       stick_y: activeRaw?.stick_y || 0,
+      left_stick_x: raw.left.stick_x || 0,
+      left_stick_y: raw.left.stick_y || 0,
+      right_stick_x: raw.right.stick_x || 0,
+      right_stick_y: raw.right.stick_y || 0,
       trigger: activeRaw?.trigger || 0,
       grip: activeRaw?.grip || 0,
       left_trigger: raw.left.trigger,

@@ -32,7 +32,7 @@ from backend.sim import SimulationCore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "shared" / "scene_manifest.json"
 SCENE_MANIFEST_PATH = Path(os.getenv("SCENE_MANIFEST_PATH", str(DEFAULT_MANIFEST))).resolve()
-STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "30"))
+STATE_BROADCAST_HZ = float(os.getenv("STATE_BROADCAST_HZ", "60"))
 STATE_BROADCAST_INTERVAL = max(0.01, 1.0 / max(1.0, STATE_BROADCAST_HZ))
 STATUS_BROADCAST_HZ = float(os.getenv("STATUS_BROADCAST_HZ", "6"))
 STATUS_BROADCAST_INTERVAL = max(0.05, 1.0 / max(1.0, STATUS_BROADCAST_HZ))
@@ -132,6 +132,33 @@ def _consume_realtime_control_result(future: asyncio.Future[dict[str, Any]]) -> 
         print(f"[sim/ws] realtime control failed: {exc}")
 
 
+async def _record_dataset_step(request: StepRequest, state: dict[str, Any] | None = None) -> None:
+    try:
+        await dataset_service.record_control_step(
+            request=request,
+            simulation=simulation,
+            state=state,
+        )
+    except Exception as exc:
+        print(f"[dataset] control step record failed: {exc}")
+
+
+def _schedule_dataset_step_record(request: StepRequest, future: asyncio.Future[dict[str, Any]]) -> None:
+    def _on_done(done_future: asyncio.Future[dict[str, Any]]) -> None:
+        try:
+            result = done_future.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            print(f"[dataset] realtime control future failed: {exc}")
+            return
+
+        state: dict[str, Any] | None = result if isinstance(result, dict) and "qpos" in result else None
+        asyncio.create_task(_record_dataset_step(request=request, state=state))
+
+    future.add_done_callback(_on_done)
+
+
 async def _state_broadcast_loop() -> None:
     last_tick = time.monotonic()
     next_tick_at = last_tick
@@ -227,6 +254,7 @@ async def get_sim_camera_depth(include_data: bool = False) -> dict[str, Any]:
 async def post_sim_step(request: StepRequest) -> CommandResult:
     try:
         state = await simulation.enqueue_step(request)
+        await _record_dataset_step(request=request, state=state)
     except Exception as exc:
         state = await simulation.get_state(refresh_camera=False)
         return CommandResult(status="error", message=f"step failed: {exc}", state=state)
@@ -275,6 +303,18 @@ async def get_dataset_precheck() -> dict[str, Any]:
     except Exception:
         pass
     return precheck
+
+
+@app.post("/dataset/camera-view/verify/")
+async def post_dataset_camera_view_verify() -> dict[str, Any]:
+    result = await dataset_service.verify_camera_view(simulation=simulation)
+    if result.get("status") == "success":
+        precheck = await dataset_service.precheck(
+            simulation=simulation,
+            ws_active_count=manager.active_count,
+        )
+        result["precheck"] = precheck
+    return result
 
 
 @app.post("/dataset/episode/start/")
@@ -416,6 +456,7 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             if _is_realtime_control_request(request):
                 future = simulation.queue_step(request, return_state=False)
                 future.add_done_callback(_consume_realtime_control_result)
+                _schedule_dataset_step_record(request=request, future=future)
                 expect_result = message_data.get("expect_result", message_data.get("ack", True))
                 if expect_result is False:
                     return None
@@ -433,6 +474,7 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
             # Always return state so frontend can stay synchronized with backend physics.
             return_state = True
             state = await simulation.enqueue_step(request, return_state=return_state)
+            await _record_dataset_step(request=request, state=state)
             return {
                 "type": "control_result",
                 "data": {

@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0.0",
-  "dataset_schema_version": "quest3_safe_handover_v1_s6",
+  "dataset_schema_version": "quest3_vr_lerobot_pi05_v1_s8",
   "updated_at": "2026-05-22T00:00:00+08:00",
-  "task_id": "quest3_safe_handover_v1",
+  "task_id": "quest3_vr_lerobot_pi05_v1",
   "required_modalities": [
     "rgb",
     "depth",

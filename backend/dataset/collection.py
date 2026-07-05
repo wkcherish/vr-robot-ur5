@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import json
 import os
 import time
@@ -8,6 +11,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+from PIL import Image
 
 from backend.schemas import (
     DatasetEpisodeResultRequest,
@@ -157,6 +163,12 @@ class DatasetCollectionService:
         self._dataset_schema: dict[str, Any] = {}
         self._tool_instances: dict[str, ToolInstance] = {}
         self._target_zones: list[dict[str, Any]] = []
+        self._active_episode_metadata: dict[str, Any] | None = None
+        self._camera_view_verification: dict[str, Any] | None = None
+        self._control_record_lock = asyncio.Lock()
+        self._last_control_recorded_at = 0.0
+        self._last_control_record_frame_id: str | None = None
+        self._control_record_min_interval_s = 1.0 / 30.0
         self.reload_shared_config()
 
     @property
@@ -166,6 +178,10 @@ class DatasetCollectionService:
     @property
     def active_episode_id(self) -> str | None:
         return self._active_episode_id
+
+    @property
+    def active_episode_metadata(self) -> dict[str, Any] | None:
+        return deepcopy(self._active_episode_metadata) if self._active_episode_metadata else None
 
     def reload_shared_config(self) -> None:
         self._tool_catalog = _load_json(self._tool_catalog_path)
@@ -212,8 +228,44 @@ class DatasetCollectionService:
             "dataset_root": str(self._root),
             "session_id": self._session_id,
             "active_episode_id": self._active_episode_id,
+            "camera_view_verification": deepcopy(self._camera_view_verification),
             "checks": checks,
             "summary": self._summarize_checks(checks),
+        }
+
+    async def verify_camera_view(self, simulation: Any) -> dict[str, Any]:
+        self.reload_shared_config()
+        state = await simulation.get_state(refresh_camera=True)
+        camera = state.get("camera") if isinstance(state.get("camera"), dict) else {}
+        camera_capture_ready = bool(
+            camera.get("camera_source_ok", False)
+            and camera.get("camera_capture_ok", state.get("camera_capture_ok", False))
+            and camera.get("rgb_valid", False)
+            and camera.get("depth_valid", False)
+            and camera.get("frame_aligned", False)
+            and not camera.get("stub_frame_used", True)
+        )
+        if not camera_capture_ready:
+            return {
+                "status": "error",
+                "message": str(camera.get("last_error") or "D405 RGB-D capture not ready"),
+                "verification": deepcopy(self._camera_view_verification),
+            }
+
+        self._camera_view_verification = {
+            "verified": True,
+            "verified_at": _utc_timestamp(),
+            "frame_id": camera.get("d405_frame_id") or camera.get("frame_id"),
+            "camera_device": camera.get("device"),
+            "camera_mount_name": camera.get("mount_name"),
+            "camera_intrinsics_version": camera.get("camera_intrinsics_version"),
+            "camera_extrinsics_version": camera.get("camera_extrinsics_version"),
+            "camera_view_status": "operator_verified",
+        }
+        return {
+            "status": "success",
+            "message": "camera view verified for current dataset session",
+            "verification": deepcopy(self._camera_view_verification),
         }
 
     async def start_episode(
@@ -292,6 +344,14 @@ class DatasetCollectionService:
 
         self._active_episode_id = episode_id
         self._active_episode_dir = episode_dir
+        self._active_episode_metadata = metadata
+        self._last_control_recorded_at = 0.0
+        self._last_control_record_frame_id = None
+        await self.record_snapshot(
+            simulation=simulation,
+            state=state,
+            event_type="episode_start_snapshot",
+        )
         return {
             "status": "success",
             "message": "episode started",
@@ -322,6 +382,11 @@ class DatasetCollectionService:
 
         episode_dir = self._active_episode_dir
         state = await simulation.get_state(refresh_camera=True)
+        await self.record_snapshot(
+            simulation=simulation,
+            state=state,
+            event_type="episode_stop_snapshot",
+        )
         precheck = await self.precheck(simulation=simulation, ws_active_count=ws_active_count)
         result = self._build_episode_result(request)
         _write_json(episode_dir / "result.json", result)
@@ -342,6 +407,9 @@ class DatasetCollectionService:
         )
         self._active_episode_id = None
         self._active_episode_dir = None
+        self._active_episode_metadata = None
+        self._last_control_recorded_at = 0.0
+        self._last_control_record_frame_id = None
         return {
             "status": "success",
             "message": "episode stopped",
@@ -468,7 +536,7 @@ class DatasetCollectionService:
             and camera.get("frame_aligned", False)
             and not camera.get("stub_frame_used", True)
         )
-        camera_view_ok = bool(camera.get("camera_view_ok", False))
+        camera_view_ok = self._camera_view_ok(camera)
         dataset_dir_writable = _path_writable(self._root)
         mujoco_ok = model_backend == "mujoco"
         return {
@@ -486,15 +554,15 @@ class DatasetCollectionService:
                 "camera_device": camera.get("device"),
                 "camera_intrinsics_version": camera.get("camera_intrinsics_version"),
                 "camera_extrinsics_version": camera.get("camera_extrinsics_version"),
-                "camera_view_ok": bool(camera.get("camera_view_ok", False)),
-                "camera_view_status": camera.get("camera_view_status"),
+                "camera_view_ok": camera_view_ok,
+                "camera_view_status": self._camera_view_status(camera),
             },
             "camera_view": {
                 "ok": camera_view_ok,
                 "message": "D405 view verified"
                 if camera_view_ok
-                else str(camera.get("camera_view_status") or "D405 view not verified"),
-                "camera_view_status": camera.get("camera_view_status"),
+                else self._camera_view_status(camera),
+                "camera_view_status": self._camera_view_status(camera),
             },
             "mujoco": {
                 "ok": mujoco_ok,
@@ -614,10 +682,12 @@ class DatasetCollectionService:
         completed: bool,
     ) -> dict[str, Any]:
         camera = state.get("camera") if isinstance(state.get("camera"), dict) else {}
+        file_stats = self._compute_episode_file_stats(self._active_episode_dir)
         return {
             "camera_source_ok": bool(camera.get("camera_source_ok", False)),
             "camera_capture_ok": bool(camera.get("camera_capture_ok", False)),
-            "camera_view_ok": bool(camera.get("camera_view_ok", False)),
+            "camera_view_ok": self._camera_view_ok(camera),
+            "camera_view_status": self._camera_view_status(camera),
             "frame_alignment_ok": bool(camera.get("frame_aligned", False)),
             "rgb_valid": bool(camera.get("rgb_valid", False)),
             "depth_valid": bool(camera.get("depth_valid", False)),
@@ -626,6 +696,9 @@ class DatasetCollectionService:
             "episode_completed": bool(completed),
             "validation_time": _utc_timestamp(),
             "precheck_summary": list(precheck.get("summary", [])),
+            "files_complete": bool(file_stats.get("files_complete", False)),
+            "record_counts": file_stats.get("record_counts", {}),
+            "camera_view_verification": deepcopy(self._camera_view_verification),
         }
 
     def _build_episode_result(self, request: DatasetEpisodeStopRequest) -> dict[str, Any]:
@@ -651,3 +724,310 @@ class DatasetCollectionService:
         if (candidate / "metadata.json").exists():
             return candidate
         return None
+
+    def _camera_view_ok(self, camera: dict[str, Any]) -> bool:
+        if bool(camera.get("camera_view_ok", False)):
+            return True
+        verification = self._camera_view_verification
+        if not isinstance(verification, dict) or not verification.get("verified", False):
+            return False
+        return (
+            str(verification.get("camera_device") or "") == str(camera.get("device") or "")
+            and str(verification.get("camera_mount_name") or "") == str(camera.get("mount_name") or "")
+            and str(verification.get("camera_intrinsics_version") or "")
+            == str(camera.get("camera_intrinsics_version") or "")
+            and str(verification.get("camera_extrinsics_version") or "")
+            == str(camera.get("camera_extrinsics_version") or "")
+        )
+
+    def _camera_view_status(self, camera: dict[str, Any]) -> str:
+        if bool(camera.get("camera_view_ok", False)):
+            return str(camera.get("camera_view_status") or "verified")
+        if self._camera_view_ok(camera):
+            return "operator_verified"
+        return str(camera.get("camera_view_status") or "unchecked")
+
+    def _compute_episode_file_stats(self, episode_dir: Path | None) -> dict[str, Any]:
+        if episode_dir is None:
+            return {
+                "files_complete": False,
+                "record_counts": {},
+            }
+        record_counts = {
+            "visuals": self._count_jsonl_lines(episode_dir / "visuals.jsonl"),
+            "states": self._count_jsonl_lines(episode_dir / "states.jsonl"),
+            "actions": self._count_jsonl_lines(episode_dir / "actions.jsonl"),
+            "events": self._count_jsonl_lines(episode_dir / "events.jsonl"),
+            "rgb_frames": self._count_files(episode_dir / "rgb"),
+            "depth_frames": self._count_files(episode_dir / "depth"),
+        }
+        files_complete = all(
+            [
+                (episode_dir / "metadata.json").exists(),
+                (episode_dir / "visuals.jsonl").exists(),
+                (episode_dir / "states.jsonl").exists(),
+                (episode_dir / "actions.jsonl").exists(),
+                (episode_dir / "events.jsonl").exists(),
+                record_counts["visuals"] > 0,
+                record_counts["states"] > 0,
+                record_counts["rgb_frames"] > 0,
+                record_counts["depth_frames"] > 0,
+            ]
+        )
+        if (episode_dir / "result.json").exists():
+            files_complete = files_complete and True
+        return {
+            "files_complete": files_complete,
+            "record_counts": record_counts,
+        }
+
+    def _count_jsonl_lines(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        with path.open("r", encoding="utf-8") as file:
+            return sum(1 for line in file if line.strip())
+
+    def _count_files(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(1 for child in path.iterdir() if child.is_file())
+
+    async def record_control_step(
+        self,
+        request: Any,
+        simulation: Any,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        if self._active_episode_dir is None or self._active_episode_metadata is None:
+            return
+        async with self._control_record_lock:
+            if self._active_episode_dir is None or self._active_episode_metadata is None:
+                return
+            now = time.monotonic()
+            if now - self._last_control_recorded_at < self._control_record_min_interval_s:
+                return
+            episode_dir = self._active_episode_dir
+            episode_metadata = deepcopy(self._active_episode_metadata)
+            if state is None:
+                state = await simulation.get_state(refresh_camera=False)
+            observation = await simulation.get_camera_observation(include_data=True)
+            frame_id = str(observation.get("d405_frame_id") or observation.get("frame_id") or "").strip() or None
+            if frame_id and frame_id == self._last_control_record_frame_id:
+                return
+            await asyncio.to_thread(
+                self._persist_control_step_sample,
+                episode_dir,
+                episode_metadata,
+                request,
+                state,
+                observation,
+            )
+            self._last_control_recorded_at = now
+            self._last_control_record_frame_id = frame_id
+
+    async def record_snapshot(
+        self,
+        simulation: Any,
+        state: dict[str, Any] | None = None,
+        event_type: str = "snapshot",
+    ) -> None:
+        if self._active_episode_dir is None or self._active_episode_metadata is None:
+            return
+        if state is None:
+            state = await simulation.get_state(refresh_camera=False)
+        observation = await simulation.get_camera_observation(include_data=True)
+        visual_record = self._persist_visual_sample(observation)
+        state_sample = self._build_state_sample(state=state, observation=observation)
+        _append_jsonl(self._active_episode_dir / "visuals.jsonl", visual_record)
+        _append_jsonl(self._active_episode_dir / "states.jsonl", state_sample)
+        _append_jsonl(
+            self._active_episode_dir / "events.jsonl",
+            {
+                "timestamp": time.time(),
+                "event_type": event_type,
+                "episode_id": self._active_episode_id,
+                "frame_id": visual_record.get("frame_id"),
+            },
+        )
+
+    def _persist_control_step_sample(
+        self,
+        episode_dir: Path,
+        episode_metadata: dict[str, Any],
+        request: Any,
+        state: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> None:
+        visual_record = self._persist_visual_sample(observation, episode_dir=episode_dir)
+        state_sample = self._build_state_sample(
+            state=state,
+            observation=observation,
+            episode_metadata=episode_metadata,
+        )
+        action_sample = self._build_action_sample(
+            request=request,
+            state=state,
+            observation=observation,
+            episode_metadata=episode_metadata,
+        )
+        _append_jsonl(episode_dir / "visuals.jsonl", visual_record)
+        _append_jsonl(episode_dir / "states.jsonl", state_sample)
+        _append_jsonl(episode_dir / "actions.jsonl", action_sample)
+
+    def _persist_visual_sample(
+        self,
+        observation: dict[str, Any],
+        episode_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        target_episode_dir = episode_dir or self._active_episode_dir
+        if target_episode_dir is None:
+            raise RuntimeError("no active episode directory")
+        visual_record = deepcopy(observation.get("visuals_record_template", {}))
+        if not isinstance(visual_record, dict) or not visual_record:
+            raise RuntimeError("camera observation missing visuals_record_template")
+        rgb_payload = observation.get("rgb_data")
+        depth_payload = observation.get("depth_data")
+        rgb_info = observation.get("rgb") if isinstance(observation.get("rgb"), dict) else {}
+        depth_info = observation.get("depth") if isinstance(observation.get("depth"), dict) else {}
+        self._write_rgb_frame(
+            path=target_episode_dir / str(visual_record["rgb_path"]),
+            payload=rgb_payload if isinstance(rgb_payload, dict) else {},
+            width=int(rgb_info.get("width", 0)),
+            height=int(rgb_info.get("height", 0)),
+        )
+        self._write_depth_frame(
+            path=target_episode_dir / str(visual_record["depth_path"]),
+            payload=depth_payload if isinstance(depth_payload, dict) else {},
+            width=int(depth_info.get("width", 0)),
+            height=int(depth_info.get("height", 0)),
+        )
+        return visual_record
+
+    def _decode_base64_bytes(self, payload: dict[str, Any]) -> bytes:
+        encoded = str(payload.get("data_base64") or "")
+        if not encoded:
+            raise ValueError("missing frame data_base64")
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"invalid base64 frame payload: {exc}") from exc
+
+    def _write_rgb_frame(self, path: Path, payload: dict[str, Any], width: int, height: int) -> None:
+        if width <= 0 or height <= 0:
+            raise ValueError("invalid rgb frame shape")
+        raw = self._decode_base64_bytes(payload)
+        expected = width * height * 3
+        if len(raw) != expected:
+            raise ValueError(f"unexpected rgb payload size: {len(raw)} != {expected}")
+        arr = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(arr, mode="RGB").save(path)
+
+    def _write_depth_frame(self, path: Path, payload: dict[str, Any], width: int, height: int) -> None:
+        if width <= 0 or height <= 0:
+            raise ValueError("invalid depth frame shape")
+        raw = self._decode_base64_bytes(payload)
+        expected = width * height * 2
+        if len(raw) != expected:
+            raise ValueError(f"unexpected depth payload size: {len(raw)} != {expected}")
+        arr = np.frombuffer(raw, dtype=np.uint16).reshape((height, width))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(arr, mode="I;16").save(path)
+
+    def _build_state_sample(
+        self,
+        state: dict[str, Any],
+        observation: dict[str, Any],
+        episode_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        instruction_text = ""
+        metadata = episode_metadata if isinstance(episode_metadata, dict) else self._active_episode_metadata
+        if isinstance(metadata, dict):
+            instruction_text = str(metadata.get("instruction_text") or "")
+        return {
+            "timestamp": time.time(),
+            "sim_time": state.get("sim_time"),
+            "qpos": list(state.get("qpos") or []),
+            "qvel": list(state.get("qvel") or []),
+            "arm_target_qpos": list(state.get("arm_target_qpos") or []),
+            "ee_pose": deepcopy(state.get("ee_pose") or {}),
+            "gripper_opening": state.get("gripper_opening"),
+            "objects": deepcopy(state.get("objects") or {}),
+            "camera_capture_ok": bool(state.get("camera_capture_ok", False)),
+            "d405_frame_id": observation.get("d405_frame_id") or state.get("d405_frame_id"),
+            "camera_observation": {
+                "frame_id": observation.get("frame_id"),
+                "camera_source_ok": observation.get("camera_source_ok"),
+                "camera_capture_ok": observation.get("camera_capture_ok"),
+                "camera_view_ok": self._camera_view_ok(
+                    observation.get("camera") if isinstance(observation.get("camera"), dict) else {}
+                ),
+                "camera_view_status": self._camera_view_status(
+                    observation.get("camera") if isinstance(observation.get("camera"), dict) else {}
+                ),
+                "rgb_valid": observation.get("rgb_valid"),
+                "depth_valid": observation.get("depth_valid"),
+                "frame_aligned": observation.get("frame_aligned"),
+                "stub_frame_used": observation.get("stub_frame_used"),
+                "last_error": observation.get("last_error"),
+            },
+            "instruction_text": instruction_text,
+            "source": state.get("source"),
+            "input_source": state.get("input_source"),
+            "selected_joint_group": state.get("selected_joint_group"),
+            "collision_blocked": bool(state.get("collision_blocked", False)),
+            "collision_contacts": deepcopy(state.get("collision_contacts") or []),
+            "safety_status": state.get("safety_status"),
+        }
+
+    def _build_action_sample(
+        self,
+        request: Any,
+        state: dict[str, Any],
+        observation: dict[str, Any],
+        episode_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        instruction_text = ""
+        metadata = episode_metadata if isinstance(episode_metadata, dict) else self._active_episode_metadata
+        if isinstance(metadata, dict):
+            instruction_text = str(metadata.get("instruction_text") or "")
+        target_positions = list(getattr(request, "target_positions", None) or [])
+        qpos = list(state.get("qpos") or [])
+        joint_delta = []
+        if len(target_positions) >= 6 and len(qpos) >= 6:
+            joint_delta = [float(target_positions[idx]) - float(qpos[idx]) for idx in range(6)]
+        return {
+            "command_timestamp": time.time(),
+            "ack_timestamp": time.time(),
+            "target_positions": target_positions,
+            "joint_target": target_positions[:6],
+            "joint_delta": joint_delta,
+            "gripper_command": (
+                getattr(request.gripper_command, "model_dump", lambda: deepcopy(request.gripper_command))()
+                if getattr(request, "gripper_command", None) is not None
+                else None
+            ),
+            "gripper_target": (
+                getattr(getattr(request, "gripper_command", None), "value", None)
+                if getattr(request, "gripper_command", None) is not None
+                else None
+            ),
+            "input_mode": self._active_episode_metadata.get("input_mode") if self._active_episode_metadata else None,
+            "runtime_target": "mujoco",
+            "paired_frame_id": observation.get("d405_frame_id") or observation.get("frame_id"),
+            "instruction_text": instruction_text,
+            "timestamp": time.time(),
+            "source": getattr(request, "source", None),
+            "input_source": getattr(request, "input_source", None),
+            "control_mode": getattr(request, "control_mode", None),
+            "selected_joint_group": getattr(request, "selected_joint_group", None),
+            "target_ee_pose": (
+                getattr(request.target_ee_pose, "model_dump", lambda: deepcopy(request.target_ee_pose))()
+                if getattr(request, "target_ee_pose", None) is not None
+                else None
+            ),
+            "target_ee_delta": list(getattr(request, "target_ee_delta", None) or []),
+            "raw_input": deepcopy(getattr(request, "raw_input", None)),
+            "normalized_input": deepcopy(getattr(request, "normalized_input", None)),
+            "valid_for_training": True,
+        }
