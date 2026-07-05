@@ -201,14 +201,17 @@ export function createQuestHandTeleop(options = {}) {
 
     lastTrackedAt = now;
     ensureAnchor(rightPalm, currentPose, rightPalmQuaternion);
-    // Hand teleop uses the same anchored absolute follow path as controllers:
-    // keep the initial palm->EE offset, then let the current palm pose drive EE.
+    // Hand teleop also uses anchored absolute follow, but for stable grasp
+    // approach we lock EE orientation by default and let the palm mainly drive
+    // Cartesian position. Hand-tracking orientation is too jittery near tools.
+    const orientationFollowEnabled = false;
+    const orientationFollowGain = orientationFollowEnabled ? 1 : 0;
     const eeTracking = eeTargetTracker.update({
       inputPosition: rightPalm,
       inputQuaternion: rightPalmQuaternion,
       currentEePose: currentPose,
       movementGain: 1,
-      orientationGain: 1,
+      orientationGain: orientationFollowGain,
       dtSec,
     });
     const targetEePose = eeTracking?.targetEePose || eeTargetTracker.getTargetPose() || currentPose;
@@ -266,7 +269,8 @@ export function createQuestHandTeleop(options = {}) {
         ee_error_m: eeError,
         orientation_error_rad: orientationError,
         movement_gain: 1,
-        orientation_gain: 1,
+        orientation_gain: orientationFollowGain,
+        orientation_follow_enabled: orientationFollowEnabled ? 1 : 0,
         ee_follow_mode: "anchored_absolute",
         max_control_offset_m: cfg.max_control_offset,
         fist: smoothedFist,

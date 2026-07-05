@@ -678,10 +678,14 @@ export function createQuestControllerTeleop(options = {}) {
     const engaged = Boolean(motionController?.pose && motionController.engaged);
     let releaseHoldCommand = false;
     let eeTracking = null;
-    // Default to 1:1 EE following so the controller pose maps directly to the
-    // robot target pose; precision mode only scales this down for fine adjustment.
+    // For grasp/data-collection we prioritize stable Cartesian translation first.
+    // Keep orientation locked during normal motion, and only enable wrist-orientation
+    // following while precision mode is held for deliberate fine alignment.
     const positionFollowGain = precisionMode ? cfg.precision_scale : 1;
-    const orientationFollowGain = precisionMode ? Math.max(0.55, cfg.precision_scale) : 1;
+    const orientationFollowEnabled = precisionMode;
+    const orientationFollowGain = orientationFollowEnabled
+      ? Math.max(0.3, cfg.precision_scale)
+      : 0;
     if (engaged && poseTracked) {
       if (!motionEngaged || activeControllerHand !== motionController.hand) {
         resetAnchor(motionController.pose.position, currentPose, poseQuaternion);
@@ -757,6 +761,7 @@ export function createQuestControllerTeleop(options = {}) {
         orientation_error_rad: orientationError,
         movement_gain: positionFollowGain,
         orientation_gain: orientationFollowGain,
+        orientation_follow_enabled: orientationFollowEnabled ? 1 : 0,
         ee_follow_mode: "anchored_absolute",
         max_control_offset_m: cfg.max_control_offset,
       },
