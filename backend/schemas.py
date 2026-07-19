@@ -160,6 +160,7 @@ class SimState(BaseModel):
     gripper_target_opening: float | None = None
     gripper_ctrl_opening: float | None = None
     ee_pose: EEPose
+    control_ee_pose: EEPose | None = None
     gripper_opening: float
     gripper_joints: dict[str, float]
     objects: dict[str, ObjectPose]

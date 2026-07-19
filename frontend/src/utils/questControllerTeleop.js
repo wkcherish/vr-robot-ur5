@@ -22,9 +22,9 @@ const JOINT_GROUP_BY_KEY = Object.fromEntries(
 );
 
 function normalizeControllerStrategy(value) {
-  // Keep Quest controller teleop on a single IK-only path so tuning remains
+  // Keep Quest controller teleop on a single servo path so tuning remains
   // predictable and easier to maintain across frontend/backend updates.
-  return "ee_ik";
+  return "ee_servo";
 }
 
 function getJointGroupMeta(groupKey) {
@@ -204,7 +204,7 @@ export function createQuestControllerTeleop(options = {}) {
   const initialStrategy = normalizeControllerStrategy(options.control_strategy);
   const cfg = {
     control_strategy: initialStrategy,
-    // Bias the default IK profile toward stable, low-jitter teleoperation.
+    // Bias the default servo profile toward stable, low-jitter teleoperation.
     // We can always loosen these values later if we want more aggressive motion.
     movement_deadzone: Number.isFinite(Number(options.movement_deadzone))
       ? Number(options.movement_deadzone)
@@ -326,7 +326,7 @@ export function createQuestControllerTeleop(options = {}) {
     return {
       selected_joint_group: EE_CONTROL_GROUP,
       selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
-      input_mode: "controller_ee_ik",
+      input_mode: "controller_ee_servo",
       group_sequence: [EE_CONTROL_GROUP],
     };
   }
@@ -594,7 +594,7 @@ export function createQuestControllerTeleop(options = {}) {
         target_positions: null,
         target_ee_pose: eeTargetTracker.getTargetPose() || currentPose,
         gripper_opening: clamp(gripper, cfg.gripper_min, cfg.gripper_max),
-        control_mode: "ik_pose",
+        control_mode: "cartesian_servo",
         input_source: "quest3_controller",
         selected_joint_group: EE_CONTROL_GROUP,
         selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
@@ -603,7 +603,7 @@ export function createQuestControllerTeleop(options = {}) {
           trigger: 0,
           grip: 0,
           precision: precisionMode ? 1 : 0,
-          control_mode: "ee_ik",
+          control_mode: "ee_servo",
           ee_active: 0,
           active_hand: activeControllerHand || "",
         },
@@ -635,13 +635,13 @@ export function createQuestControllerTeleop(options = {}) {
         target_positions: null,
         target_ee_pose: eeTargetTracker.getTargetPose() || currentPose,
         gripper_opening: clamp(gripper, cfg.gripper_min, cfg.gripper_max),
-        control_mode: "ik_pose",
+        control_mode: "cartesian_servo",
         input_source: "quest3_controller",
         selected_joint_group: EE_CONTROL_GROUP,
         selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
         changed_joint_group: false,
         normalized_input: {
-          control_mode: "ee_ik",
+          control_mode: "ee_servo",
           ee_active: 0,
           trigger: triggerRaw,
           grip: gripRaw,
@@ -736,13 +736,13 @@ export function createQuestControllerTeleop(options = {}) {
       target_positions: null,
       target_ee_pose: cloneEePose(targetEePose) || currentPose,
       gripper_opening: nextGripper,
-      control_mode: "ik_pose",
+      control_mode: "cartesian_servo",
       input_source: "quest3_controller",
       selected_joint_group: EE_CONTROL_GROUP,
       selected_joint_group_label: EE_CONTROL_GROUP_LABEL,
       changed_joint_group: false,
       normalized_input: {
-        control_mode: "ee_ik",
+        control_mode: "ee_servo",
         ee_active: hasEeActivity ? 1 : 0,
         ee_hold: releaseHoldCommand ? 1 : 0,
         trigger: smoothedTrigger,

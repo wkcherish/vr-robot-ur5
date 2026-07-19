@@ -29,10 +29,15 @@
 - `SimulationCore` 默认加载 `environment.xml`，并从 MuJoCo 实时回传：
   - `qpos` / `qvel`
   - `ee_pose`
+  - `control_ee_pose`
   - `gripper_opening` / `gripper_joints`
   - `objects`
 
 说明：
+
+- `ee_pose` 保持为 MuJoCo 工具坐标系下的真实末端位姿，用于场景/相机等严格对齐。
+- `control_ee_pose` 为 VR 遥操作使用的抓取中心位姿，默认取夹爪两指中点，用于让末端跟手/手柄更贴合。
+- MuJoCo 深度渲染默认使用 `SIM_MUJOCO_DEPTH_MAP=zeronear` 兼容模式，避免 macOS/OpenGL 缺少 `ARB_clip_control` 时反复输出 reverse-Z 警告；支持该扩展的环境可改为 `zerofar`。
 
 - 后端仍以 `shared/scene_manifest.json` 作为场景位姿与 home 基线来源。
 

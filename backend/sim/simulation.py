@@ -87,6 +87,7 @@ DEFAULT_MUJOCO_MODEL_PATH = REPO_ROOT / "backend" / "mujoco_models" / "environme
 DEFAULT_CAMERA_SENSOR_CONFIG_PATH = REPO_ROOT / "shared" / "camera_sensor_config.json"
 DEFAULT_DATASET_SCHEMA_PATH = REPO_ROOT / "shared" / "dataset_schema.json"
 DEFAULT_HANDOVER_SCENE_CONFIG_PATH = REPO_ROOT / "shared" / "handover_scene_config.json"
+MUJOCO_DEPTH_MAP_MODE = str(os.getenv("SIM_MUJOCO_DEPTH_MAP", "zeronear")).strip().lower()
 BACKEND_FRAME_Z_OFFSET = 0.5
 BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
 MAX_ALLOWED_PENETRATION_M = 8e-4
@@ -156,12 +157,38 @@ REALTIME_SERVO_CTRL_GRIPPER_MAX_ACCEL_OPENING_S2 = 34.0
 REALTIME_SERVO_CTRL_ARM_MAX_JERK_RAD_S3 = 260.0
 REALTIME_SERVO_CTRL_GRIPPER_MAX_JERK_OPENING_S3 = 260.0
 IK_MAX_ITERATIONS = 24
+IK_REALTIME_MAX_ITERATIONS = 10
 IK_POSITION_TOLERANCE_M = 0.003
 IK_ORIENTATION_TOLERANCE_RAD = 0.035
 IK_DAMPING = 0.10
 IK_MAX_STEP_RAD = 0.24
 IK_POSITION_WEIGHT = 1.0
 IK_ORIENTATION_WEIGHT = 0.30
+# Realtime XR teleop benefits from a more conservative IK profile: smaller
+# joint updates and lighter orientation coupling reduce the "near the tool and
+# suddenly flailing" failure mode without changing the user's control strategy.
+IK_REALTIME_DAMPING = 0.16
+IK_REALTIME_MAX_STEP_RAD = 0.16
+IK_REALTIME_ORIENTATION_WEIGHT = 0.16
+IK_REALTIME_LOCKED_ORIENTATION_WEIGHT = 0.05
+CARTESIAN_SERVO_LINEAR_GAIN_S = 4.2
+CARTESIAN_SERVO_ANGULAR_GAIN_S = 2.4
+CARTESIAN_SERVO_LINEAR_DAMPING = 0.25
+CARTESIAN_SERVO_ANGULAR_DAMPING = 0.20
+CARTESIAN_SERVO_MAX_LINEAR_SPEED_M_S = 0.34
+CARTESIAN_SERVO_MAX_ANGULAR_SPEED_RAD_S = 0.90
+CARTESIAN_SERVO_DAMPING = 0.10
+CARTESIAN_SERVO_POSITION_WEIGHT = 1.0
+CARTESIAN_SERVO_ORIENTATION_WEIGHT = 0.22
+CARTESIAN_SERVO_LOCKED_ORIENTATION_WEIGHT = 0.0
+CARTESIAN_SERVO_MAX_JOINT_SPEED_RAD_S = 1.35
+CARTESIAN_SERVO_MAX_JOINT_ACCEL_RAD_S2 = 9.0
+CARTESIAN_SERVO_COMMAND_LOOKAHEAD_S = 0.030
+CARTESIAN_SERVO_MAX_COMMAND_LEAD_RAD = 0.045
+CARTESIAN_SERVO_JOINT_LIMIT_MARGIN_RAD = 0.18
+CARTESIAN_SERVO_MIN_SINGULAR_VALUE = 0.035
+CARTESIAN_SERVO_POSITION_DEADBAND_M = 1.2e-3
+CARTESIAN_SERVO_ORIENTATION_DEADBAND_RAD = 0.014
 GRASP_ASSIST_MODE = str(os.getenv("SIM_GRASP_ASSIST_MODE", "strict")).strip().lower()
 GRIPPER_GRASP_ENGAGE_OPENING = 0.70
 GRIPPER_GRASP_RELEASE_OPENING = 0.24
@@ -175,6 +202,17 @@ class _QueuedCommand:
     request: StepRequest
     future: asyncio.Future[dict[str, Any]]
     return_state: bool = True
+
+
+@dataclass
+class _CartesianServoTarget:
+    source_key: str
+    position: list[float]
+    quaternion: list[float]
+    orientation_follow_enabled: bool
+    updated_at: float
+    last_qvel: list[float]
+    last_qaccel: list[float]
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -254,6 +292,13 @@ def _resolve_physics_steps(source: str, requested_steps: int, dt: float, input_s
     stable_dt = max(1e-4, float(dt))
     min_steps = max(1, int(round(REALTIME_SOURCE_MIN_PHYSICS_HORIZON_S / stable_dt)))
     return max(base_steps, min_steps)
+
+
+def _read_orientation_follow_enabled_from_request(request: StepRequest) -> bool:
+    normalized_input = getattr(request, "normalized_input", None)
+    if not isinstance(normalized_input, dict):
+        return False
+    return float(normalized_input.get("orientation_follow_enabled", 0) or 0) >= 0.5
 
 
 def _should_servo_snap_to_target(
@@ -687,6 +732,7 @@ class SimulationCore:
         }
         self._latest_realtime_seq_by_source: dict[str, int] = {}
         self._realtime_ee_target_by_source: dict[str, dict[str, list[float]]] = {}
+        self._active_cartesian_servo_target: _CartesianServoTarget | None = None
         self._pending_realtime_futures_by_source: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._pending_realtime_commands_by_source: dict[str, _QueuedCommand] = {}
         self._last_streaming_command_at: float | None = None
@@ -907,7 +953,7 @@ class SimulationCore:
                     last_safe_qpos = start_qpos.copy()
                     last_safe_qvel = start_qvel.copy()
                     for _ in range(execute_steps):
-                        self._apply_mujoco_servo_command_locked()
+                        self._apply_mujoco_servo_command_locked(advance_cartesian_servo=True)
                         _mujoco.mj_step(self._mj_model, self._mj_data)
                         self._update_grasp_assist_locked(forward=False)
                         forbidden_contacts = self._collect_forbidden_contacts_locked()
@@ -1867,7 +1913,11 @@ class SimulationCore:
         self._gripper_servo_ctrl_velocity = 0.0
         self._gripper_servo_ctrl_accel = 0.0
 
-    def _apply_mujoco_servo_command_locked(self, immediate: bool = False) -> None:
+    def _apply_mujoco_servo_command_locked(
+        self,
+        immediate: bool = False,
+        advance_cartesian_servo: bool = False,
+    ) -> None:
         if not self._using_mujoco_model() or self._mj_data is None:
             return
 
@@ -1879,6 +1929,9 @@ class SimulationCore:
             self._arm_servo_ctrl_qvel = [0.0 for _ in range(arm_count)]
         if len(self._arm_servo_ctrl_qaccel) < arm_count:
             self._arm_servo_ctrl_qaccel = [0.0 for _ in range(arm_count)]
+
+        if advance_cartesian_servo and not immediate:
+            self._update_cartesian_servo_arm_command_locked(dt)
 
         limits = _resolve_servo_motion_limits(self._source, self._last_input_source)
         for idx, actuator_name in enumerate(DEFAULT_ARM_ACTUATOR_NAMES):
@@ -1958,6 +2011,7 @@ class SimulationCore:
         return arm, gripper
 
     def _hold_current_pose_targets_locked(self) -> None:
+        self._clear_cartesian_servo_target_locked()
         current_arm = self._read_current_arm_qpos_locked()
         self._arm_command_qpos = list(current_arm)
         self._arm_servo_ctrl_qpos = list(current_arm)
@@ -2063,7 +2117,35 @@ class SimulationCore:
         }
 
     def _compute_gripper_grasp_pose_locked(self) -> dict[str, list[float]]:
+        pose = self._compute_control_ee_pose_locked()
+        if pose is not None:
+            return pose
+
+        return self._compute_ee_pose_locked()
+
+    def _compute_tool_frame_pose_locked(self) -> dict[str, list[float]] | None:
         if self._using_mujoco_model() and self._mj_data is not None:
+            if self._tool_site_id is not None:
+                return {
+                    "position": [float(v) for v in self._mj_data.site_xpos[self._tool_site_id]],
+                    "quaternion": _matrix_to_quaternion_wxyz(self._mj_data.site_xmat[self._tool_site_id]),
+                }
+            if self._tool_body_id is not None:
+                return {
+                    "position": [float(v) for v in self._mj_data.xpos[self._tool_body_id]],
+                    "quaternion": [float(v) for v in self._mj_data.xquat[self._tool_body_id]],
+                }
+        return None
+
+    def _compute_control_ee_pose_locked(self) -> dict[str, list[float]] | None:
+        if self._using_mujoco_model() and self._mj_data is not None:
+            tool_frame_pose = self._compute_tool_frame_pose_locked()
+            orientation_quaternion: list[float] | None = (
+                _normalize_quaternion(tool_frame_pose["quaternion"])
+                if tool_frame_pose is not None
+                else None
+            )
+
             pad_positions: list[list[float]] = []
             for name in GRIPPER_GRASP_PAD_BODY_NAMES:
                 body_id = self._gripper_body_ids.get(name)
@@ -2072,25 +2154,87 @@ class SimulationCore:
 
             if pad_positions:
                 inv_count = 1.0 / len(pad_positions)
+                # Drive teleop/IK from the actual pinch center between the two
+                # pads so "reach the tool and grasp it" lines up with what the
+                # user sees, rather than with the wrist flange origin.
                 position = [
                     sum(pad_position[axis] for pad_position in pad_positions) * inv_count
                     for axis in range(3)
                 ]
-                if self._tool_body_id is not None:
-                    quaternion = [float(v) for v in self._mj_data.xquat[self._tool_body_id]]
-                else:
+                if orientation_quaternion is None:
                     first_pad_id = self._gripper_body_ids.get(GRIPPER_GRASP_PAD_BODY_NAMES[0])
-                    quaternion = (
+                    orientation_quaternion = (
                         [float(v) for v in self._mj_data.xquat[first_pad_id]]
                         if first_pad_id is not None
                         else [1.0, 0.0, 0.0, 0.0]
                     )
                 return {
                     "position": position,
-                    "quaternion": _normalize_quaternion(quaternion),
+                    "quaternion": _normalize_quaternion(orientation_quaternion),
                 }
 
-        return self._compute_ee_pose_locked()
+            if tool_frame_pose is not None:
+                return tool_frame_pose
+
+        return None
+
+    def _compute_control_ee_jacobian_locked(self) -> tuple[Any, Any] | None:
+        if (
+            not self._using_mujoco_model()
+            or self._mj_model is None
+            or self._mj_data is None
+            or _mujoco is None
+            or np is None
+        ):
+            return None
+
+        jacp = np.zeros((3, self._mj_model.nv), dtype=float)
+        jacr = np.zeros((3, self._mj_model.nv), dtype=float)
+        pad_body_ids = [
+            int(body_id)
+            for body_id in (
+                self._gripper_body_ids.get(name)
+                for name in GRIPPER_GRASP_PAD_BODY_NAMES
+            )
+            if body_id is not None
+        ]
+
+        if pad_body_ids:
+            pad_jacp = np.zeros((3, self._mj_model.nv), dtype=float)
+            pad_jacr = np.zeros((3, self._mj_model.nv), dtype=float)
+            for body_id in pad_body_ids:
+                pad_jacp.fill(0.0)
+                pad_jacr.fill(0.0)
+                _mujoco.mj_jacBody(self._mj_model, self._mj_data, pad_jacp, pad_jacr, body_id)
+                jacp += pad_jacp
+            jacp /= float(len(pad_body_ids))
+        elif self._tool_site_id is not None:
+            _mujoco.mj_jacSite(self._mj_model, self._mj_data, jacp, jacr, int(self._tool_site_id))
+        elif self._tool_body_id is not None:
+            _mujoco.mj_jacBody(self._mj_model, self._mj_data, jacp, jacr, int(self._tool_body_id))
+        else:
+            return None
+
+        if self._tool_site_id is not None:
+            orientation_jacp = np.zeros((3, self._mj_model.nv), dtype=float)
+            _mujoco.mj_jacSite(
+                self._mj_model,
+                self._mj_data,
+                orientation_jacp,
+                jacr,
+                int(self._tool_site_id),
+            )
+        elif self._tool_body_id is not None:
+            orientation_jacp = np.zeros((3, self._mj_model.nv), dtype=float)
+            _mujoco.mj_jacBody(
+                self._mj_model,
+                self._mj_data,
+                orientation_jacp,
+                jacr,
+                int(self._tool_body_id),
+            )
+
+        return jacp, jacr
 
     def _clear_grasp_attachment_locked(self) -> None:
         if self._attached_object_id in self._scene_objects_template:
@@ -2493,8 +2637,24 @@ class SimulationCore:
     def _clear_realtime_ee_target_locked(self, source_key: str | None = None) -> None:
         if source_key:
             self._realtime_ee_target_by_source.pop(str(source_key), None)
+            self._clear_cartesian_servo_target_locked(source_key)
             return
         self._realtime_ee_target_by_source = {}
+        self._clear_cartesian_servo_target_locked()
+
+    def _clear_cartesian_servo_target_locked(self, source_key: str | None = None) -> None:
+        if source_key is None:
+            self._active_cartesian_servo_target = None
+            return
+        active = self._active_cartesian_servo_target
+        if active is not None and active.source_key == str(source_key):
+            self._active_cartesian_servo_target = None
+
+    def _update_last_normalized_input_locked(self, values: dict[str, Any]) -> None:
+        if isinstance(self._last_normalized_input, dict):
+            self._last_normalized_input.update(values)
+            return
+        self._last_normalized_input = dict(values)
 
     def _stabilize_realtime_ee_target_locked(
         self,
@@ -2564,7 +2724,7 @@ class SimulationCore:
         if target_pose is None and target_delta is None:
             return None
 
-        current_pose = self._compute_ee_pose_locked()
+        current_pose = self._build_control_ee_pose_locked()
         target_position: list[float] | None = None
         target_quaternion = _normalize_quaternion(current_pose.get("quaternion", [1.0, 0.0, 0.0, 0.0]))
 
@@ -2605,10 +2765,265 @@ class SimulationCore:
 
         return target_position, target_quaternion
 
+    def _can_use_cartesian_servo_locked(self) -> bool:
+        has_control_frame = (
+            self._tool_site_id is not None
+            or self._tool_body_id is not None
+            or any(self._gripper_body_ids.get(name) is not None for name in GRIPPER_GRASP_PAD_BODY_NAMES)
+        )
+        return (
+            self._using_mujoco_model()
+            and self._mj_model is not None
+            and self._mj_data is not None
+            and _mujoco is not None
+            and np is not None
+            and has_control_frame
+            and all(self._arm_joint_qvel_addr.get(name) is not None for name in self._arm_joint_names)
+        )
+
+    def _activate_cartesian_servo_target_locked(
+        self,
+        request: StepRequest,
+        target_position: list[float],
+        target_quaternion: list[float],
+    ) -> None:
+        source_key = self._realtime_queue_source_key(request) or str(request.source)
+        previous = self._active_cartesian_servo_target
+        arm_count = len(self._arm_joint_names)
+        if previous is not None and previous.source_key == source_key:
+            last_qvel = list(previous.last_qvel[:arm_count])
+            last_qaccel = list(previous.last_qaccel[:arm_count])
+        else:
+            last_qvel = [0.0 for _ in range(arm_count)]
+            last_qaccel = [0.0 for _ in range(arm_count)]
+
+        if len(last_qvel) < arm_count:
+            last_qvel = [0.0 for _ in range(arm_count)]
+        if len(last_qaccel) < arm_count:
+            last_qaccel = [0.0 for _ in range(arm_count)]
+
+        self._active_cartesian_servo_target = _CartesianServoTarget(
+            source_key=source_key,
+            position=[float(v) for v in target_position[:3]],
+            quaternion=_normalize_quaternion(target_quaternion),
+            orientation_follow_enabled=_read_orientation_follow_enabled_from_request(request),
+            updated_at=perf_counter(),
+            last_qvel=last_qvel,
+            last_qaccel=last_qaccel,
+        )
+
+    def _limit_cartesian_servo_joint_velocity(
+        self,
+        qpos: Any,
+        desired_qvel: Any,
+        previous_qvel: list[float],
+        dt: float,
+    ) -> Any:
+        if np is None:
+            return desired_qvel
+
+        qvel = np.asarray(desired_qvel, dtype=float)
+        previous = np.asarray(previous_qvel[: qvel.size], dtype=float)
+        if previous.size != qvel.size:
+            previous = np.zeros_like(qvel)
+
+        stable_dt = max(float(dt), 1e-6)
+        max_accel_step = CARTESIAN_SERVO_MAX_JOINT_ACCEL_RAD_S2 * stable_dt
+        qvel = previous + np.clip(qvel - previous, -max_accel_step, max_accel_step)
+        qvel = np.clip(
+            qvel,
+            -CARTESIAN_SERVO_MAX_JOINT_SPEED_RAD_S,
+            CARTESIAN_SERVO_MAX_JOINT_SPEED_RAD_S,
+        )
+
+        for idx, joint_name in enumerate(self._arm_joint_names[: qvel.size]):
+            limits = self._arm_joint_limits.get(joint_name)
+            if limits is None:
+                continue
+            lo, hi = limits
+            q_value = float(qpos[idx])
+            distance_to_lower = max(0.0, q_value - float(lo))
+            distance_to_upper = max(0.0, float(hi) - q_value)
+            margin = max(CARTESIAN_SERVO_JOINT_LIMIT_MARGIN_RAD, 1e-6)
+
+            if qvel[idx] < 0.0 and distance_to_lower < margin:
+                qvel[idx] *= _clamp(distance_to_lower / margin, 0.0, 1.0)
+            elif qvel[idx] > 0.0 and distance_to_upper < margin:
+                qvel[idx] *= _clamp(distance_to_upper / margin, 0.0, 1.0)
+
+            next_q = q_value + float(qvel[idx]) * stable_dt
+            if next_q < lo:
+                qvel[idx] = (float(lo) - q_value) / stable_dt
+            elif next_q > hi:
+                qvel[idx] = (float(hi) - q_value) / stable_dt
+
+        return qvel
+
+    def _update_cartesian_servo_arm_command_locked(self, dt: float) -> bool:
+        target = self._active_cartesian_servo_target
+        if target is None:
+            return False
+        if (
+            not self._can_use_cartesian_servo_locked()
+            or self._mj_model is None
+            or self._mj_data is None
+            or np is None
+        ):
+            self._clear_cartesian_servo_target_locked()
+            return False
+
+        active_source_key = self._realtime_state_source_key(self._source, self._last_input_source)
+        if active_source_key is None:
+            self._clear_cartesian_servo_target_locked()
+            return False
+        if active_source_key != target.source_key:
+            return False
+
+        current_pose = self._build_control_ee_pose_locked()
+        current_position = np.asarray(current_pose["position"][:3], dtype=float)
+        current_quaternion = _normalize_quaternion(current_pose["quaternion"])
+        target_position = np.asarray(target.position[:3], dtype=float)
+        target_quaternion = _normalize_quaternion(target.quaternion)
+
+        position_error = target_position - current_position
+        position_error_norm = float(np.linalg.norm(position_error))
+        jacobian = self._compute_control_ee_jacobian_locked()
+        if jacobian is None:
+            self._clear_cartesian_servo_target_locked()
+            return False
+
+        jacp, jacr = jacobian
+        dof_indices = [int(self._arm_joint_qvel_addr[name]) for name in self._arm_joint_names]
+        current_joint_qvel = np.asarray(
+            [float(self._mj_data.qvel[idx]) for idx in dof_indices],
+            dtype=float,
+        )
+        current_linear_velocity = jacp[:, dof_indices] @ current_joint_qvel
+        current_angular_velocity = jacr[:, dof_indices] @ current_joint_qvel
+
+        if position_error_norm <= CARTESIAN_SERVO_POSITION_DEADBAND_M:
+            linear_velocity = -current_linear_velocity * CARTESIAN_SERVO_LINEAR_DAMPING
+        else:
+            linear_velocity = (
+                position_error * CARTESIAN_SERVO_LINEAR_GAIN_S
+                - current_linear_velocity * CARTESIAN_SERVO_LINEAR_DAMPING
+            )
+            linear_speed = float(np.linalg.norm(linear_velocity))
+            if linear_speed > CARTESIAN_SERVO_MAX_LINEAR_SPEED_M_S:
+                linear_velocity *= CARTESIAN_SERVO_MAX_LINEAR_SPEED_M_S / max(linear_speed, 1e-8)
+
+        orientation_error = np.asarray(
+            _quaternion_error_vector(target_quaternion, current_quaternion),
+            dtype=float,
+        )
+        orientation_error_norm = float(np.linalg.norm(orientation_error))
+        orientation_weight = (
+            CARTESIAN_SERVO_ORIENTATION_WEIGHT
+            if target.orientation_follow_enabled
+            else CARTESIAN_SERVO_LOCKED_ORIENTATION_WEIGHT
+        )
+        if orientation_weight <= 1e-6:
+            angular_velocity = np.zeros(3, dtype=float)
+        elif orientation_error_norm <= CARTESIAN_SERVO_ORIENTATION_DEADBAND_RAD:
+            angular_velocity = -current_angular_velocity * CARTESIAN_SERVO_ANGULAR_DAMPING
+        else:
+            angular_velocity = (
+                orientation_error * CARTESIAN_SERVO_ANGULAR_GAIN_S
+                - current_angular_velocity * CARTESIAN_SERVO_ANGULAR_DAMPING
+            )
+            angular_speed = float(np.linalg.norm(angular_velocity))
+            if angular_speed > CARTESIAN_SERVO_MAX_ANGULAR_SPEED_RAD_S:
+                angular_velocity *= CARTESIAN_SERVO_MAX_ANGULAR_SPEED_RAD_S / max(angular_speed, 1e-8)
+        task_velocity_parts = [linear_velocity * CARTESIAN_SERVO_POSITION_WEIGHT]
+        task_jacobian_parts = [jacp[:, dof_indices] * CARTESIAN_SERVO_POSITION_WEIGHT]
+        if orientation_weight > 1e-6:
+            task_velocity_parts.append(angular_velocity * orientation_weight)
+            task_jacobian_parts.append(jacr[:, dof_indices] * orientation_weight)
+        task_velocity = np.concatenate(task_velocity_parts)
+        task_jacobian = np.vstack(task_jacobian_parts)
+
+        try:
+            singular_values = np.linalg.svd(task_jacobian, compute_uv=False)
+        except Exception:
+            singular_values = np.asarray([], dtype=float)
+        min_singular = float(np.min(singular_values)) if singular_values.size else 0.0
+        singular_scale = 1.0
+        if min_singular < CARTESIAN_SERVO_MIN_SINGULAR_VALUE:
+            singular_scale = _clamp(
+                min_singular / max(CARTESIAN_SERVO_MIN_SINGULAR_VALUE, 1e-8),
+                0.20,
+                1.0,
+            )
+
+        lhs = task_jacobian @ task_jacobian.T
+        lhs += np.eye(lhs.shape[0]) * (CARTESIAN_SERVO_DAMPING * CARTESIAN_SERVO_DAMPING)
+        try:
+            task_step = np.linalg.solve(lhs, task_velocity)
+        except Exception:
+            task_step = np.linalg.lstsq(lhs, task_velocity, rcond=None)[0]
+        desired_qvel = (task_jacobian.T @ task_step) * singular_scale
+
+        qpos = np.asarray(self._read_current_arm_qpos_locked(), dtype=float)
+        qvel = self._limit_cartesian_servo_joint_velocity(
+            qpos,
+            desired_qvel,
+            target.last_qvel,
+            dt,
+        )
+        stable_dt = max(float(dt), 1e-6)
+        command_qpos = np.asarray(self._arm_command_qpos[: qvel.size], dtype=float)
+        if command_qpos.size != qvel.size:
+            command_qpos = qpos.copy()
+
+        proposed_qpos = command_qpos + qvel * stable_dt
+        command_lead = np.clip(
+            proposed_qpos - qpos,
+            -CARTESIAN_SERVO_MAX_COMMAND_LEAD_RAD,
+            CARTESIAN_SERVO_MAX_COMMAND_LEAD_RAD,
+        )
+        next_qpos = np.asarray(
+            self._clamp_arm_targets((qpos + command_lead).tolist()),
+            dtype=float,
+        )
+        limited_qvel = qvel
+        previous_qvel = np.asarray(target.last_qvel[: limited_qvel.size], dtype=float)
+        if previous_qvel.size != limited_qvel.size:
+            previous_qvel = np.zeros_like(limited_qvel)
+        actual_qaccel = (limited_qvel - previous_qvel) / stable_dt
+
+        target.last_qvel = [float(v) for v in limited_qvel.tolist()]
+        target.last_qaccel = [float(v) for v in actual_qaccel.tolist()]
+        self._arm_command_qpos = [float(v) for v in next_qpos.tolist()]
+        self._arm_qvel = [float(v) for v in limited_qvel.tolist()]
+
+        servo_status = "holding"
+        if position_error_norm > CARTESIAN_SERVO_POSITION_DEADBAND_M or (
+            target.orientation_follow_enabled
+            and orientation_error_norm > CARTESIAN_SERVO_ORIENTATION_DEADBAND_RAD
+        ):
+            servo_status = "tracking"
+        if singular_scale < 0.99:
+            servo_status = "singularity_slowdown"
+
+        self._update_last_normalized_input_locked(
+            {
+                "cartesian_servo_active": 1,
+                "cartesian_servo_status": servo_status,
+                "cartesian_servo_position_error_m": position_error_norm,
+                "cartesian_servo_orientation_error_rad": orientation_error_norm,
+                "cartesian_servo_min_singular_value": min_singular,
+                "cartesian_servo_speed_scale": singular_scale,
+                "ik_active": 0,
+                "ik_status": "cartesian_servo",
+            }
+        )
+        return True
+
     def _solve_ee_ik_locked(
         self,
         target_position: list[float],
         target_quaternion: list[float],
+        ik_profile: dict[str, float] | None = None,
     ) -> tuple[list[float] | None, dict[str, Any]]:
         info: dict[str, Any] = {
             "active": True,
@@ -2632,6 +3047,22 @@ class SimulationCore:
             info["status"] = "missing_arm_joints"
             return None, info
 
+        profile = dict(ik_profile or {})
+        max_iterations = max(1, int(profile.get("max_iterations", IK_MAX_ITERATIONS)))
+        position_weight = max(1e-4, float(profile.get("position_weight", IK_POSITION_WEIGHT)))
+        orientation_weight = max(0.0, float(profile.get("orientation_weight", IK_ORIENTATION_WEIGHT)))
+        damping = max(1e-5, float(profile.get("damping", IK_DAMPING)))
+        max_step_rad = max(1e-5, float(profile.get("max_step_rad", IK_MAX_STEP_RAD)))
+        position_tolerance_m = max(1e-5, float(profile.get("position_tolerance_m", IK_POSITION_TOLERANCE_M)))
+        orientation_tolerance_rad = max(
+            1e-5,
+            float(profile.get("orientation_tolerance_rad", IK_ORIENTATION_TOLERANCE_RAD)),
+        )
+        orientation_goal_active = orientation_weight > 1e-4
+        info["position_weight"] = position_weight
+        info["orientation_weight"] = orientation_weight
+        info["orientation_target_active"] = orientation_goal_active
+
         qpos_snapshot = self._mj_data.qpos.copy()
         qvel_snapshot = self._mj_data.qvel.copy()
         ctrl_snapshot = self._mj_data.ctrl.copy()
@@ -2643,18 +3074,17 @@ class SimulationCore:
             target_quat = _normalize_quaternion(target_quaternion)
             qpos_indices = [int(addr) for addr in arm_qpos_addrs if addr is not None]
             dof_indices = [int(addr) for addr in arm_dof_addrs if addr is not None]
-            tool_site_id = self._tool_site_id
-            tool_body_id = self._tool_body_id
 
             def read_tool_pose() -> tuple[Any, list[float]]:
-                if tool_site_id is not None:
+                pose = self._build_control_ee_pose_locked()
+                if pose is None:
                     return (
-                        np.asarray(self._mj_data.site_xpos[tool_site_id], dtype=float),
-                        _matrix_to_quaternion_wxyz(self._mj_data.site_xmat[tool_site_id]),
+                        np.asarray(target_pos, dtype=float),
+                        _normalize_quaternion(target_quat),
                     )
                 return (
-                    np.asarray(self._mj_data.xpos[tool_body_id], dtype=float),
-                    [float(v) for v in self._mj_data.xquat[tool_body_id]],
+                    np.asarray(pose["position"], dtype=float),
+                    _normalize_quaternion(pose["quaternion"]),
                 )
 
             for idx, qpos_addr in enumerate(qpos_indices):
@@ -2664,7 +3094,7 @@ class SimulationCore:
 
             final_position_error = float("inf")
             final_orientation_error = float("inf")
-            for _ in range(IK_MAX_ITERATIONS):
+            for _ in range(max_iterations):
                 current_pos, current_quat = read_tool_pose()
                 position_error = target_pos - current_pos
                 orientation_error = np.asarray(
@@ -2674,39 +3104,58 @@ class SimulationCore:
                 final_position_error = float(np.linalg.norm(position_error))
                 final_orientation_error = float(np.linalg.norm(orientation_error))
                 if (
-                    final_position_error <= IK_POSITION_TOLERANCE_M
-                    and final_orientation_error <= IK_ORIENTATION_TOLERANCE_RAD
+                    final_position_error <= position_tolerance_m
+                    and (
+                        not orientation_goal_active
+                        or final_orientation_error <= orientation_tolerance_rad
+                    )
                 ):
                     break
 
-                jacp = np.zeros((3, self._mj_model.nv), dtype=float)
-                jacr = np.zeros((3, self._mj_model.nv), dtype=float)
-                if tool_site_id is not None:
-                    _mujoco.mj_jacSite(self._mj_model, self._mj_data, jacp, jacr, int(tool_site_id))
+                control_jacobian = self._compute_control_ee_jacobian_locked()
+                if control_jacobian is None:
+                    jacp = np.zeros((3, self._mj_model.nv), dtype=float)
+                    jacr = np.zeros((3, self._mj_model.nv), dtype=float)
+                    if self._tool_site_id is not None:
+                        _mujoco.mj_jacSite(
+                            self._mj_model,
+                            self._mj_data,
+                            jacp,
+                            jacr,
+                            int(self._tool_site_id),
+                        )
+                    else:
+                        _mujoco.mj_jacBody(
+                            self._mj_model,
+                            self._mj_data,
+                            jacp,
+                            jacr,
+                            int(self._tool_body_id),
+                        )
                 else:
-                    _mujoco.mj_jacBody(self._mj_model, self._mj_data, jacp, jacr, int(tool_body_id))
+                    jacp, jacr = control_jacobian
                 task_error = np.concatenate(
                     [
-                        position_error * IK_POSITION_WEIGHT,
-                        orientation_error * IK_ORIENTATION_WEIGHT,
+                        position_error * position_weight,
+                        orientation_error * orientation_weight,
                     ]
                 )
                 task_jacobian = np.vstack(
                     [
-                        jacp[:, dof_indices] * IK_POSITION_WEIGHT,
-                        jacr[:, dof_indices] * IK_ORIENTATION_WEIGHT,
+                        jacp[:, dof_indices] * position_weight,
+                        jacr[:, dof_indices] * orientation_weight,
                     ]
                 )
                 lhs = task_jacobian @ task_jacobian.T
-                lhs += np.eye(lhs.shape[0]) * (IK_DAMPING * IK_DAMPING)
+                lhs += np.eye(lhs.shape[0]) * (damping * damping)
                 try:
                     task_step = np.linalg.solve(lhs, task_error)
                 except Exception:
                     task_step = np.linalg.lstsq(lhs, task_error, rcond=None)[0]
                 dq = task_jacobian.T @ task_step
                 max_abs_step = float(np.max(np.abs(dq))) if dq.size else 0.0
-                if max_abs_step > IK_MAX_STEP_RAD:
-                    dq *= IK_MAX_STEP_RAD / max_abs_step
+                if max_abs_step > max_step_rad:
+                    dq *= max_step_rad / max_abs_step
 
                 q = np.asarray(self._clamp_arm_targets((q + dq).tolist()), dtype=float)
                 for idx, qpos_addr in enumerate(qpos_indices):
@@ -2723,7 +3172,13 @@ class SimulationCore:
             info["orientation_error_rad"] = final_orientation_error
             info["status"] = (
                 "solved"
-                if final_position_error <= max(0.012, IK_POSITION_TOLERANCE_M * 3.0)
+                if (
+                    final_position_error <= max(0.012, position_tolerance_m * 3.0)
+                    and (
+                        not orientation_goal_active
+                        or final_orientation_error <= max(0.10, orientation_tolerance_rad * 3.0)
+                    )
+                )
                 else "best_effort"
             )
             return self._clamp_arm_targets(q.tolist()), info
@@ -2742,16 +3197,60 @@ class SimulationCore:
     ) -> list[float] | None:
         ee_target = self._extract_ee_target_pose_locked(request)
         if ee_target is None:
+            if target_positions is not None or not _is_realtime_source(
+                request.source,
+                input_source=getattr(request, "input_source", None),
+            ):
+                self._clear_cartesian_servo_target_locked()
             return target_positions
 
-        if isinstance(self._last_normalized_input, dict):
-            self._last_normalized_input.update(
+        orientation_follow_enabled = _read_orientation_follow_enabled_from_request(request)
+        realtime_source = _is_realtime_source(request.source, input_source=getattr(request, "input_source", None))
+        self._update_last_normalized_input_locked(
+            {
+                "ee_target_position": [float(v) for v in ee_target[0][:3]],
+                "ee_target_quaternion": [float(v) for v in ee_target[1][:4]],
+                "ee_orientation_follow_enabled": 1 if orientation_follow_enabled else 0,
+            }
+        )
+        if realtime_source and self._can_use_cartesian_servo_locked():
+            self._activate_cartesian_servo_target_locked(request, ee_target[0], ee_target[1])
+            self._update_last_normalized_input_locked(
                 {
-                    "ik_target_position": [float(v) for v in ee_target[0][:3]],
-                    "ik_target_quaternion": [float(v) for v in ee_target[1][:4]],
+                    "control_mode": "cartesian_servo",
+                    "cartesian_servo_active": 1,
+                    "cartesian_servo_status": "queued",
+                    "ik_active": 0,
+                    "ik_status": "cartesian_servo",
                 }
             )
-        solved_target, ik_info = self._solve_ee_ik_locked(ee_target[0], ee_target[1])
+            if len(self._arm_command_qpos) >= len(self._arm_joint_names):
+                return list(self._arm_command_qpos[: len(self._arm_joint_names)])
+            return self._read_current_arm_qpos_locked()
+
+        self._clear_cartesian_servo_target_locked()
+        ik_profile = {
+            "position_weight": IK_POSITION_WEIGHT,
+            "orientation_weight": IK_ORIENTATION_WEIGHT,
+            "damping": IK_DAMPING,
+            "max_step_rad": IK_MAX_STEP_RAD,
+            "position_tolerance_m": IK_POSITION_TOLERANCE_M,
+            "orientation_tolerance_rad": IK_ORIENTATION_TOLERANCE_RAD,
+        }
+        if realtime_source:
+            ik_profile.update(
+                {
+                    "damping": IK_REALTIME_DAMPING,
+                    "max_iterations": IK_REALTIME_MAX_ITERATIONS,
+                    "max_step_rad": IK_REALTIME_MAX_STEP_RAD,
+                    "orientation_weight": (
+                        IK_REALTIME_ORIENTATION_WEIGHT
+                        if orientation_follow_enabled
+                        else IK_REALTIME_LOCKED_ORIENTATION_WEIGHT
+                    ),
+                }
+            )
+        solved_target, ik_info = self._solve_ee_ik_locked(ee_target[0], ee_target[1], ik_profile=ik_profile)
         if isinstance(self._last_normalized_input, dict):
             self._last_normalized_input.update(
                 {
@@ -2759,6 +3258,9 @@ class SimulationCore:
                     "ik_status": ik_info.get("status"),
                     "ik_position_error_m": ik_info.get("position_error_m"),
                     "ik_orientation_error_rad": ik_info.get("orientation_error_rad"),
+                    "ik_position_weight": ik_info.get("position_weight"),
+                    "ik_orientation_weight": ik_info.get("orientation_weight"),
+                    "ik_orientation_target_active": ik_info.get("orientation_target_active"),
                 }
             )
         else:
@@ -2781,6 +3283,7 @@ class SimulationCore:
 
     def _apply_arm_command(self, target_positions: list[float] | None, n_steps: int, source: str = "manual") -> None:
         if target_positions is None:
+            self._clear_cartesian_servo_target_locked()
             self._arm_qvel = [0.0 for _ in self._arm_qvel]
             self._arm_servo_ctrl_qvel = [0.0 for _ in self._arm_servo_ctrl_qvel]
             self._arm_servo_ctrl_qaccel = [0.0 for _ in self._arm_servo_ctrl_qaccel]
@@ -2788,6 +3291,7 @@ class SimulationCore:
 
         current = self._read_current_arm_qpos_locked()
         if self._is_realtime_hold_input_locked():
+            self._clear_cartesian_servo_target_locked()
             self._arm_qvel = [0.0 for _ in current]
             self._arm_command_qpos = list(current)
             self._arm_servo_ctrl_qpos = list(current)
@@ -2909,7 +3413,7 @@ class SimulationCore:
         last_safe_qvel = self._mj_data.qvel.copy()
         forbidden_contacts: list[dict[str, Any]] = []
         for _ in range(steps):
-            self._apply_mujoco_servo_command_locked()
+            self._apply_mujoco_servo_command_locked(advance_cartesian_servo=True)
             _mujoco.mj_step(self._mj_model, self._mj_data)
             self._update_grasp_assist_locked(forward=False)
             forbidden_contacts = self._collect_forbidden_contacts_locked()
@@ -3105,17 +3609,9 @@ class SimulationCore:
         return objects
 
     def _compute_ee_pose_locked(self) -> dict[str, list[float]]:
-        if self._using_mujoco_model() and self._mj_data is not None:
-            if self._tool_site_id is not None:
-                return {
-                    "position": [float(v) for v in self._mj_data.site_xpos[self._tool_site_id]],
-                    "quaternion": _matrix_to_quaternion_wxyz(self._mj_data.site_xmat[self._tool_site_id]),
-                }
-            if self._tool_body_id is not None:
-                return {
-                    "position": [float(v) for v in self._mj_data.xpos[self._tool_body_id]],
-                    "quaternion": [float(v) for v in self._mj_data.xquat[self._tool_body_id]],
-                }
+        pose = self._compute_tool_frame_pose_locked()
+        if pose is not None:
+            return pose
 
         # Fallback FK for stub mode.
         base = self._manifest_data.get("robot", {}).get("transform", {}).get("position", [-0.2, 0.5, -0.1])
@@ -3126,6 +3622,12 @@ class SimulationCore:
         z = float(base[2]) + 0.35 + 0.15 * math.sin(-q2) + 0.06 * math.sin(q3)
         quat = _rpy_to_quaternion(q4, q5, q6)
         return {"position": [x, y, z], "quaternion": quat}
+
+    def _build_control_ee_pose_locked(self) -> dict[str, list[float]]:
+        pose = self._compute_control_ee_pose_locked()
+        if pose is not None:
+            return pose
+        return self._compute_ee_pose_locked()
 
     def _ensure_mujoco_renderer_locked(self) -> Any | None:
         if (
@@ -3152,12 +3654,102 @@ class SimulationCore:
         self._close_mujoco_renderer()
         try:
             self._mj_renderer = _mujoco.Renderer(self._mj_model, width=render_width, height=render_height)
+            self._configure_mujoco_depth_map_locked(self._mj_renderer)
             self._mj_renderer_width = render_width
             self._mj_renderer_height = render_height
             return self._mj_renderer
         except Exception:
             self._close_mujoco_renderer()
             return None
+
+    def _configure_mujoco_depth_map_locked(self, renderer: Any) -> str:
+        if _mujoco is None:
+            return "unavailable"
+        context = getattr(renderer, "_mjr_context", None)
+        if context is None or not hasattr(context, "readDepthMap"):
+            return "unavailable"
+
+        mode = MUJOCO_DEPTH_MAP_MODE
+        if mode in {"zerofar", "zero_far", "reverse_z", "reverse-z"}:
+            context.readDepthMap = _mujoco.mjtDepthMap.mjDEPTH_ZEROFAR
+            return "zerofar"
+
+        # MuJoCo's Python Renderer defaults to mjDEPTH_ZEROFAR, which needs
+        # GL_ARB_clip_control for its high-precision reverse-Z path. macOS and
+        # some bundled OpenGL contexts do not expose that extension, producing
+        # noisy warnings on every depth capture. mjDEPTH_ZERONEAR is the
+        # standard OpenGL depth mapping and stays warning-free in those contexts.
+        context.readDepthMap = _mujoco.mjtDepthMap.mjDEPTH_ZERONEAR
+        return "zeronear"
+
+    def _mujoco_depth_map_mode_locked(self, renderer: Any) -> str:
+        context = getattr(renderer, "_mjr_context", None)
+        if _mujoco is None or context is None or not hasattr(context, "readDepthMap"):
+            return "unavailable"
+        if int(context.readDepthMap) == int(_mujoco.mjtDepthMap.mjDEPTH_ZEROFAR):
+            return "zerofar"
+        return "zeronear"
+
+    def _convert_mujoco_depth_buffer_locked(self, depth_buffer: Any, depth_map_mode: str) -> Any:
+        if self._mj_model is None or np is None:
+            return depth_buffer
+
+        extent = float(self._mj_model.stat.extent)
+        znear = float(self._mj_model.vis.map.znear) * extent
+        zfar = float(self._mj_model.vis.map.zfar) * extent
+        if not math.isfinite(znear) or not math.isfinite(zfar) or znear <= 0.0 or zfar <= znear:
+            return np.asarray(depth_buffer, dtype=np.float32)
+
+        raw = np.asarray(depth_buffer, dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            if depth_map_mode == "zerofar":
+                zfar32 = np.float32(zfar)
+                znear32 = np.float32(znear)
+                c_coef = -(zfar32 + znear32) / (zfar32 - znear32)
+                d_coef = -(np.float32(2.0) * zfar32 * znear32) / (zfar32 - znear32)
+                c_coef = np.float32(-0.5) * c_coef - np.float32(0.5)
+                d_coef = np.float32(-0.5) * d_coef
+                depth_m = d_coef / (raw + c_coef)
+            else:
+                depth_m = (znear * zfar) / (zfar - raw * (zfar - znear))
+        return np.asarray(depth_m, dtype=np.float32)
+
+    def _render_mujoco_depth_frame_locked(self, renderer: Any, camera_name: str) -> Any | None:
+        if _mujoco is None or np is None or self._mj_data is None:
+            return None
+
+        self._configure_mujoco_depth_map_locked(renderer)
+        renderer.disable_depth_rendering()
+        renderer.update_scene(self._mj_data, camera=camera_name)
+
+        scene = getattr(renderer, "_scene", None)
+        rect = getattr(renderer, "_rect", None)
+        context = getattr(renderer, "_mjr_context", None)
+        if scene is None or rect is None or context is None:
+            return None
+
+        original_flags = scene.flags.copy()
+        try:
+            scene.flags[_mujoco.mjtRndFlag.mjRND_SEGMENT] = True
+            scene.flags[_mujoco.mjtRndFlag.mjRND_IDCOLOR] = True
+
+            gl_context = getattr(renderer, "_gl_context", None)
+            if gl_context:
+                gl_context.make_current()
+
+            depth_buffer = np.empty((int(rect.height), int(rect.width)), dtype=np.float32)
+            _mujoco.mjr_render(rect, scene, context)
+            _mujoco.mjr_readPixels(None, depth_buffer, rect, context)
+
+            if gl_context:
+                depth_buffer[:] = np.flipud(depth_buffer)
+
+            return self._convert_mujoco_depth_buffer_locked(
+                depth_buffer,
+                self._mujoco_depth_map_mode_locked(renderer),
+            )
+        finally:
+            np.copyto(scene.flags, original_flags)
 
     def _build_stub_camera_frames_locked(self) -> tuple[Any | None, Any | None]:
         if np is None:
@@ -3310,10 +3902,7 @@ class SimulationCore:
             rgb_frame = renderer.render()
             rgb_frame = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
 
-            renderer.enable_depth_rendering()
-            renderer.update_scene(self._mj_data, camera=depth_camera_name)
-            depth_raw = renderer.render()
-            renderer.disable_depth_rendering()
+            depth_raw = self._render_mujoco_depth_frame_locked(renderer, depth_camera_name)
 
             if depth_raw is None:
                 return None, None
@@ -3593,6 +4182,7 @@ class SimulationCore:
         qvel = list(self._arm_qvel) + [self._gripper_velocity]
         arm_ctrl_qpos, gripper_ctrl_opening = self._read_current_ctrl_targets_locked()
         ee_pose = self._compute_ee_pose_locked()
+        control_ee_pose = self._build_control_ee_pose_locked()
         if refresh_camera:
             camera_state = self._capture_camera_state_locked(force_capture=False, ee_pose=ee_pose)
         elif self._camera_last_state is not None:
@@ -3632,6 +4222,7 @@ class SimulationCore:
             "gripper_target_opening": float(self._gripper_command_opening),
             "gripper_ctrl_opening": float(gripper_ctrl_opening),
             "ee_pose": ee_pose,
+            "control_ee_pose": control_ee_pose,
             "gripper_opening": self._gripper_opening,
             "gripper_joints": dict(self._gripper_joints),
             "objects": deepcopy(self._objects_state),
@@ -3713,32 +4304,54 @@ class SimulationCore:
 
     def _build_motion_state_locked(self) -> dict[str, Any]:
         arm_ctrl_qpos, gripper_ctrl_opening = self._read_current_ctrl_targets_locked()
-        return {
+        ee_pose = self._compute_ee_pose_locked()
+        collision_blocked = bool(self._collision_blocked)
+        normalized_input = self._last_normalized_input if isinstance(self._last_normalized_input, dict) else {}
+        motion_normalized_input = {
+            key: deepcopy(normalized_input[key])
+            for key in (
+                "control_seq",
+                "control_mode",
+                "hand_input_mode",
+                "cartesian_servo_active",
+                "cartesian_servo_status",
+                "cartesian_servo_position_error_m",
+                "cartesian_servo_orientation_error_rad",
+                "ee_active",
+                "ee_hold",
+                "orientation_follow_enabled",
+            )
+            if key in normalized_input
+        }
+        motion_objects = {
+            object_id: deepcopy(object_state)
+            for object_id, object_state in self._objects_state.items()
+            if isinstance(object_state, dict) and bool(object_state.get("attached_to_gripper", False))
+        }
+        payload: dict[str, Any] = {
             "timestamp": time.time(),
             "sim_time": self._sim_time,
-            "joint_names": list(self._arm_joint_names),
-            "joint_limits": {
-                name: [float(limits[0]), float(limits[1])]
-                for name, limits in self._arm_joint_limits.items()
-            },
             "qpos": list(self._arm_qpos) + [float(self._gripper_joints["left_driver_joint"])],
             "qvel": list(self._arm_qvel) + [float(self._gripper_velocity)],
             "arm_target_qpos": list(self._arm_command_qpos),
             "arm_ctrl_qpos": list(arm_ctrl_qpos),
             "gripper_target_opening": float(self._gripper_command_opening),
             "gripper_ctrl_opening": float(gripper_ctrl_opening),
-            "ee_pose": self._compute_ee_pose_locked(),
+            "ee_pose": ee_pose,
+            "control_ee_pose": self._build_control_ee_pose_locked(),
             "gripper_opening": float(self._gripper_opening),
             "gripper_joints": dict(self._gripper_joints),
-            "objects": deepcopy(self._objects_state),
             "source": self._source,
             "input_source": self._last_input_source,
             "selected_joint_group": self._last_selected_joint_group,
-            "normalized_input": deepcopy(self._last_normalized_input),
+            "normalized_input": motion_normalized_input,
             "safety_status": self._safety_status,
-            "collision_blocked": bool(self._collision_blocked),
-            "collision_contacts": deepcopy(self._last_collision_contacts),
+            "collision_blocked": collision_blocked,
+            "collision_contacts": deepcopy(self._last_collision_contacts) if collision_blocked else [],
         }
+        if motion_objects:
+            payload["objects"] = motion_objects
+        return payload
 
     async def _command_worker(self) -> None:
         while self._running:

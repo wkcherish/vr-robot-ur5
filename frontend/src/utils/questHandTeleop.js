@@ -8,11 +8,33 @@ import {
   createQuestEePoseTargetTracker,
   lowPass,
   vecNorm,
-  vecSub,
 } from "./questEePoseTarget.js";
 
 const CONTROL_GROUP = "end_effector";
 const CONTROL_GROUP_LABEL = "末端执行器";
+
+function midpointVec3(a, b) {
+  if (!a || !b) return a || b || null;
+  return [
+    (Number(a[0]) + Number(b[0])) * 0.5,
+    (Number(a[1]) + Number(b[1])) * 0.5,
+    (Number(a[2]) + Number(b[2])) * 0.5,
+  ];
+}
+
+function readRightHandControlPose(snapshot) {
+  const rightHand = snapshot?.hands?.right || {};
+  const rawJoints = snapshot?.raw?.right?.raw_joints || {};
+  const thumbTip = cloneVec3(rawJoints.thumb);
+  const indexTip = cloneVec3(rawJoints.index);
+  const palmPosition = cloneVec3(rightHand.palm_position);
+  const controlPosition = midpointVec3(thumbTip, indexTip) || indexTip || thumbTip || palmPosition;
+  return {
+    position: controlPosition,
+    quaternion: cloneQuat(rightHand.palm_quaternion),
+    controlPoint: thumbTip && indexTip ? "pinch_center" : "palm",
+  };
+}
 
 function estimateFallbackFist(handState) {
   const pinch = handState?.pinch || {};
@@ -87,6 +109,7 @@ export function createQuestHandTeleop(options = {}) {
   };
 
   const eeTargetTracker = createQuestEePoseTargetTracker({
+    mapping_mode: "anchored_absolute",
     movement_deadzone: cfg.movement_deadzone,
     max_control_offset: cfg.max_control_offset,
     movement_smoothing: cfg.movement_smoothing,
@@ -109,7 +132,7 @@ export function createQuestHandTeleop(options = {}) {
     return {
       selected_joint_group: CONTROL_GROUP,
       selected_joint_group_label: CONTROL_GROUP_LABEL,
-      input_mode: "right_hand_ee_ik",
+      input_mode: "right_hand_ee_servo",
       tracking_stable: false,
       group_sequence: [CONTROL_GROUP],
     };
@@ -152,10 +175,11 @@ export function createQuestHandTeleop(options = {}) {
     const now = Date.now();
     const rightHand = snapshot?.hands?.right || {};
     const rightTracked = Boolean(rightHand.tracked || rightHand.recently_tracked);
-    const rightPalm = cloneVec3(rightHand.palm_position);
-    const rightPalmQuaternion = cloneQuat(rightHand.palm_quaternion);
+    const controlPose = readRightHandControlPose(snapshot);
+    const rightControlPosition = cloneVec3(controlPose.position);
+    const rightPalmQuaternion = cloneQuat(controlPose.quaternion);
     const trackingStability = clamp(rightHand.stability ?? snapshot?.tracking_stability, 0, 1);
-    const trackingPresent = Boolean(rightTracked && rightPalm);
+    const trackingPresent = Boolean(rightTracked && rightControlPosition);
     let trackingStable = false;
     if (trackingStableLatched) {
       trackingStable =
@@ -168,7 +192,7 @@ export function createQuestHandTeleop(options = {}) {
     }
     trackingStableLatched = trackingStable;
 
-    if (!snapshot?.available || !trackingStable || !rightTracked || !rightPalm) {
+    if (!snapshot?.available || !trackingStable || !rightTracked || !rightControlPosition) {
       const recentlyTracked = lastTrackedAt > 0 && now - lastTrackedAt <= cfg.tracking_grace_ms;
       gripper = lowPass(gripper, currentGripper, cfg.gripper_smoothing);
       if (!recentlyTracked) {
@@ -186,12 +210,13 @@ export function createQuestHandTeleop(options = {}) {
         changed_joint_group: false,
         tracking_stable: false,
         tracking_stability: trackingStability,
-        hand_input_mode: "right_hand_ee_ik",
+        hand_input_mode: "right_hand_ee_servo",
         normalized_input: {
-          control_mode: "ee_ik",
+          control_mode: "ee_servo",
           ee_active: 0,
           fist: smoothedFist,
           grip: gripper,
+          hand_control_point: controlPose.controlPoint,
           tracking_stability: trackingStability,
         },
         raw_input: snapshot?.raw || null,
@@ -200,17 +225,18 @@ export function createQuestHandTeleop(options = {}) {
     }
 
     lastTrackedAt = now;
-    ensureAnchor(rightPalm, currentPose, rightPalmQuaternion);
-    // Hand teleop also uses anchored absolute follow, but for stable grasp
-    // approach we lock EE orientation by default and let the palm mainly drive
-    // Cartesian position. Hand-tracking orientation is too jittery near tools.
+    ensureAnchor(rightControlPosition, currentPose, rightPalmQuaternion);
+    // Use the live pinch center as the hand control point, but keep the
+    // anchored-absolute mapping so the robot follows the hand smoothly inside
+    // the shared scene instead of jumping to a raw absolute XR world pose.
+    const positionFollowGain = clamp(cfg.movement_gain, 0.4, 6.0);
     const orientationFollowEnabled = false;
     const orientationFollowGain = orientationFollowEnabled ? 1 : 0;
     const eeTracking = eeTargetTracker.update({
-      inputPosition: rightPalm,
+      inputPosition: rightControlPosition,
       inputQuaternion: rightPalmQuaternion,
       currentEePose: currentPose,
-      movementGain: 1,
+      movementGain: positionFollowGain,
       orientationGain: orientationFollowGain,
       dtSec,
     });
@@ -249,16 +275,16 @@ export function createQuestHandTeleop(options = {}) {
       target_positions: null,
       target_ee_pose: cloneEePose(targetEePose),
       gripper_opening: nextGripper,
-      control_mode: "ik_pose",
+      control_mode: "cartesian_servo",
       input_source: "quest3_hand",
       selected_joint_group: CONTROL_GROUP,
       selected_joint_group_label: CONTROL_GROUP_LABEL,
       changed_joint_group: false,
       tracking_stable: trackingStable,
       tracking_stability: trackingStability,
-      hand_input_mode: "right_hand_ee_ik",
+      hand_input_mode: "right_hand_ee_servo",
       normalized_input: {
-        control_mode: "ee_ik",
+        control_mode: "ee_servo",
         ee_active: hasEeActivity ? 1 : 0,
         palm_dx: Number(eeTracking?.rawInputDelta?.[0] || 0),
         palm_dy: Number(eeTracking?.rawInputDelta?.[1] || 0),
@@ -268,9 +294,10 @@ export function createQuestHandTeleop(options = {}) {
         target_dz: Number(eeTracking?.smoothedBackendDelta?.[2] || 0),
         ee_error_m: eeError,
         orientation_error_rad: orientationError,
-        movement_gain: 1,
+        movement_gain: positionFollowGain,
         orientation_gain: orientationFollowGain,
         orientation_follow_enabled: orientationFollowEnabled ? 1 : 0,
+        hand_control_point: controlPose.controlPoint,
         ee_follow_mode: "anchored_absolute",
         max_control_offset_m: cfg.max_control_offset,
         fist: smoothedFist,

@@ -18,6 +18,10 @@ const PINCH_FALLBACK_GRACE_MS = 220;
 const PALM_SMOOTH_ALPHA = 0.68;
 const PINCH_SMOOTH_ALPHA = 0.56;
 const CONTROLLER_STABILITY = 0.72;
+// Hand mode should reflect actual hand-tracking only. Falling back to the
+// controller here makes the "hand follows tool" path unpredictable and hard to
+// maintain because controller input has its own dedicated mode.
+const CONTROLLER_HAND_FALLBACK_ENABLED = false;
 
 function createEmptyCacheState() {
   return {
@@ -508,12 +512,16 @@ export function buildSnapshot(frame, session, referenceSpace) {
   }
 
   if (!hasRightSource) {
-    const rightControllerSource =
-      controllerSources.find((source) => source?.handedness === "right") ||
-      null;
-    if (rightControllerSource) {
-      hands.right = readControllerAsHandState(frame, rightControllerSource, referenceSpace, "right", nowMs);
-      hasRightSource = Boolean(hands.right.tracked || hands.right.recently_tracked);
+    if (CONTROLLER_HAND_FALLBACK_ENABLED) {
+      const rightControllerSource =
+        controllerSources.find((source) => source?.handedness === "right") ||
+        null;
+      if (rightControllerSource) {
+        hands.right = readControllerAsHandState(frame, rightControllerSource, referenceSpace, "right", nowMs);
+        hasRightSource = Boolean(hands.right.tracked || hands.right.recently_tracked);
+      } else {
+        hands.right = readCachedHandState("right", nowMs);
+      }
     } else {
       hands.right = readCachedHandState("right", nowMs);
     }

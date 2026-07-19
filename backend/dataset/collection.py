@@ -951,6 +951,7 @@ class DatasetCollectionService:
             "qvel": list(state.get("qvel") or []),
             "arm_target_qpos": list(state.get("arm_target_qpos") or []),
             "ee_pose": deepcopy(state.get("ee_pose") or {}),
+            "control_ee_pose": deepcopy(state.get("control_ee_pose") or {}),
             "gripper_opening": state.get("gripper_opening"),
             "objects": deepcopy(state.get("objects") or {}),
             "camera_capture_ok": bool(state.get("camera_capture_ok", False)),
@@ -991,7 +992,11 @@ class DatasetCollectionService:
         metadata = episode_metadata if isinstance(episode_metadata, dict) else self._active_episode_metadata
         if isinstance(metadata, dict):
             instruction_text = str(metadata.get("instruction_text") or "")
-        target_positions = list(getattr(request, "target_positions", None) or [])
+        request_target_positions = list(getattr(request, "target_positions", None) or [])
+        backend_target_positions = list(state.get("arm_target_qpos") or [])
+        target_positions = request_target_positions
+        if getattr(request, "target_ee_pose", None) is not None and len(backend_target_positions) >= 6:
+            target_positions = backend_target_positions[:6]
         qpos = list(state.get("qpos") or [])
         joint_delta = []
         if len(target_positions) >= 6 and len(qpos) >= 6:

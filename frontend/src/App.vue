@@ -274,7 +274,7 @@
                 <span class="network-value">
                   pos={{ Number(questControllerNormalizedInput.ee_error_m || 0).toFixed(3) }}m,
                   rot={{ Number(questControllerNormalizedInput.orientation_error_rad || 0).toFixed(2) }}rad,
-                  IK={{ questControllerNormalizedInput.ik_status || "-" }}
+                  Servo={{ questControllerNormalizedInput.cartesian_servo_status || questControllerNormalizedInput.ik_status || "-" }}
                 </span>
               </div>
               <div class="network-status-row">
@@ -320,8 +320,8 @@
                   {{
                     questHandRawInput && questHandRawInput.right_controller_fallback
                       ? "右控制器兜底模式"
-                      : questHandInputMode === "right_hand_ee_ik"
-                        ? "右手末端IK模式"
+                      : questHandInputMode === "right_hand_ee_servo" || questHandInputMode === "right_hand_ee_ik"
+                        ? "右手末端伺服模式"
                         : questHandInputMode === "right_hand"
                           ? "右手单手模式"
                         : questHandInputMode === "dual_hand"
@@ -361,7 +361,7 @@
                 <span class="network-value">
                   pos={{ Number(questHandNormalizedInput.ee_error_m || 0).toFixed(3) }}m,
                   rot={{ Number(questHandNormalizedInput.orientation_error_rad || 0).toFixed(2) }}rad,
-                  IK={{ questHandNormalizedInput.ik_status || "-" }}
+                  Servo={{ questHandNormalizedInput.cartesian_servo_status || questHandNormalizedInput.ik_status || "-" }}
                 </span>
               </div>
               <div class="network-status-row" v-if="questHandNormalizedInput">
@@ -878,10 +878,15 @@ const GRIPPER_STATE_MATCH_THRESHOLD_RAD = 0.012;
 const ARM_TARGET_ACCEPT_THRESHOLD_RAD = 0.015;
 const GRIPPER_TARGET_ACCEPT_THRESHOLD_RAD = 0.02;
 const MAX_RENDER_PIXEL_RATIO = 1.5;
-const QUEST_MAX_RENDER_PIXEL_RATIO = 1.0;
+const QUEST_MAX_RENDER_PIXEL_RATIO = 0.8;
+const QUEST_XR_FRAMEBUFFER_SCALE = 0.82;
 const UI_SYNC_INTERVAL_MS = 33;
 const UI_POSE_SYNC_INTERVAL_MS = 50;
+const UI_REACTIVE_MOTION_MIN_INTERVAL_MS = 250;
+const SYNC_STATS_MIN_INTERVAL_MS = 250;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
+// 16ms caps teleop at about 62.5Hz, which is visibly below Quest's common
+// 72Hz refresh. Use a slightly tighter send interval to reduce step feeling.
 const VR_COMMAND_MIN_INTERVAL_MS = 16;
 const VR_COMMAND_STEPS = 1;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
@@ -961,7 +966,7 @@ const questHandStatusText = ref("未激活");
 const questHandSensitivity = ref(1.5);
 const questHandTrackingStable = ref(false);
 const questHandTrackingStability = ref(0);
-const questHandInputMode = ref("right_hand_ee_ik");
+const questHandInputMode = ref("right_hand_ee_servo");
 const questHandGroupToast = ref("");
 const questHandGroupToastAt = ref(0);
 const questHandRawInput = ref(null);
@@ -1091,6 +1096,10 @@ let questHandTeleop = createQuestHandTeleop({
   sensitivity: clamp(questHandSensitivity.value, 0.4, 3.0),
 });
 let lastQuestControllerPoseSnapshot = null;
+let latestMotionState = null;
+let lastReactiveMotionCommitAt = 0;
+let lastSyncStatsCommitAt = 0;
+let lastMotionPacketAt = 0;
 
 const isQuest3Device = computed(() => deviceCategory.value === "quest3");
 const isPageSecureContext = computed(() => {
@@ -1412,9 +1421,11 @@ function updateHandTrackingFromBackend(state) {
   }
   const backendInputMode = String(state?.normalized_input?.hand_input_mode || "").trim();
   if (
+    backendInputMode === "right_hand_ee_servo" ||
     backendInputMode === "right_hand_ee_ik" ||
     backendInputMode === "right_hand" ||
     backendInputMode === "left_hand_ee_ik" ||
+    backendInputMode === "left_hand_ee_servo" ||
     backendInputMode === "left_hand" ||
     backendInputMode === "dual_hand" ||
     backendInputMode === "single_hand"
@@ -3414,7 +3425,7 @@ function buildQuestControlPayload(mapped) {
     target_positions: mapped.target_positions || fallbackArm,
     target_ee_pose: mapped.target_ee_pose || null,
     n_steps: VR_COMMAND_STEPS,
-    control_mode: mapped.control_mode || (mapped.target_ee_pose ? "ik_pose" : "position"),
+    control_mode: mapped.control_mode || (mapped.target_ee_pose ? "cartesian_servo" : "position"),
     expect_result: false,
     gripper_command: { mode: "open_close", value: mapped.gripper_opening },
     source: "quest3_controller",
@@ -3423,6 +3434,7 @@ function buildQuestControlPayload(mapped) {
     raw_input: mapped.raw_input || null,
     normalized_input: {
       ...(mapped.normalized_input || {}),
+      cartesian_servo_command: mapped.target_ee_pose ? 1 : 0,
       ik_pose_command: mapped.target_ee_pose ? 1 : 0,
       control_seq: Number(questControllerControlSeq.value),
     },
@@ -3436,7 +3448,7 @@ function buildQuestHandControlPayload(mapped) {
     target_positions: mapped.target_positions || fallbackArm,
     target_ee_pose: mapped.target_ee_pose || null,
     n_steps: VR_COMMAND_STEPS,
-    control_mode: mapped.control_mode || (mapped.target_ee_pose ? "ik_pose" : "position"),
+    control_mode: mapped.control_mode || (mapped.target_ee_pose ? "cartesian_servo" : "position"),
     expect_result: false,
     gripper_command: { mode: "open_close", value: mapped.gripper_opening },
     source: "quest3_hand",
@@ -3447,10 +3459,16 @@ function buildQuestHandControlPayload(mapped) {
       ...(mapped.normalized_input || {}),
       tracking_stability: mapped.tracking_stability,
       hand_input_mode: mapped.hand_input_mode,
+      cartesian_servo_command: mapped.target_ee_pose ? 1 : 0,
       ik_pose_command: mapped.target_ee_pose ? 1 : 0,
       control_seq: Number(questHandControlSeq.value),
     },
   };
+}
+
+function isQuestEePoseCommandPayload(payload = {}) {
+  const mode = String(payload?.control_mode || "").trim();
+  return mode === "cartesian_servo" || mode === "ik_pose" || Boolean(payload?.target_ee_pose);
 }
 
 function stageQuestRenderTarget(payload) {
@@ -3459,7 +3477,7 @@ function stageQuestRenderTarget(payload) {
     return;
   }
 
-  if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
+  if (isQuestEePoseCommandPayload(payload)) {
     clearQuestRenderPreview();
     return;
   }
@@ -3491,7 +3509,7 @@ function applyQuestCommandLocally(payload = {}) {
     return;
   }
 
-  if (payload?.control_mode === "ik_pose" || payload?.target_ee_pose) {
+  if (isQuestEePoseCommandPayload(payload)) {
     clearPendingManualTarget();
     stageQuestRenderTarget(payload);
     return;
@@ -3694,6 +3712,7 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
     controllerPose,
     getAuthoritativeGripperOpening(),
     getAuthoritativeEePoseBackend(),
+    getAuthoritativeArmRadians(),
     dtSec
   );
   questControllerNormalizedInput.value = mapped?.normalized_input || null;
@@ -3824,7 +3843,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   questHandNormalizedInput.value = mapped?.normalized_input || null;
 
   questHandTrackingStable.value = Boolean(mapped?.tracking_stable);
-  questHandInputMode.value = mapped?.hand_input_mode || "right_hand_ee_ik";
+  questHandInputMode.value = mapped?.hand_input_mode || "right_hand_ee_servo";
   questHandStatusText.value = buildHandTrackingStatusText();
 
   if (!mapped?.tracking_stable) {
@@ -3976,7 +3995,7 @@ function stopQuestHandLoop() {
   questHandStatusText.value = "未激活";
   questHandTrackingStable.value = false;
   questHandTrackingStability.value = 0;
-  questHandInputMode.value = "right_hand_ee_ik";
+  questHandInputMode.value = "right_hand_ee_servo";
   questHandRawInput.value = null;
   questHandNormalizedInput.value = null;
   questHandPendingMapped.value = null;
@@ -3994,12 +4013,12 @@ function stopQuestHandLoop() {
 function buildHandTrackingStatusText() {
   if (!questHandAvailable.value) return "未检测到稳定手势";
   if (!questHandTrackingStable.value) return "追踪不稳定(已保持)";
-  const modeText = questHandInputMode.value === "right_hand_ee_ik"
-    ? "右手末端IK"
+  const modeText = questHandInputMode.value === "right_hand_ee_servo" || questHandInputMode.value === "right_hand_ee_ik"
+    ? "右手末端伺服"
     : questHandInputMode.value === "right_hand"
       ? "右手单手"
-      : questHandInputMode.value === "left_hand_ee_ik"
-        ? "左手末端IK"
+      : questHandInputMode.value === "left_hand_ee_servo" || questHandInputMode.value === "left_hand_ee_ik"
+        ? "左手末端伺服"
         : questHandInputMode.value === "left_hand"
           ? "左手单手"
           : questHandInputMode.value === "dual_hand"
@@ -4146,11 +4165,17 @@ function mergeSimulationState(baseState, patchState) {
   };
 }
 
+function rememberLatestBackendMotionState(state) {
+  if (!state || typeof state !== "object") return;
+  latestMotionState = state;
+}
+
 function commitBackendStateSnapshot(state, options = {}) {
   if (!state || typeof state !== "object") return false;
   if (!acceptBackendStateTimestamp(state)) return false;
 
   const hadState = Boolean(simulationState.value);
+  rememberLatestBackendMotionState(state);
   simulationState.value = state;
   lastStateUpdate.value = Date.now();
   updateSafetyFeedbackFromState(state);
@@ -4174,6 +4199,7 @@ function commitQuestControlStateSnapshot(state, nowMs = Date.now()) {
   if (!acceptBackendStateTimestamp(state)) return false;
 
   const hadState = Boolean(simulationState.value);
+  rememberLatestBackendMotionState(state);
   simulationState.value = state;
   applyVrStateFromBackend(state);
   checkD405ObservationReady(state);
@@ -4192,6 +4218,7 @@ function commitDesktopControlStateSnapshot(state, nowMs = Date.now()) {
   if (!acceptBackendStateTimestamp(state)) return false;
 
   const hadState = Boolean(simulationState.value);
+  rememberLatestBackendMotionState(state);
   simulationState.value = state;
   applyVrStateFromBackend(state);
   checkD405ObservationReady(state);
@@ -4809,8 +4836,20 @@ function getCurrentSceneEePoseBackend() {
   return { position, quaternion };
 }
 
+function getLatestBackendMotionState() {
+  return latestMotionState && typeof latestMotionState === "object"
+    ? latestMotionState
+    : simulationState.value;
+}
+
 function getAuthoritativeEePoseBackend() {
-  const backendPose = normalizeBackendEePose(simulationState.value?.ee_pose);
+  const latestState = getLatestBackendMotionState();
+  // Prefer the backend's explicit VR control pose when it is valid, but fall
+  // back immediately to the real tool-frame ee_pose if that field is missing
+  // or malformed on an older / partially restarted backend.
+  const controlPose = normalizeBackendEePose(latestState?.control_ee_pose);
+  if (controlPose) return controlPose;
+  const backendPose = normalizeBackendEePose(latestState?.ee_pose);
   if (backendPose) return backendPose;
   return getCurrentSceneEePoseBackend();
 }
@@ -4839,7 +4878,7 @@ function getBackendArmRadiansFromState(state) {
 }
 
 function getLatestBackendArmRadians() {
-  const arm = getBackendArmRadiansFromState(simulationState.value);
+  const arm = getBackendArmRadiansFromState(getLatestBackendMotionState());
   return Array.isArray(arm) && arm.length >= ARM_JOINT_COUNT ? arm : null;
 }
 
@@ -4862,7 +4901,7 @@ function getAuthoritativeArmRadians() {
 }
 
 function getLatestBackendGripperRadians() {
-  const gripperRadians = getGripperRadiansFromBackendState(simulationState.value);
+  const gripperRadians = getGripperRadiansFromBackendState(getLatestBackendMotionState());
   return gripperRadians === null ? null : gripperRadians;
 }
 
@@ -6151,16 +6190,25 @@ function initBase() {
   // 相机添加到场景中
   scene.add(camera);
 
-  // antialias:开启抗锯齿  logarithmicDepthBuffer:使用对数深度缓冲器,一般在单个场景处理较大的差异
+  const questRenderProfile = Boolean(isQuest3Device.value);
+  // Quest 浏览器/GPU 预算有限；桌面保留高质量渲染，Quest 走低开销配置。
   renderer = new THREE.WebGLRenderer({
-    antialias: true,
-    logarithmicDepthBuffer: true,
+    antialias: !questRenderProfile,
+    logarithmicDepthBuffer: !questRenderProfile,
+    powerPreference: "high-performance",
   });
 
   // 设置渲染器尺寸
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(getRenderPixelRatio());
   renderer.xr.enabled = true;
+  if (
+    questRenderProfile &&
+    renderer.xr &&
+    typeof renderer.xr.setFramebufferScaleFactor === "function"
+  ) {
+    renderer.xr.setFramebufferScaleFactor(QUEST_XR_FRAMEBUFFER_SCALE);
+  }
 
   // 设置渲染器颜色
   renderer.setClearColor("#DCDCDC");
@@ -6506,34 +6554,50 @@ const setupWebSocketStateSync = () => {
 // 处理状态更新
 const handleMotionUpdate = (data) => {
   const now = Date.now();
-  const prevUpdate = lastStateUpdate.value;
-  const merged = mergeSimulationState(simulationState.value, data);
   const hadState = Boolean(simulationState.value);
-  if (!acceptBackendStateTimestamp(merged)) {
+  if (!acceptBackendStateTimestamp(data)) {
     return;
   }
 
-  if (merged.timestamp) {
-    const serverTime = merged.timestamp * 1000;
-    networkLatency.value = now - serverTime;
+  rememberLatestBackendMotionState(data);
+
+  const shouldCommitReactiveState =
+    !simulationState.value ||
+    Boolean(data?.collision_blocked) ||
+    now - lastReactiveMotionCommitAt >= UI_REACTIVE_MOTION_MIN_INTERVAL_MS;
+  const uiState = shouldCommitReactiveState
+    ? mergeSimulationState(simulationState.value, data)
+    : simulationState.value;
+
+  if (shouldCommitReactiveState && uiState) {
+    simulationState.value = uiState;
+    lastReactiveMotionCommitAt = now;
   }
 
-  simulationState.value = merged;
-  updateSafetyFeedbackFromState(merged);
+  updateSafetyFeedbackFromState(data);
 
-  if (isQuestControlBackendState(merged)) {
-    applyQuestBackendStateToScene(merged, { immediate: !hadState });
-  } else if (shouldApplyIncomingBackendState(merged, now)) {
-    applyBackendStateToScene(merged, { immediate: !hadState });
+  if (isQuestControlBackendState(data)) {
+    applyQuestBackendStateToScene(data, { immediate: !hadState });
+  } else if (shouldApplyIncomingBackendState(data, now)) {
+    applyBackendStateToScene(data, { immediate: !hadState });
   } else {
-    applySceneObjectsFromBackendState(merged);
+    applySceneObjectsFromBackendState(data);
   }
-  maybeClearRealtimeSliderDraftFromState(merged);
+  maybeClearRealtimeSliderDraftFromState(data);
 
-  addToStateBuffer(merged, now);
-  updateSyncStats(now, prevUpdate);
-  updateConnectionQuality();
-  lastStateUpdate.value = now;
+  const prevPacketAt = lastMotionPacketAt;
+  lastMotionPacketAt = now;
+  if (now - lastSyncStatsCommitAt >= SYNC_STATS_MIN_INTERVAL_MS) {
+    if (data.timestamp) {
+      const serverTime = data.timestamp * 1000;
+      networkLatency.value = now - serverTime;
+    }
+    addToStateBuffer(data, now);
+    updateSyncStats(now, prevPacketAt);
+    updateConnectionQuality();
+    lastStateUpdate.value = now;
+    lastSyncStatsCommitAt = now;
+  }
 };
 
 const handleSceneUpdate = (data) => {
@@ -6543,7 +6607,9 @@ const handleSceneUpdate = (data) => {
     return;
   }
 
+  rememberLatestBackendMotionState(merged);
   simulationState.value = merged;
+  lastReactiveMotionCommitAt = now;
   applyVrStateFromBackend(merged);
   checkD405ObservationReady(merged);
   checkRecordingBindingReady(merged);
@@ -6561,6 +6627,9 @@ const handleStateUpdate = (data) => {
   if (!acceptBackendStateTimestamp(data)) {
     return;
   }
+
+  rememberLatestBackendMotionState(data);
+  lastReactiveMotionCommitAt = now;
 
   // 计算网络延迟（如果有时间戳）
   if (data.timestamp) {
@@ -6602,7 +6671,11 @@ const handleStateUpdate = (data) => {
 // 保留轻量时间戳缓冲，避免对完整状态做高频深拷贝导致界面卡顿。
 const addToStateBuffer = (state, timestamp) => {
   const maxSize = clamp(Number(stateBufferSize.value) || 10, 2, 60);
-  const nextHistory = [...stateUpdateHistory.value, { state, timestamp }];
+  const lightweightState = {
+    timestamp: state?.timestamp,
+    qpos: Array.isArray(state?.qpos) ? state.qpos.slice(0, ARM_JOINT_COUNT + 1) : [],
+  };
+  const nextHistory = [...stateUpdateHistory.value, { state: lightweightState, timestamp }];
   if (nextHistory.length > maxSize) {
     nextHistory.splice(0, nextHistory.length - maxSize);
   }
@@ -6686,6 +6759,10 @@ const getInterpolatedState = (targetTime) => {
 
 // 重置状态同步
 const resetStateSync = () => {
+  latestMotionState = null;
+  lastReactiveMotionCommitAt = 0;
+  lastSyncStatsCommitAt = 0;
+  lastMotionPacketAt = 0;
   simulationState.value = null;
   stateUpdateHistory.value = [];
   backendRenderTarget.value = null;

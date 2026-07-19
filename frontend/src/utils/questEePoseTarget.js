@@ -406,16 +406,34 @@ export function createQuestEePoseTargetTracker(options = {}) {
 
     const rawInputDelta = vecSub(trackedPosition, anchorInputPosition);
     const backendInputPose = buildBackendInputPose(trackedPosition, inputQuaternion);
-    let desiredPosition = vecAdd(
-      anchorEePose.position,
-      clampVecMagnitude(
-        frontendDeltaToBackend(vecScale(rawInputDelta, movementGain)),
-        cfg.max_control_offset
-      )
-    );
-    let desiredQuaternion = anchorEePose.quaternion.slice(0, 4);
+    let desiredPosition = cloneVec3(currentPose.position) || [0, 0, 0];
+    let desiredQuaternion =
+      cloneQuat(anchorEePose?.quaternion) ||
+      cloneQuat(currentPose.quaternion) ||
+      [1, 0, 0, 0];
 
-    if (
+    if (cfg.mapping_mode === "direct_absolute" && backendInputPose) {
+      // Direct absolute follow uses the live tracked world pose as the EE
+      // position target so hand teleop can behave like "my hand is the target".
+      desiredPosition = cloneVec3(backendInputPose.position) || desiredPosition;
+
+      if (orientationGain > 0 && anchorInputQuaternion && backendInputPose.quaternion && anchorEePose) {
+        const inputDeltaQuaternion = quatMultiplyWxyz(
+          backendInputPose.quaternion,
+          quatConjugateWxyz(anchorInputQuaternion)
+        );
+        const scaledInputDeltaQuaternion =
+          scaleQuatRotationWxyz(inputDeltaQuaternion, orientationGain) || inputDeltaQuaternion;
+        desiredQuaternion =
+          quatMultiplyWxyz(scaledInputDeltaQuaternion, anchorEePose.quaternion) || desiredQuaternion;
+      }
+
+      smoothedBackendDelta = lowPassVec(
+        smoothedBackendDelta,
+        vecSub(desiredPosition, currentPose.position),
+        cfg.movement_smoothing
+      );
+    } else if (
       cfg.mapping_mode === "anchored_absolute" &&
       backendInputPose &&
       anchorInputBackendPose &&
@@ -464,7 +482,7 @@ export function createQuestEePoseTargetTracker(options = {}) {
         vecSub(desiredPosition, anchorEePose.position),
         cfg.movement_smoothing
       );
-    } else {
+    } else if (anchorEePose) {
       const backendDelta = clampVecMagnitude(
         frontendDeltaToBackend(vecScale(rawInputDelta, movementGain)),
         cfg.max_control_offset
