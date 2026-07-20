@@ -51,6 +51,7 @@ function cloneControllerPose(pose, fallbackHandedness = "") {
     handedness: normalizeHandedness(pose?.handedness) || normalizeHandedness(fallbackHandedness),
     position,
     quaternion: cloneQuat(pose?.quaternion),
+    pose_source: String(pose?.pose_source || ""),
     timestamp_ms: Number(pose?.timestamp_ms) || Date.now(),
   };
 }
@@ -118,7 +119,19 @@ function selectMotionController(controls, poses, cfg, currentHand) {
       return a.hand === "right" ? -1 : 1;
     });
 
-  return engaged[0] || null;
+  const selected = engaged[0] || null;
+  if (selected?.pose || !selected?.engaged) return selected;
+
+  const posedFallback = candidates.find((item) => item.pose);
+  if (!posedFallback) return selected;
+  return {
+    ...posedFallback,
+    grip: selected.grip,
+    trigger: Math.max(posedFallback.trigger, selected.trigger),
+    engaged: true,
+    held: selected.held,
+    input_hand: selected.hand,
+  };
 }
 
 function selectGripperTrigger(controls, motionController) {
@@ -145,6 +158,7 @@ function serializeControllerPose(pose) {
     handedness: cloned.handedness,
     position: cloned.position,
     quaternion: cloned.quaternion,
+    pose_source: cloned.pose_source,
     timestamp_ms: cloned.timestamp_ms,
   };
 }
@@ -161,16 +175,9 @@ function isNeutralControlSnapshot(controls, cfg) {
     clamp(controls.left_grip, 0, 1),
     clamp(controls.right_grip, 0, 1)
   );
-  const precision = clamp(controls.precision, 0, 1);
-  const stickX = Math.abs(clamp(controls.stick_x, -1, 1));
-  const stickY = Math.abs(clamp(controls.stick_y, -1, 1));
-  const stickThreshold = Math.max(0.02, cfg.stick_activity_epsilon);
   return (
     trigger <= cfg.trigger_release_threshold &&
-    grip <= cfg.grip_release_threshold &&
-    precision <= 0.1 &&
-    stickX <= stickThreshold &&
-    stickY <= stickThreshold
+    grip <= cfg.grip_release_threshold
   );
 }
 
@@ -220,13 +227,16 @@ export function createQuestControllerTeleop(options = {}) {
       : 0.72,
     orientation_smoothing: Number.isFinite(Number(options.orientation_smoothing))
       ? Number(options.orientation_smoothing)
-      : 0.68,
+      : 0.74,
     max_orientation_step_rad: Number.isFinite(Number(options.max_orientation_step_rad))
       ? Number(options.max_orientation_step_rad)
-      : 0.18,
+      : 0.24,
     orientation_gain: Number.isFinite(Number(options.orientation_gain))
       ? Number(options.orientation_gain)
-      : 0.95,
+      : 1.0,
+    precision_orientation_gain: Number.isFinite(Number(options.precision_orientation_gain))
+      ? Number(options.precision_orientation_gain)
+      : 1.08,
     orientation_activity_epsilon_rad: Number.isFinite(Number(options.orientation_activity_epsilon_rad))
       ? Number(options.orientation_activity_epsilon_rad)
       : 0.016,
@@ -568,8 +578,10 @@ export function createQuestControllerTeleop(options = {}) {
     const changedJointGroup = strategy === "joint_delta" ? syncSelectedJointGroup(controls) : false;
     const rawInput = buildRawInput(snapshot, controllerPoses, activePose, strategy);
 
-    if (requireNeutralRelease && isNeutralControlSnapshot(snapshot?.controls, cfg)) {
-      requireNeutralRelease = false;
+    if (requireNeutralRelease) {
+      if (isNeutralControlSnapshot(snapshot?.controls, cfg) || nowMs >= commandGuardUntilMs) {
+        requireNeutralRelease = false;
+      }
     }
 
     if (nowMs < commandGuardUntilMs || requireNeutralRelease) {
@@ -678,14 +690,20 @@ export function createQuestControllerTeleop(options = {}) {
     const engaged = Boolean(motionController?.pose && motionController.engaged);
     let releaseHoldCommand = false;
     let eeTracking = null;
-    // For grasp/data-collection we prioritize stable Cartesian translation first.
-    // Keep orientation locked during normal motion, and only enable wrist-orientation
-    // following while precision mode is held for deliberate fine alignment.
+    // Grip acts as a 6DoF "grab" of the end effector. Precision keeps the same
+    // orientation authority while reducing translation gain for wrist alignment.
     const positionFollowGain = precisionMode ? cfg.precision_scale : 1;
-    const orientationFollowEnabled = precisionMode;
+    const orientationFollowEnabled = engaged && Boolean(poseQuaternion);
     const orientationFollowGain = orientationFollowEnabled
-      ? Math.max(0.3, cfg.precision_scale)
+      ? precisionMode
+        ? Math.max(cfg.orientation_gain, cfg.precision_orientation_gain)
+        : cfg.orientation_gain
       : 0;
+    const eeFollowMode = orientationFollowEnabled
+      ? precisionMode
+        ? "anchored_absolute_6dof_precision"
+        : "anchored_absolute_6dof"
+      : "anchored_absolute_position";
     if (engaged && poseTracked) {
       if (!motionEngaged || activeControllerHand !== motionController.hand) {
         resetAnchor(motionController.pose.position, currentPose, poseQuaternion);
@@ -748,8 +766,10 @@ export function createQuestControllerTeleop(options = {}) {
         trigger: smoothedTrigger,
         trigger_hand: triggerControl?.hand || "",
         grip: gripRaw,
+        grip_input_hand: motionController?.input_hand || motionController?.hand || "",
         grip_active: engaged ? 1 : 0,
         active_hand: activeControllerHand || motionController?.hand || "",
+        pose_source: String(activePose?.pose_source || ""),
         precision: precisionMode ? 1 : 0,
         controller_dx: Number(motionController?.pose?.position?.[0] || 0) - Number(anchorController?.[0] || 0),
         controller_dy: Number(motionController?.pose?.position?.[1] || 0) - Number(anchorController?.[1] || 0),
@@ -762,7 +782,9 @@ export function createQuestControllerTeleop(options = {}) {
         movement_gain: positionFollowGain,
         orientation_gain: orientationFollowGain,
         orientation_follow_enabled: orientationFollowEnabled ? 1 : 0,
-        ee_follow_mode: "anchored_absolute",
+        orientation_active:
+          orientationFollowEnabled && orientationError > cfg.orientation_activity_epsilon_rad ? 1 : 0,
+        ee_follow_mode: eeFollowMode,
         max_control_offset_m: cfg.max_control_offset,
       },
       raw_input: rawInput,

@@ -130,6 +130,7 @@ Wayland 环境提示：
   - `control.data.target_ee_pose`
   - `control.data.target_ee_delta`
   - `control.data.expect_result`
+  - `control.data.normalized_input.orientation_follow_enabled`: 为 `1` 时 Cartesian servo 同时跟随末端姿态；为 `0` 时仅做位置跟随/姿态锁定。
 - 服务端 -> 客户端：
   - `welcome`
   - `state_update`

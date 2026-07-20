@@ -270,11 +270,27 @@
                 </span>
               </div>
               <div class="network-status-row" v-if="questControllerNormalizedInput">
+                <span class="network-label">控制状态:</span>
+                <span class="network-value">
+                  cmd={{ Number(questControllerNormalizedInput.has_command || 0) >= 1 ? "1" : "0" }},
+                  reason={{ questControllerNormalizedInput.reason || "-" }},
+                  grip={{ Number(questControllerNormalizedInput.grip || 0).toFixed(2) }},
+                  pose={{ questControllerNormalizedInput.pose_source || "-" }}
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questControllerNormalizedInput">
                 <span class="network-label">末端误差:</span>
                 <span class="network-value">
                   pos={{ Number(questControllerNormalizedInput.ee_error_m || 0).toFixed(3) }}m,
                   rot={{ Number(questControllerNormalizedInput.orientation_error_rad || 0).toFixed(2) }}rad,
                   Servo={{ questControllerNormalizedInput.cartesian_servo_status || questControllerNormalizedInput.ik_status || "-" }}
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questControllerNormalizedInput">
+                <span class="network-label">姿态跟随:</span>
+                <span class="network-value">
+                  {{ Number(questControllerNormalizedInput.orientation_follow_enabled || questControllerNormalizedInput.ee_orientation_follow_enabled || questControllerNormalizedInput.cartesian_servo_orientation_enabled || 0) >= 1 ? "开启" : "锁定" }}
+                  | {{ questControllerNormalizedInput.ee_follow_mode || "-" }}
                 </span>
               </div>
               <div class="network-status-row">
@@ -362,6 +378,13 @@
                   pos={{ Number(questHandNormalizedInput.ee_error_m || 0).toFixed(3) }}m,
                   rot={{ Number(questHandNormalizedInput.orientation_error_rad || 0).toFixed(2) }}rad,
                   Servo={{ questHandNormalizedInput.cartesian_servo_status || questHandNormalizedInput.ik_status || "-" }}
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questHandNormalizedInput">
+                <span class="network-label">姿态跟随:</span>
+                <span class="network-value">
+                  {{ Number(questHandNormalizedInput.orientation_follow_enabled || questHandNormalizedInput.ee_orientation_follow_enabled || questHandNormalizedInput.cartesian_servo_orientation_enabled || 0) >= 1 ? "开启" : "锁定" }}
+                  | {{ questHandNormalizedInput.ee_follow_mode || "-" }}
                 </span>
               </div>
               <div class="network-status-row" v-if="questHandNormalizedInput">
@@ -885,6 +908,7 @@ const UI_POSE_SYNC_INTERVAL_MS = 50;
 const UI_REACTIVE_MOTION_MIN_INTERVAL_MS = 250;
 const SYNC_STATS_MIN_INTERVAL_MS = 250;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
+const QUEST_TELEOP_UI_MIN_INTERVAL_MS = 125;
 // 16ms caps teleop at about 62.5Hz, which is visibly below Quest's common
 // 72Hz refresh. Use a slightly tighter send interval to reduce step feeling.
 const VR_COMMAND_MIN_INTERVAL_MS = 16;
@@ -892,6 +916,9 @@ const VR_COMMAND_STEPS = 1;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
 const VR_CONTROL_WATCHDOG_INTERVAL_MS = 33;
 const VR_CONTROL_WATCHDOG_STALE_MS = 55;
+const QUEST_CONTROLLER_GRIP_ENGAGE_THRESHOLD = 0.035;
+const QUEST_CONTROLLER_GRIP_RELEASE_THRESHOLD = 0.018;
+const QUEST_CONTROLLER_POSE_HOLD_MS = 380;
 const VR_RENDER_SMOOTHING_ALPHA = 0.16;
 const BACKEND_RENDER_PREDICTION_MS = 36;
 const BACKEND_RENDER_MAX_PREDICTION_MS = 80;
@@ -1086,11 +1113,7 @@ const uiLastPoseSyncAt = ref(0);
 
 let questControllerTeleop = createQuestControllerTeleop({
   sensitivity: clamp(questControllerSensitivity.value, 0.4, 3.0),
-  grip_engage_threshold: clamp(questControllerDeadzone.value, 0.02, 0.3),
-  grip_release_threshold: Math.max(0.01, clamp(questControllerDeadzone.value, 0.02, 0.3) * 0.55),
-  trigger_engage_threshold: clamp(questControllerDeadzone.value, 0.02, 0.3),
-  trigger_release_threshold: Math.max(0.01, clamp(questControllerDeadzone.value, 0.02, 0.3) * 0.55),
-  stick_activity_epsilon: clamp(questControllerDeadzone.value, 0.02, 0.3),
+  ...getQuestControllerTeleopThresholds(),
 });
 let questHandTeleop = createQuestHandTeleop({
   sensitivity: clamp(questHandSensitivity.value, 0.4, 3.0),
@@ -1098,6 +1121,8 @@ let questHandTeleop = createQuestHandTeleop({
 let lastQuestControllerPoseSnapshot = null;
 let latestMotionState = null;
 let lastReactiveMotionCommitAt = 0;
+let lastQuestControllerUiCommitAt = 0;
+let lastQuestHandUiCommitAt = 0;
 let lastSyncStatsCommitAt = 0;
 let lastMotionPacketAt = 0;
 
@@ -1432,6 +1457,17 @@ function updateHandTrackingFromBackend(state) {
   ) {
     questHandInputMode.value = backendInputMode;
   }
+}
+
+function getQuestControllerTeleopThresholds() {
+  const deadzone = clamp(questControllerDeadzone.value, 0.02, 0.3);
+  return {
+    grip_engage_threshold: QUEST_CONTROLLER_GRIP_ENGAGE_THRESHOLD,
+    grip_release_threshold: QUEST_CONTROLLER_GRIP_RELEASE_THRESHOLD,
+    trigger_engage_threshold: deadzone,
+    trigger_release_threshold: Math.max(0.01, deadzone * 0.55),
+    stick_activity_epsilon: deadzone,
+  };
 }
 
 function checkD405ObservationReady(state) {
@@ -2028,6 +2064,26 @@ function getQuestSourceFromBackendState(state) {
   return source === "quest3_controller" || source === "quest3_hand" ? source : "";
 }
 
+function getSelectedQuestControlSource() {
+  if (selectedVrInputMode.value === "controller") {
+    return { mode: "vr_controller_mode", source: "quest3_controller" };
+  }
+  if (selectedVrInputMode.value === "hand") {
+    return { mode: "vr_hand_mode", source: "quest3_hand" };
+  }
+  return null;
+}
+
+function shouldPreserveLocalQuestControl(state) {
+  const selectedControl = getSelectedQuestControlSource();
+  if (!selectedControl || !hasLocalQuestXrControlContext()) return false;
+  const backendMode = String(state?.vr?.mode || "").trim();
+  const backendOwner = String(state?.vr?.control_owner || state?.source || state?.input_source || "").trim();
+  if (backendMode === "vr_error") return false;
+  if (backendMode === selectedControl.mode || backendOwner === selectedControl.source) return false;
+  return Boolean(backendMode || backendOwner);
+}
+
 function isInactiveQuestSourceState(state) {
   const source = getQuestSourceFromBackendState(state);
   if (!source) return false;
@@ -2047,15 +2103,35 @@ function applyVrStateFromBackend(state) {
   }
   const vr = state?.vr;
   if (!vr || typeof vr !== "object") return;
+  const questSource = getQuestSourceFromBackendState(state);
+  const preserveLocalQuestControl = shouldPreserveLocalQuestControl(state);
+  if (preserveLocalQuestControl) {
+    const selectedControl = getSelectedQuestControlSource();
+    if (selectedControl) {
+      vrModeState.value = selectedControl.mode;
+      vrControlOwner.value = selectedControl.source;
+    }
+  }
+  const nowMs = Date.now();
+  const shouldCommitControllerUi =
+    questSource === "quest3_controller" &&
+    (!questControllerNormalizedInput.value ||
+      nowMs - lastQuestControllerUiCommitAt >= QUEST_TELEOP_UI_MIN_INTERVAL_MS);
+  const shouldCommitHandUi =
+    questSource === "quest3_hand" &&
+    (!questHandNormalizedInput.value ||
+      nowMs - lastQuestHandUiCommitAt >= QUEST_TELEOP_UI_MIN_INTERVAL_MS);
+  let committedControllerUi = false;
+  let committedHandUi = false;
   if (typeof vr.mode === "string") {
-    if (!shouldIgnoreBackendVrMode(vr.mode)) {
+    if (!preserveLocalQuestControl && !shouldIgnoreBackendVrMode(vr.mode)) {
       vrModeState.value = vr.mode;
     }
   }
   if (typeof vr.selected_joint_group === "string" && vr.selected_joint_group.length > 0) {
     vrSelectedJointGroup.value = vr.selected_joint_group;
   }
-  if (typeof vr.control_owner === "string" && vr.control_owner.length > 0) {
+  if (!preserveLocalQuestControl && typeof vr.control_owner === "string" && vr.control_owner.length > 0) {
     vrControlOwner.value = vr.control_owner;
   }
   if (typeof vr.error_message === "string") {
@@ -2066,23 +2142,33 @@ function applyVrStateFromBackend(state) {
     vrSelectedJointGroup.value = selectedGroup;
   }
   const inputSource = String(state?.input_source || "").trim();
-  if (inputSource === "quest3_controller" || inputSource === "quest3_hand") {
+  if (!preserveLocalQuestControl && (inputSource === "quest3_controller" || inputSource === "quest3_hand")) {
     vrControlOwner.value = inputSource;
   }
   if (state?.raw_input && typeof state.raw_input === "object") {
-    questControllerRawInput.value = state.raw_input;
-    questHandRawInput.value = state.raw_input;
+    if (shouldCommitControllerUi) {
+      questControllerRawInput.value = state.raw_input;
+      committedControllerUi = true;
+    } else if (shouldCommitHandUi) {
+      questHandRawInput.value = state.raw_input;
+      committedHandUi = true;
+    }
   }
   if (state?.normalized_input && typeof state.normalized_input === "object") {
     const normalizedInput = { ...state.normalized_input };
-    const questSource = getQuestSourceFromBackendState(state);
-    if (questSource === "quest3_controller") {
+    if (shouldCommitControllerUi) {
       questControllerNormalizedInput.value = normalizedInput;
-    } else if (questSource === "quest3_hand") {
+      committedControllerUi = true;
+    } else if (shouldCommitHandUi) {
       questHandNormalizedInput.value = normalizedInput;
+      committedHandUi = true;
     }
   }
-  updateHandTrackingFromBackend(state);
+  if (committedControllerUi) lastQuestControllerUiCommitAt = nowMs;
+  if (committedHandUi) lastQuestHandUiCommitAt = nowMs;
+  if (questSource === "quest3_hand" && shouldCommitHandUi) {
+    updateHandTrackingFromBackend(state);
+  }
 }
 
 function syncVrStateToBackend(payload, options = {}) {
@@ -2585,6 +2671,7 @@ function hasVisibleQuestHandMesh(handNode) {
 }
 
 function updateQuestHandSkeletonFallbacks() {
+  if (!renderer?.xr?.isPresenting || vrModeState.value !== "vr_hand_mode") return;
   const tmpPosition = new THREE.Vector3();
   const tmpFrom = new THREE.Vector3();
   const tmpTo = new THREE.Vector3();
@@ -2691,7 +2778,7 @@ function ensureQuestXrVisualNodes() {
   if (!renderer?.xr || !scene) return;
   const sessionSources = Array.from(getQuestXRSession()?.inputSources || []);
   const controllerSources = mapQuestXrSourcesByHandedness(
-    sessionSources.filter((source) => source && source.gamepad && !source.hand)
+    sessionSources.filter((source) => source && !source.hand)
   );
   const handSources = mapQuestXrSourcesByHandedness(
     sessionSources.filter((source) => source && source.hand)
@@ -2770,10 +2857,15 @@ function readQuestControllerVisualInput(hand) {
 function setMaterialOpacity(object, opacity) {
   const material = object?.material;
   const materials = Array.isArray(material) ? material : material ? [material] : [];
+  const nextOpacity = clamp(opacity, 0, 1);
   materials.forEach((item) => {
-    item.transparent = true;
-    item.opacity = clamp(opacity, 0, 1);
-    item.needsUpdate = true;
+    if (item.transparent !== true) {
+      item.transparent = true;
+      item.needsUpdate = true;
+    }
+    if (Math.abs(Number(item.opacity ?? 1) - nextOpacity) > 0.005) {
+      item.opacity = nextOpacity;
+    }
   });
 }
 
@@ -2782,8 +2874,14 @@ function updateQuestControllerRayVisual(controllerRay, hand) {
   if (!ray) return;
   const input = readQuestControllerVisualInput(hand);
   const activity = Math.max(input.trigger, input.grip, input.active ? 0.35 : 0);
-  ray.scale.z = 1.0 + activity * 1.35;
-  ray.visible = Boolean(controllerRay.visible && activity > 0.02);
+  const nextScaleZ = 1.0 + activity * 1.35;
+  const nextVisible = Boolean(controllerRay.visible && activity > 0.02);
+  if (Math.abs(ray.scale.z - nextScaleZ) > 0.01) {
+    ray.scale.z = nextScaleZ;
+  }
+  if (ray.visible !== nextVisible) {
+    ray.visible = nextVisible;
+  }
   setMaterialOpacity(ray, input.active ? 0.86 : 0.36 + activity * 0.32);
 }
 
@@ -3211,6 +3309,9 @@ function toGripperOpening(gripperRadians) {
 }
 
 function isQuestControllerModeActive() {
+  if (hasLocalQuestXrControlContext() && selectedVrInputMode.value === "controller") {
+    return vrModeState.value !== "vr_disabled" && vrModeState.value !== "vr_error";
+  }
   return (
     vrModeState.value === "vr_controller_mode" &&
     (selectedVrInputMode.value === "controller" || vrControlOwner.value === "quest3_controller")
@@ -3218,6 +3319,9 @@ function isQuestControllerModeActive() {
 }
 
 function isQuestHandModeActive() {
+  if (hasLocalQuestXrControlContext() && selectedVrInputMode.value === "hand") {
+    return vrModeState.value !== "vr_disabled" && vrModeState.value !== "vr_error";
+  }
   return (
     vrModeState.value === "vr_hand_mode" &&
     (selectedVrInputMode.value === "hand" || vrControlOwner.value === "quest3_hand")
@@ -3237,14 +3341,9 @@ function shouldBlockDesktopSliderSync() {
 }
 
 function rebuildQuestControllerTeleop() {
-  const deadzone = clamp(questControllerDeadzone.value, 0.02, 0.3);
   questControllerTeleop = createQuestControllerTeleop({
     sensitivity: clamp(questControllerSensitivity.value, 0.4, 3.0),
-    grip_engage_threshold: deadzone,
-    grip_release_threshold: Math.max(0.01, deadzone * 0.55),
-    trigger_engage_threshold: deadzone,
-    trigger_release_threshold: Math.max(0.01, deadzone * 0.55),
-    stick_activity_epsilon: deadzone,
+    ...getQuestControllerTeleopThresholds(),
   });
 }
 
@@ -3376,44 +3475,115 @@ function readControllerSourcePose(xrFrame, referenceSpace, source) {
           Number(orientation.w),
         ]
       : null,
+    pose_source: "webxr_frame",
     timestamp_ms: Date.now(),
   };
 }
 
+function readControllerNodePose(handedness = "") {
+  const hand = normalizeXrHandedness(handedness);
+  if (!hand) return null;
+  const node = xrVisualNodes.controllerGrips[hand] || xrVisualNodes.controllerRays[hand] || null;
+  if (!node || node.userData?.connected === false) return null;
+  node.updateWorldMatrix?.(true, false);
+  node.getWorldPosition(questControllerPoseWorldPosition);
+  node.getWorldQuaternion(questControllerPoseWorldQuaternion);
+  const position = [
+    questControllerPoseWorldPosition.x,
+    questControllerPoseWorldPosition.y,
+    questControllerPoseWorldPosition.z,
+  ];
+  const quaternion = [
+    questControllerPoseWorldQuaternion.x,
+    questControllerPoseWorldQuaternion.y,
+    questControllerPoseWorldQuaternion.z,
+    questControllerPoseWorldQuaternion.w,
+  ];
+  if (position.some((value) => !Number.isFinite(value))) return null;
+  if (quaternion.some((value) => !Number.isFinite(value))) return null;
+  return {
+    tracked: true,
+    handedness: hand,
+    position,
+    quaternion,
+    pose_source: "three_xr_node",
+    timestamp_ms: Date.now(),
+  };
+}
+
+function cloneHeldControllerPose(pose, nowMs = Date.now()) {
+  if (!pose || !Array.isArray(pose.position)) return null;
+  const ageMs = nowMs - Number(pose.timestamp_ms || 0);
+  if (!Number.isFinite(ageMs) || ageMs > QUEST_CONTROLLER_POSE_HOLD_MS) return null;
+  const baseSource = String(pose.pose_source || "pose").replace(/_held$/, "");
+  return {
+    ...pose,
+    position: [...pose.position],
+    quaternion: Array.isArray(pose.quaternion) ? [...pose.quaternion] : null,
+    pose_source: `${baseSource}_held`,
+  };
+}
+
 function readQuestControllerPoseSnapshot(xrFrame = null) {
+  const nowMs = Date.now();
   const referenceSpace = getQuestXRReferenceSpace();
   if (!xrFrame || !referenceSpace) {
-    if (!lastQuestControllerPoseSnapshot) return null;
-    if (Date.now() - Number(lastQuestControllerPoseSnapshot.timestamp_ms || 0) > 250) {
+    const left =
+      readControllerNodePose("left") ||
+      cloneHeldControllerPose(lastQuestControllerPoseSnapshot?.left, nowMs);
+    const right =
+      readControllerNodePose("right") ||
+      cloneHeldControllerPose(lastQuestControllerPoseSnapshot?.right, nowMs);
+    const active =
+      right ||
+      left ||
+      cloneHeldControllerPose(lastQuestControllerPoseSnapshot?.active, nowMs);
+    if (!active) {
       lastQuestControllerPoseSnapshot = null;
       return null;
     }
+
+    lastQuestControllerPoseSnapshot = {
+      ...active,
+      left,
+      right,
+      active,
+      timestamp_ms: nowMs,
+    };
     return lastQuestControllerPoseSnapshot;
   }
 
   const sources = Array.from(xrFrame.session?.inputSources || []).filter(
-    (source) => source && source.gamepad
+    (source) => source && !source.hand
   );
-  if (sources.length === 0) {
+  const leftSource = sources.find((source) => String(source?.handedness || "").toLowerCase() === "left") || null;
+  const rightSource = sources.find((source) => String(source?.handedness || "").toLowerCase() === "right") || null;
+  const left =
+    (leftSource ? readControllerSourcePose(xrFrame, referenceSpace, leftSource) : null) ||
+    readControllerNodePose("left") ||
+    cloneHeldControllerPose(lastQuestControllerPoseSnapshot?.left, nowMs);
+  const right =
+    (rightSource ? readControllerSourcePose(xrFrame, referenceSpace, rightSource) : null) ||
+    readControllerNodePose("right") ||
+    cloneHeldControllerPose(lastQuestControllerPoseSnapshot?.right, nowMs);
+  const fallbackSource = sources.find((source) => source !== leftSource && source !== rightSource) || sources[0];
+  const fallback = fallbackSource ? readControllerSourcePose(xrFrame, referenceSpace, fallbackSource) : null;
+  const active =
+    right ||
+    left ||
+    fallback ||
+    cloneHeldControllerPose(lastQuestControllerPoseSnapshot?.active, nowMs);
+  if (!active) {
     lastQuestControllerPoseSnapshot = null;
     return null;
   }
-
-  const leftSource = sources.find((source) => String(source?.handedness || "").toLowerCase() === "left") || null;
-  const rightSource = sources.find((source) => String(source?.handedness || "").toLowerCase() === "right") || null;
-  const left = leftSource ? readControllerSourcePose(xrFrame, referenceSpace, leftSource) : null;
-  const right = rightSource ? readControllerSourcePose(xrFrame, referenceSpace, rightSource) : null;
-  const fallbackSource = sources.find((source) => source !== leftSource && source !== rightSource) || sources[0];
-  const fallback = fallbackSource ? readControllerSourcePose(xrFrame, referenceSpace, fallbackSource) : null;
-  const active = right || left || fallback;
-  if (!active) return lastQuestControllerPoseSnapshot;
 
   lastQuestControllerPoseSnapshot = {
     ...active,
     left,
     right,
     active,
-    timestamp_ms: Date.now(),
+    timestamp_ms: nowMs,
   };
   return lastQuestControllerPoseSnapshot;
 }
@@ -3702,9 +3872,6 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
     raw: null,
   };
   handleDatasetControllerNextButton(snapshot, nowMs);
-  questControllerRawInput.value = snapshot?.raw || null;
-  questControllerAvailable.value = Boolean(snapshot?.has_device);
-  questControllerStatusText.value = snapshot?.has_device ? "采样中" : "运行中(等待输入)";
   const controllerPose = readQuestControllerPoseSnapshot(xrFrame);
 
   const mapped = questControllerTeleop.applySnapshot(
@@ -3715,7 +3882,26 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
     getAuthoritativeArmRadians(),
     dtSec
   );
-  questControllerNormalizedInput.value = mapped?.normalized_input || null;
+  const localControllerNormalizedInput = mapped
+    ? {
+        ...(mapped.normalized_input || {}),
+        has_command: mapped.has_command ? 1 : 0,
+        reason: mapped.reason || snapshot?.reason || "idle",
+      }
+    : null;
+  const controllerUiReason = String(localControllerNormalizedInput?.reason || "idle");
+  const shouldCommitControllerUi =
+    !questControllerNormalizedInput.value ||
+    questControllerAvailable.value !== Boolean(snapshot?.has_device) ||
+    String(questControllerNormalizedInput.value?.reason || "") !== controllerUiReason ||
+    nowMs - lastQuestControllerUiCommitAt >= QUEST_TELEOP_UI_MIN_INTERVAL_MS;
+  if (shouldCommitControllerUi) {
+    questControllerRawInput.value = snapshot?.raw || null;
+    questControllerAvailable.value = Boolean(snapshot?.has_device);
+    questControllerNormalizedInput.value = localControllerNormalizedInput;
+    questControllerStatusText.value = snapshot?.has_device ? "采样中" : "运行中(等待输入)";
+    lastQuestControllerUiCommitAt = nowMs;
+  }
 
   if (mapped?.selected_joint_group) {
     if (vrSelectedJointGroup.value !== mapped.selected_joint_group) {
@@ -3743,14 +3929,14 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
   });
 
   if (mapped?.reason === "control_guard") {
-    questControllerStatusText.value = "输入保护中";
+    if (shouldCommitControllerUi) questControllerStatusText.value = "输入保护中";
     return;
   }
   if (mapped?.reason === "controller_pose_unavailable") {
-    questControllerStatusText.value = "等待手柄位姿";
+    if (shouldCommitControllerUi) questControllerStatusText.value = "等待手柄位姿";
     if (!mapped?.has_command) return;
   }
-  if (mapped?.reason === "idle" && !mapped?.has_command) {
+  if (mapped?.reason === "idle" && !mapped?.has_command && shouldCommitControllerUi) {
     questControllerStatusText.value = "按住握柄移动，扳机抓取";
   }
 
@@ -3790,16 +3976,25 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   }
 
   const snapshot = readQuestHandSnapshot();
-  questHandRawInput.value = snapshot?.raw || null;
-  questHandTrackingStability.value = clamp(snapshot?.tracking_stability || 0, 0, 1);
+  const handTrackingStability = clamp(snapshot?.tracking_stability || 0, 0, 1);
+  const shouldCommitHandUi =
+    !questHandNormalizedInput.value ||
+    nowMs - lastQuestHandUiCommitAt >= QUEST_TELEOP_UI_MIN_INTERVAL_MS;
+  if (shouldCommitHandUi) {
+    questHandRawInput.value = snapshot?.raw || null;
+    questHandTrackingStability.value = handTrackingStability;
+  }
 
   if (!snapshot?.available) {
-    questHandNormalizedInput.value = {
-      has_command: 0,
-      reason: snapshot?.reason || "hand_not_tracked",
-      tracking_stable: 0,
-      tracking_stability: clamp(snapshot?.tracking_stability || 0, 0, 1),
-    };
+    if (shouldCommitHandUi) {
+      questHandNormalizedInput.value = {
+        has_command: 0,
+        reason: snapshot?.reason || "hand_not_tracked",
+        tracking_stable: 0,
+        tracking_stability: handTrackingStability,
+      };
+      lastQuestHandUiCommitAt = nowMs;
+    }
     if (questHandUnavailableSinceAt.value <= 0) {
       questHandUnavailableSinceAt.value = nowMs;
     }
@@ -3816,14 +4011,17 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
         has_command: 0,
         reason: snapshot?.reason || "hand_not_tracked",
         tracking_stable: 0,
-        tracking_stability: clamp(snapshot?.tracking_stability || 0, 0, 1),
+        tracking_stability: handTrackingStability,
       },
       error_message: "",
     });
     if (unavailableElapsed < QUEST_HAND_UNAVAILABLE_GRACE_MS) {
-      questHandAvailable.value = true;
-      questHandTrackingStable.value = false;
-      questHandStatusText.value = "手势短暂波动，保持上一控制";
+      if (shouldCommitHandUi) {
+        questHandAvailable.value = true;
+        questHandTrackingStable.value = false;
+        questHandStatusText.value = "手势短暂波动，保持上一控制";
+        lastQuestHandUiCommitAt = nowMs;
+      }
       return;
     }
     markQuestHandSafeHold("未检测到稳定手势", "hand_not_tracked");
@@ -3831,8 +4029,6 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
   }
   questHandUnavailableSinceAt.value = 0;
 
-  questHandAvailable.value = true;
-  questHandStatusText.value = "采样中";
   const mapped = questHandTeleop.applySnapshot(
     snapshot,
     getAuthoritativeArmRadians(),
@@ -3840,11 +4036,26 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
     getAuthoritativeEePoseBackend(),
     dtSec
   );
-  questHandNormalizedInput.value = mapped?.normalized_input || null;
-
-  questHandTrackingStable.value = Boolean(mapped?.tracking_stable);
-  questHandInputMode.value = mapped?.hand_input_mode || "right_hand_ee_servo";
-  questHandStatusText.value = buildHandTrackingStatusText();
+  const localHandInputMode = mapped?.hand_input_mode || "right_hand_ee_servo";
+  const localHandTrackingStable = Boolean(mapped?.tracking_stable);
+  const localHandNormalizedInput = mapped
+    ? {
+        ...(mapped.normalized_input || {}),
+        has_command: mapped.has_command ? 1 : 0,
+        reason: mapped.reason || "idle",
+        tracking_stable: localHandTrackingStable ? 1 : 0,
+        tracking_stability: mapped.tracking_stability ?? handTrackingStability,
+        hand_input_mode: localHandInputMode,
+      }
+    : null;
+  if (shouldCommitHandUi) {
+    questHandAvailable.value = true;
+    questHandTrackingStable.value = localHandTrackingStable;
+    questHandInputMode.value = localHandInputMode;
+    questHandNormalizedInput.value = localHandNormalizedInput;
+    questHandStatusText.value = buildHandTrackingStatusText();
+    lastQuestHandUiCommitAt = nowMs;
+  }
 
   if (!mapped?.tracking_stable) {
     syncVrStateToBackend({
@@ -3861,7 +4072,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
         reason: mapped?.reason || "tracking_unstable",
         tracking_stable: 0,
         tracking_stability: mapped?.tracking_stability ?? clamp(snapshot?.tracking_stability || 0, 0, 1),
-        hand_input_mode: mapped?.hand_input_mode || questHandInputMode.value,
+        hand_input_mode: localHandInputMode,
       },
       error_message: "",
     });
@@ -3870,8 +4081,11 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
     }
     const unstableElapsed = nowMs - Number(questHandUnstableSinceAt.value || nowMs);
     if (unstableElapsed < QUEST_HAND_UNSTABLE_GRACE_MS) {
-      questHandTrackingStable.value = false;
-      questHandStatusText.value = "追踪短暂抖动，保持上一控制";
+      if (shouldCommitHandUi) {
+        questHandTrackingStable.value = false;
+        questHandStatusText.value = "追踪短暂抖动，保持上一控制";
+        lastQuestHandUiCommitAt = nowMs;
+      }
       return;
     }
     markQuestHandSafeHold("追踪不稳定(已保持)", "tracking_unstable");
@@ -3900,7 +4114,7 @@ function runQuestHandTick(nowOverrideMs = Date.now()) {
       reason: mapped?.reason || "idle",
       tracking_stable: mapped?.tracking_stable ? 1 : 0,
       tracking_stability: mapped?.tracking_stability ?? clamp(snapshot?.tracking_stability || 0, 0, 1),
-      hand_input_mode: mapped?.hand_input_mode || questHandInputMode.value,
+      hand_input_mode: localHandInputMode,
       timestamp_ms: Number(snapshot?.timestamp_ms) || nowMs,
     },
     error_message: "",
@@ -3984,6 +4198,7 @@ function stopQuestControllerLoop() {
   questControllerGroupToast.value = "";
   questControllerGroupToastAt.value = 0;
   lastQuestControllerTickAt.value = 0;
+  lastQuestControllerUiCommitAt = 0;
   clearPendingManualTarget();
   clearQuestRenderPreview();
 }
@@ -4006,6 +4221,7 @@ function stopQuestHandLoop() {
   questHandGroupToast.value = "";
   questHandGroupToastAt.value = 0;
   lastQuestHandTickAt.value = 0;
+  lastQuestHandUiCommitAt = 0;
   clearPendingManualTarget();
   clearQuestRenderPreview();
 }
@@ -6164,6 +6380,8 @@ const xrVisualNodes = {
   controllerRays: { left: null, right: null },
   hands: { left: null, right: null },
 };
+const questControllerPoseWorldPosition = new THREE.Vector3();
+const questControllerPoseWorldQuaternion = new THREE.Quaternion();
 let activeQuestXrSession = null;
 let questXrVisibilityHandler = null;
 let questXrInputSourcesHandler = null;

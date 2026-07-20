@@ -158,6 +158,22 @@ function keepSingleLocalAndNetworkUrl() {
 export default defineConfig({
   plugins: [vue(), basicSsl(), keepSingleLocalAndNetworkUrl()],
   base: './',
+  build: {
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.replace(/\\/g, '/');
+          if (!normalizedId.includes('node_modules')) return undefined;
+          if (normalizedId.includes('/three/')) return 'vendor-three';
+          if (normalizedId.includes('/element-plus/')) return 'vendor-element-plus';
+          if (normalizedId.includes('/vue/') || normalizedId.includes('@vue')) return 'vendor-vue';
+          if (normalizedId.includes('/urdf-loader/') || normalizedId.includes('/mujoco-js/')) return 'vendor-robotics';
+          return 'vendor';
+        },
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: Number(process.env.VITE_PAGE_PORT || 5173),

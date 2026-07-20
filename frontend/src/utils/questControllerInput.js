@@ -3,9 +3,10 @@ import { getQuestXRSession } from "./questXRSession.js";
 const QUEST_PAD_PATTERN = /(quest|oculus|meta|touch|xr-standard)/i;
 const LEFT_PAD_PATTERN = /(left|l-touch|left controller)/i;
 const RIGHT_PAD_PATTERN = /(right|r-touch|right controller)/i;
+const THUMBSTICK_BUTTON_INDEX = [2];
 
 const LEFT_BUTTON_INDEX = {
-  precision: [],
+  precision: THUMBSTICK_BUTTON_INDEX,
   select_wrist: [3],
   select_upper_arm: [4],
   select_forearm: [5],
@@ -16,6 +17,7 @@ const LEFT_BUTTON_INDEX = {
 const RIGHT_BUTTON_INDEX = {
   trigger: [0],
   grip: [1],
+  precision: THUMBSTICK_BUTTON_INDEX,
   next_episode: [4, 5],
 };
 
@@ -126,6 +128,12 @@ function readButtonValue(pad, candidates) {
   return maxValue;
 }
 
+function readButtonPressedValue(pad, candidates) {
+  if (!pad || !pad.buttons || typeof pad.buttons.length !== "number") return 0;
+  const indices = Array.isArray(candidates) ? candidates : [candidates];
+  return indices.some((index) => Boolean(pad.buttons[index]?.pressed)) ? 1 : 0;
+}
+
 function readAxisPair(pad, startIndex) {
   const axes = pad?.axes;
   const xRaw = Number(axes?.[startIndex]);
@@ -192,6 +200,7 @@ function buildControllerRaw(handedness, pad, buttonIndexMap) {
     stick_y: stick.y,
     trigger: readButtonValue(pad, buttonIndexMap.trigger || []),
     grip: readButtonValue(pad, buttonIndexMap.grip || []),
+    precision: readButtonValue(pad, buttonIndexMap.precision || []),
   };
 }
 
@@ -313,7 +322,9 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
   const selectUpperArm = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_upper_arm);
   const selectForearm = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_forearm);
   const selectWrist = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_wrist);
-  const precision = readButtonValue(selectPad, LEFT_BUTTON_INDEX.precision);
+  const leftPrecision = readButtonPressedValue(leftPad, LEFT_BUTTON_INDEX.precision);
+  const rightPrecision = readButtonPressedValue(rightPad, RIGHT_BUTTON_INDEX.precision);
+  const precision = Math.max(leftPrecision, rightPrecision);
   const nextEpisode = readButtonValue(rightPad, RIGHT_BUTTON_INDEX.next_episode);
   const raw = {
     source,
@@ -335,7 +346,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       select_upper_arm: selectUpperArm,
       select_forearm: selectForearm,
       select_wrist: selectWrist,
-      precision,
+      precision: leftPrecision,
     },
     right: {
       ...buildControllerRaw("right", rightPad, RIGHT_BUTTON_INDEX),
@@ -356,7 +367,7 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       select_upper_arm: raw.left.select_upper_arm,
       select_forearm: raw.left.select_forearm,
       select_wrist: raw.left.select_wrist,
-      precision: raw.left.precision,
+      precision,
       stick_x: activeRaw?.stick_x || 0,
       stick_y: activeRaw?.stick_y || 0,
       left_stick_x: raw.left.stick_x || 0,

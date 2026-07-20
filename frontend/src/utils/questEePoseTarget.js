@@ -445,9 +445,14 @@ export function createQuestEePoseTargetTracker(options = {}) {
       const anchorBackendPosition = cloneVec3(anchorInputBackendPose.position) || [0, 0, 0];
       const currentBackendPosition = cloneVec3(backendInputPose.position) || anchorBackendPosition;
       const positionDelta = vecSub(currentBackendPosition, anchorBackendPosition);
-      const scaledInputPosition = vecAdd(
-        anchorBackendPosition,
-        clampVecMagnitude(vecScale(positionDelta, movementGain), cfg.max_control_offset)
+      const scaledBackendDelta = clampVecMagnitude(
+        vecScale(positionDelta, movementGain),
+        cfg.max_control_offset
+      );
+      const scaledInputPosition = vecAdd(anchorBackendPosition, scaledBackendDelta);
+      desiredPosition = vecAdd(
+        cloneVec3(anchorEePose.position) || desiredPosition,
+        scaledBackendDelta
       );
 
       let scaledInputQuaternion = anchorInputQuaternion || backendInputPose.quaternion || null;

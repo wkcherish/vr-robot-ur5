@@ -66,10 +66,16 @@ export function createQuestHandTeleop(options = {}) {
       : 0.20,
     orientation_gain: Number.isFinite(Number(options.orientation_gain))
       ? Number(options.orientation_gain)
-      : 0.95,
+      : 0.72,
     orientation_activity_epsilon_rad: Number.isFinite(Number(options.orientation_activity_epsilon_rad))
       ? Number(options.orientation_activity_epsilon_rad)
       : 0.016,
+    orientation_follow_min_stability: Number.isFinite(Number(options.orientation_follow_min_stability))
+      ? Number(options.orientation_follow_min_stability)
+      : 0.58,
+    orientation_follow_min_fist: Number.isFinite(Number(options.orientation_follow_min_fist))
+      ? Number(options.orientation_follow_min_fist)
+      : 0.44,
     max_ee_step_m: Number.isFinite(Number(options.max_ee_step_m))
       ? Number(options.max_ee_step_m)
       : 0.045,
@@ -127,6 +133,7 @@ export function createQuestHandTeleop(options = {}) {
   let gripperInitialized = false;
   let lastTrackedAt = 0;
   let trackingStableLatched = false;
+  let handOrientationLatched = false;
 
   function getState() {
     return {
@@ -152,6 +159,7 @@ export function createQuestHandTeleop(options = {}) {
     eeTargetTracker.clear();
     smoothedFist = 0;
     fistLatched = false;
+    handOrientationLatched = false;
   }
 
   function applySnapshot(
@@ -225,13 +233,35 @@ export function createQuestHandTeleop(options = {}) {
     }
 
     lastTrackedAt = now;
-    ensureAnchor(rightControlPosition, currentPose, rightPalmQuaternion);
+    const rawFist = Number.isFinite(Number(rightHand.fist))
+      ? clamp(rightHand.fist, 0, 1)
+      : estimateFallbackFist(rightHand);
+    smoothedFist = lowPass(smoothedFist, rawFist, cfg.fist_smoothing);
+    if (!fistLatched && smoothedFist >= cfg.fist_engage_threshold) {
+      fistLatched = true;
+    } else if (fistLatched && smoothedFist <= cfg.fist_release_threshold) {
+      fistLatched = false;
+    }
+
+    const rotationGestureActive =
+      fistLatched || smoothedFist >= clamp(cfg.orientation_follow_min_fist, 0.05, 0.95);
+    const orientationFollowEnabled =
+      Boolean(rightPalmQuaternion) &&
+      rotationGestureActive &&
+      trackingStability >= clamp(cfg.orientation_follow_min_stability, 0.05, 0.98);
+    const orientationFollowGain = orientationFollowEnabled ? cfg.orientation_gain : 0;
+    const anchorPose = eeTargetTracker.getTargetPose() || currentPose;
+    if (orientationFollowEnabled && !handOrientationLatched) {
+      resetAnchor(rightControlPosition, anchorPose, rightPalmQuaternion);
+    } else {
+      ensureAnchor(rightControlPosition, currentPose, rightPalmQuaternion);
+    }
+    handOrientationLatched = orientationFollowEnabled;
+
     // Use the live pinch center as the hand control point, but keep the
     // anchored-absolute mapping so the robot follows the hand smoothly inside
     // the shared scene instead of jumping to a raw absolute XR world pose.
     const positionFollowGain = clamp(cfg.movement_gain, 0.4, 6.0);
-    const orientationFollowEnabled = false;
-    const orientationFollowGain = orientationFollowEnabled ? 1 : 0;
     const eeTracking = eeTargetTracker.update({
       inputPosition: rightControlPosition,
       inputQuaternion: rightPalmQuaternion,
@@ -242,15 +272,6 @@ export function createQuestHandTeleop(options = {}) {
     });
     const targetEePose = eeTracking?.targetEePose || eeTargetTracker.getTargetPose() || currentPose;
 
-    const rawFist = Number.isFinite(Number(rightHand.fist))
-      ? clamp(rightHand.fist, 0, 1)
-      : estimateFallbackFist(rightHand);
-    smoothedFist = lowPass(smoothedFist, rawFist, cfg.fist_smoothing);
-    if (!fistLatched && smoothedFist >= cfg.fist_engage_threshold) {
-      fistLatched = true;
-    } else if (fistLatched && smoothedFist <= cfg.fist_release_threshold) {
-      fistLatched = false;
-    }
     const gripRaw = fistLatched
       ? applyDeadzone(smoothedFist, cfg.fist_release_threshold)
       : 0;
@@ -260,11 +281,12 @@ export function createQuestHandTeleop(options = {}) {
 
     const eeError = Number(eeTracking?.eeError) || 0;
     const orientationError = Number(eeTracking?.orientationError) || 0;
+    const activeOrientationError = orientationFollowEnabled ? orientationError : 0;
     const handMotion = vecNorm(eeTracking?.smoothedBackendDelta);
     const hasEeActivity =
       eeError > cfg.ee_activity_epsilon_m ||
       handMotion > cfg.ee_activity_epsilon_m ||
-      orientationError > cfg.orientation_activity_epsilon_rad;
+      activeOrientationError > cfg.orientation_activity_epsilon_rad;
     const hasGripperActivity =
       Math.abs(nextGripper - currentGripper) > cfg.gripper_activity_epsilon;
     const hasCommand = hasEeActivity || hasGripperActivity;
@@ -297,8 +319,12 @@ export function createQuestHandTeleop(options = {}) {
         movement_gain: positionFollowGain,
         orientation_gain: orientationFollowGain,
         orientation_follow_enabled: orientationFollowEnabled ? 1 : 0,
+        orientation_active:
+          activeOrientationError > cfg.orientation_activity_epsilon_rad ? 1 : 0,
         hand_control_point: controlPose.controlPoint,
-        ee_follow_mode: "anchored_absolute",
+        ee_follow_mode: orientationFollowEnabled
+          ? "anchored_absolute_hand_orientation"
+          : "anchored_absolute_position",
         max_control_offset_m: cfg.max_control_offset,
         fist: smoothedFist,
         fist_active: fistLatched ? 1 : 0,
@@ -317,6 +343,7 @@ export function createQuestHandTeleop(options = {}) {
     gripperInitialized = false;
     lastTrackedAt = 0;
     trackingStableLatched = false;
+    handOrientationLatched = false;
   }
 
   return {
