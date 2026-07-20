@@ -189,7 +189,19 @@ CARTESIAN_SERVO_JOINT_LIMIT_MARGIN_RAD = 0.18
 CARTESIAN_SERVO_MIN_SINGULAR_VALUE = 0.035
 CARTESIAN_SERVO_POSITION_DEADBAND_M = 1.2e-3
 CARTESIAN_SERVO_ORIENTATION_DEADBAND_RAD = 0.010
-GRASP_ASSIST_MODE = str(os.getenv("SIM_GRASP_ASSIST_MODE", "strict")).strip().lower()
+GRASP_ASSIST_MODE = str(os.getenv("SIM_GRASP_ASSIST_MODE", "disabled")).strip().lower()
+GRASP_ASSIST_ENABLED_MODES = {
+    "1",
+    "true",
+    "on",
+    "enabled",
+    "assist",
+    "loose",
+    "strict",
+    "high_fidelity",
+    "contact",
+}
+GRASP_ASSIST_STRICT_CONTACT_MODES = {"strict", "high_fidelity", "contact"}
 GRIPPER_GRASP_ENGAGE_OPENING = 0.70
 GRIPPER_GRASP_RELEASE_OPENING = 0.24
 GRIPPER_GRASP_CONTACT_MARGIN_M = 0.003
@@ -344,11 +356,11 @@ def _is_slider_commit_input(input_source: str | None) -> bool:
 
 
 def _is_grasp_assist_enabled() -> bool:
-    return GRASP_ASSIST_MODE not in {"0", "false", "off", "disabled", "none"}
+    return GRASP_ASSIST_MODE in GRASP_ASSIST_ENABLED_MODES
 
 
 def _grasp_assist_requires_both_pads() -> bool:
-    return GRASP_ASSIST_MODE in {"", "strict", "high_fidelity", "contact"}
+    return GRASP_ASSIST_MODE in GRASP_ASSIST_STRICT_CONTACT_MODES
 
 
 def _is_desktop_slider_input(source: str | None, input_source: str | None) -> bool:
@@ -1808,6 +1820,8 @@ class SimulationCore:
             if isinstance(restored_rel_quaternion, list) and len(restored_rel_quaternion) >= 4
             else None
         )
+        if not _is_grasp_assist_enabled():
+            self._clear_grasp_attachment_locked()
 
         if not self._using_mujoco_model() or self._mj_data is None or _mujoco is None or self._mj_model is None:
             return
@@ -2237,8 +2251,9 @@ class SimulationCore:
         return jacp, jacr
 
     def _clear_grasp_attachment_locked(self) -> None:
-        if self._attached_object_id in self._scene_objects_template:
-            self._scene_objects_template[self._attached_object_id]["attached_to_gripper"] = False
+        for template_state in self._scene_objects_template.values():
+            if isinstance(template_state, dict):
+                template_state["attached_to_gripper"] = False
         self._attached_object_id = None
         self._attached_object_rel_position = None
         self._attached_object_rel_quaternion = None
@@ -3607,7 +3622,9 @@ class SimulationCore:
                 continue
             objects[obj_id]["position"] = [float(v) for v in self._mj_data.xpos[body_id]]
             objects[obj_id]["quaternion"] = [float(v) for v in self._mj_data.xquat[body_id]]
-            objects[obj_id]["attached_to_gripper"] = obj_id == self._attached_object_id
+            objects[obj_id]["attached_to_gripper"] = (
+                _is_grasp_assist_enabled() and obj_id == self._attached_object_id
+            )
         return objects
 
     def _compute_ee_pose_locked(self) -> dict[str, list[float]]:

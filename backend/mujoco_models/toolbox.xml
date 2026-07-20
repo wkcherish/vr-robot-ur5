@@ -117,6 +117,8 @@
         pos="-0.002 0.037 0.012"
         size="0.125 0.09 0.012"
         rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="toolbox_contact"
@@ -125,6 +127,8 @@
         pos="-0.127 0.037 0.105"
         size="0.008 0.09 0.105"
         rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="toolbox_contact"
@@ -133,6 +137,8 @@
         pos="0.123 0.037 0.105"
         size="0.008 0.09 0.105"
         rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="toolbox_contact"
@@ -141,6 +147,8 @@
         pos="-0.002 -0.053 0.105"
         size="0.125 0.008 0.105"
         rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="toolbox_contact"
@@ -149,6 +157,8 @@
         pos="-0.002 0.127 0.105"
         size="0.125 0.008 0.105"
         rgba="0 0 0 0"
+        contype="1"
+        conaffinity="1"
       />
     </body>
   </worldbody>

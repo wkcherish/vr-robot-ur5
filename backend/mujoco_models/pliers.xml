@@ -38,8 +38,8 @@
         mesh="pliers_mesh_p01"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -48,8 +48,8 @@
         mesh="pliers_mesh_p02"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -58,8 +58,8 @@
         mesh="pliers_mesh_p03"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -68,8 +68,8 @@
         mesh="pliers_mesh_p04"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -78,8 +78,8 @@
         mesh="pliers_mesh_p05"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -88,8 +88,8 @@
         mesh="pliers_mesh_p06"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -98,8 +98,8 @@
         mesh="pliers_mesh_p07"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -108,8 +108,8 @@
         mesh="pliers_mesh_p08"
         pos="-0.00004355 0.00005995 0"
         rgba="0.62 0.66 0.71 1"
-        contype="1"
-        conaffinity="1"
+        contype="0"
+        conaffinity="0"
       />
       <geom
         class="pliers_contact"
@@ -118,8 +118,8 @@
         pos="-0.018 -0.001 0.043"
         size="0.009 0.008 0.044"
         rgba="0 0 0 0"
-        contype="0"
-        conaffinity="0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="pliers_contact"
@@ -128,8 +128,8 @@
         pos="0.018 -0.001 0.043"
         size="0.009 0.008 0.044"
         rgba="0 0 0 0"
-        contype="0"
-        conaffinity="0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="pliers_contact"
@@ -138,8 +138,8 @@
         pos="0 0.0001 0.088"
         size="0.026 0.010 0.018"
         rgba="0 0 0 0"
-        contype="0"
-        conaffinity="0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="pliers_contact"
@@ -148,8 +148,8 @@
         pos="-0.013 0.0001 0.127"
         size="0.010 0.007 0.032"
         rgba="0 0 0 0"
-        contype="0"
-        conaffinity="0"
+        contype="1"
+        conaffinity="1"
       />
       <geom
         class="pliers_contact"
@@ -158,8 +158,8 @@
         pos="0.013 0.0001 0.127"
         size="0.010 0.007 0.032"
         rgba="0 0 0 0"
-        contype="0"
-        conaffinity="0"
+        contype="1"
+        conaffinity="1"
       />
     </body>
   </worldbody>
