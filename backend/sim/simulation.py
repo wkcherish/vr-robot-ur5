@@ -2260,6 +2260,12 @@ class SimulationCore:
         self._attached_object_rel_position = None
         self._attached_object_rel_quaternion = None
 
+    def _allows_grasp_assist_locked(self) -> bool:
+        if not _is_grasp_assist_enabled():
+            return False
+        normalized_source = _normalize_control_source(self._source, self._last_input_source)
+        return normalized_source not in {"quest3_controller", "quest3_hand"}
+
     def _find_contacted_graspable_object_locked(self) -> str | None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
             return None
@@ -2371,7 +2377,7 @@ class SimulationCore:
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
     def _update_grasp_assist_locked(self, forward: bool = True) -> None:
-        if not _is_grasp_assist_enabled():
+        if not self._allows_grasp_assist_locked():
             self._clear_grasp_attachment_locked()
             return
 
@@ -3625,7 +3631,7 @@ class SimulationCore:
             objects[obj_id]["position"] = [float(v) for v in self._mj_data.xpos[body_id]]
             objects[obj_id]["quaternion"] = [float(v) for v in self._mj_data.xquat[body_id]]
             objects[obj_id]["attached_to_gripper"] = (
-                _is_grasp_assist_enabled() and obj_id == self._attached_object_id
+                self._allows_grasp_assist_locked() and obj_id == self._attached_object_id
             )
         return objects
 
@@ -4357,7 +4363,6 @@ class SimulationCore:
             "control_ee_pose": self._build_control_ee_pose_locked(),
             "gripper_opening": float(self._gripper_opening),
             "gripper_joints": dict(self._gripper_joints),
-            "objects": deepcopy(self._objects_state),
             "source": self._source,
             "input_source": self._last_input_source,
             "selected_joint_group": self._last_selected_joint_group,

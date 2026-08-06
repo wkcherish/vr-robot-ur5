@@ -769,6 +769,11 @@ import URDFLoader from "urdf-loader";
 import websocketManager from "./utils/websocket.js"; // 引入WebSocket管理器
 import { runtimeConfig, getDeviceCategory } from "./utils/runtimeConfig.js";
 import { get, post } from "./utils/network.js";
+import {
+  getSceneJointInterpolationAlphaForMode,
+  shouldApplyBackendPoseImmediately,
+  shouldRunClientPhysicsDiagnostics,
+} from "./utils/immersiveStateHotPath.js";
 import { readQuestControllerSnapshot } from "./utils/questControllerInput.js";
 import { createQuestControllerTeleop } from "./utils/questControllerTeleop.js";
 import {
@@ -5367,36 +5372,17 @@ function syncEndEffectorPoseIfNeeded(force = false) {
   calculateEndEffectorPosition();
 }
 
-function scaleInterpolationAlpha(alpha, dtSec) {
-  const baseAlpha = clamp(Number(alpha), 0.01, 1.0);
-  const frameScale = clamp((Number(dtSec) || 1 / 60) * 60, 0.25, 2.5);
-  return 1 - Math.pow(1 - baseAlpha, frameScale);
-}
-
-function getAdaptiveRenderAlpha(baseAlpha, errorRad) {
-  const base = clamp(Number(baseAlpha), 0.01, 1.0);
-  const t = clamp(
-    (Math.abs(Number(errorRad) || 0) - RENDER_ADAPTIVE_LOW_ERROR_RAD) /
-      (RENDER_ADAPTIVE_HIGH_ERROR_RAD - RENDER_ADAPTIVE_LOW_ERROR_RAD),
-    0,
-    1
-  );
-  return base * (0.45 + 1.3 * t);
-}
-
 function getSceneJointInterpolationAlpha(dtSec = 1 / 60, errorRad = 0) {
-  if (STRICT_MUJOCO_RENDER_AUTHORITY) return 1.0;
-
-  if (isVrModeEntered.value) {
-    return scaleInterpolationAlpha(
-      getAdaptiveRenderAlpha(VR_RENDER_SMOOTHING_ALPHA, errorRad),
-      dtSec
-    );
-  }
-  if (!backendPoseSmoothingEnabled.value) return 1.0;
-  const alpha = Number(backendPoseSmoothingAlpha.value);
-  if (!Number.isFinite(alpha)) return 1.0;
-  return scaleInterpolationAlpha(getAdaptiveRenderAlpha(alpha, errorRad), dtSec);
+  return getSceneJointInterpolationAlphaForMode({
+    vrModeEntered: isVrModeEntered.value,
+    backendPoseSmoothingEnabled: backendPoseSmoothingEnabled.value,
+    backendPoseSmoothingAlpha: backendPoseSmoothingAlpha.value,
+    vrRenderSmoothingAlpha: VR_RENDER_SMOOTHING_ALPHA,
+    dtSec,
+    errorRad,
+    lowErrorRad: RENDER_ADAPTIVE_LOW_ERROR_RAD,
+    highErrorRad: RENDER_ADAPTIVE_HIGH_ERROR_RAD,
+  });
 }
 
 function getMaxRenderPoseError(currentArm, targetArm, currentGrip, targetGrip) {
@@ -5525,7 +5511,7 @@ function applyBackendStateToScene(state, options = {}) {
   const visualTarget = previewTarget || renderTarget;
   if (visualTarget) {
     backendRenderTarget.value = visualTarget;
-    if (STRICT_MUJOCO_RENDER_AUTHORITY || options.immediate === true) {
+    if (shouldApplyBackendPoseImmediately(options)) {
       applySmoothedBackendPose({ immediate: true });
     }
   }
@@ -6401,6 +6387,7 @@ let controls = "";
 const sceneObjectModels = new Map();
 const latestSceneObjectStates = new Map();
 const scenePhysicsProxyGroups = new Map();
+let lastClientPhysicsDiagnosticsAt = 0;
 let lastClientPhysicsWarningAt = 0;
 let wristCameraMountModel = null;
 const QUEST_CONTROLLER_MODEL_PATHS = {
@@ -6729,11 +6716,22 @@ function collectClientPhysicsInterferences() {
 }
 
 function updateClientPhysicsMirrorDiagnostics() {
-  if (!STRICT_MUJOCO_RENDER_AUTHORITY) return;
+  const now = Date.now();
+  if (
+    !shouldRunClientPhysicsDiagnostics({
+      strictAuthority: STRICT_MUJOCO_RENDER_AUTHORITY,
+      debugProxiesEnabled: SHOW_MUJOCO_COLLISION_PROXIES,
+      nowMs: now,
+      lastRunAtMs: lastClientPhysicsDiagnosticsAt,
+    })
+  ) {
+    return;
+  }
+
+  lastClientPhysicsDiagnosticsAt = now;
   const interferences = collectClientPhysicsInterferences();
   if (interferences.length === 0) return;
 
-  const now = Date.now();
   if (now - lastClientPhysicsWarningAt < 1000) return;
   lastClientPhysicsWarningAt = now;
   console.warn("前端 MuJoCo 碰撞代理检测到镜像干涉:", interferences.slice(0, 3));
