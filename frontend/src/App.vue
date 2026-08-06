@@ -848,6 +848,9 @@ const jointAngles = ref([]); // 新增用于存储关节角度的变量
 const setAnglesResponse = ref([]); // 用于存储设置的角度值的响应
 const gripperAngleDeg = ref(0);
 const STRICT_MUJOCO_RENDER_AUTHORITY = true;
+const SHOW_MUJOCO_COLLISION_PROXIES =
+  String(import.meta.env.VITE_SHOW_MUJOCO_COLLISION_PROXIES || "").trim() === "1";
+const CLIENT_PHYSICS_INTERFERENCE_EPSILON_M = 0.003;
 const sliderJointValues = computed(() => {
   const draft = STRICT_MUJOCO_RENDER_AUTHORITY ? null : getFreshRealtimeSliderDraft();
   if (draft && Array.isArray(draft.arm) && draft.arm.length >= ARM_JOINT_COUNT) {
@@ -2495,6 +2498,7 @@ function setQuestXrNodeSourceState(node, kind, source, fallbackKey = "") {
     node.userData.handedness = handedness;
     assignQuestXrVisualNode(kind, handedness, node);
   }
+  node.userData.inputSource = source || null;
   node.userData.connected = Boolean(source);
   if (!source) {
     node.visible = false;
@@ -2508,6 +2512,7 @@ function resetQuestXrVisualNodes() {
       if (node) {
         node.userData.connected = false;
         node.userData.handedness = "";
+        node.userData.inputSource = null;
         node.visible = false;
       }
       nodeMap[key] = null;
@@ -2515,40 +2520,12 @@ function resetQuestXrVisualNodes() {
   });
 }
 
-function mapQuestXrSourcesByHandedness(sources = []) {
-  const mapped = {
-    left: null,
-    right: null,
-  };
-  const unknown = [];
-
-  sources.forEach((source) => {
-    const handedness = normalizeXrHandedness(source?.handedness);
-    if (handedness === "left" || handedness === "right") {
-      if (!mapped[handedness]) {
-        mapped[handedness] = source;
-        return;
-      }
-    }
-    unknown.push(source);
-  });
-
-  // Some browsers/devices expose sources before handedness is fully populated.
-  // Fill any remaining slot with the first unassigned source so visuals still render.
-  ["left", "right"].forEach((key) => {
-    if (!mapped[key] && unknown.length > 0) {
-      mapped[key] = unknown.shift() || null;
-    }
-  });
-
-  return mapped;
-}
-
 function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
   if (!node || node.userData.questXrVisualEventsAttached) return;
   node.userData.questXrVisualEventsAttached = true;
   node.addEventListener("connected", (event) => {
     const handedness = normalizeXrHandedness(event?.data?.handedness) || normalizeXrHandedness(fallbackKey);
+    node.userData.inputSource = event?.data || null;
     if (!handedness) return;
     node.userData.handedness = handedness;
     node.userData.connected = true;
@@ -2557,8 +2534,34 @@ function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
   });
   node.addEventListener("disconnected", () => {
     node.userData.connected = false;
+    node.userData.inputSource = null;
     node.visible = false;
   });
+}
+
+function resolveQuestXrNodeSourceForIndex(sources, index, node, fallbackKey = "") {
+  const nodeHandedness = normalizeXrHandedness(node?.userData?.handedness);
+  if (nodeHandedness) {
+    return sources.find((source) => normalizeXrHandedness(source?.handedness) === nodeHandedness) || null;
+  }
+
+  const existingSource = node?.userData?.inputSource || null;
+  const existingHandedness = normalizeXrHandedness(existingSource?.handedness);
+  if (existingHandedness) {
+    return existingSource;
+  }
+
+  const indexedSource = sources[index] || null;
+  if (normalizeXrHandedness(indexedSource?.handedness)) {
+    return indexedSource;
+  }
+
+  const fallbackHandedness = normalizeXrHandedness(fallbackKey);
+  if (fallbackHandedness) {
+    return sources.find((source) => normalizeXrHandedness(source?.handedness) === fallbackHandedness) || null;
+  }
+
+  return null;
 }
 
 function getQuestControllerModelPath(handedness = "") {
@@ -2777,23 +2780,24 @@ function updateQuestHandSkeletonFallbacks() {
 function ensureQuestXrVisualNodes() {
   if (!renderer?.xr || !scene) return;
   const sessionSources = Array.from(getQuestXRSession()?.inputSources || []);
-  const controllerSources = mapQuestXrSourcesByHandedness(
-    sessionSources.filter((source) => source && !source.hand)
-  );
-  const handSources = mapQuestXrSourcesByHandedness(
-    sessionSources.filter((source) => source && source.hand)
-  );
+  const controllerInputSources = sessionSources.filter((source) => source && !source.hand);
+  const handInputSources = sessionSources.filter((source) => source && source.hand);
   const slots = [
-    { index: 0, key: "left" },
-    { index: 1, key: "right" },
+    { index: 0, fallbackKey: "" },
+    { index: 1, fallbackKey: "" },
   ];
-  slots.forEach(({ index, key }) => {
-    const controllerSource = controllerSources[key] || null;
-    const handSource = handSources[key] || null;
+  slots.forEach(({ index, fallbackKey }) => {
     const controllerRay = renderer.xr.getController(index);
+    const controllerSource = resolveQuestXrNodeSourceForIndex(
+      controllerInputSources,
+      index,
+      controllerRay,
+      fallbackKey
+    );
+    const controllerKey = normalizeXrHandedness(controllerSource?.handedness) || resolveXrNodeKey(controllerRay, fallbackKey);
     if (controllerRay) {
-      registerQuestXrNodeEvents(controllerRay, "controllerRays", key);
-      setQuestXrNodeSourceState(controllerRay, "controllerRays", controllerSource, key);
+      registerQuestXrNodeEvents(controllerRay, "controllerRays", controllerKey);
+      setQuestXrNodeSourceState(controllerRay, "controllerRays", controllerSource, controllerKey);
       if (!controllerRay.getObjectByName("quest_controller_ray")) {
         controllerRay.add(buildQuestControllerRay());
       }
@@ -2804,18 +2808,25 @@ function ensureQuestXrVisualNodes() {
 
     const controllerGrip = renderer.xr.getControllerGrip(index);
     if (controllerGrip) {
-      registerQuestXrNodeEvents(controllerGrip, "controllerGrips", key);
-      setQuestXrNodeSourceState(controllerGrip, "controllerGrips", controllerSource, key);
-      ensureQuestControllerGripVisuals(controllerGrip, resolveXrNodeKey(controllerGrip, key));
+      registerQuestXrNodeEvents(controllerGrip, "controllerGrips", controllerKey);
+      setQuestXrNodeSourceState(controllerGrip, "controllerGrips", controllerSource, controllerKey);
+      ensureQuestControllerGripVisuals(controllerGrip, resolveXrNodeKey(controllerGrip, controllerKey));
       if (!controllerGrip.parent) {
         scene.add(controllerGrip);
       }
     }
 
     const handNode = renderer.xr.getHand(index);
+    const handSource = resolveQuestXrNodeSourceForIndex(
+      handInputSources,
+      index,
+      handNode,
+      fallbackKey
+    );
+    const handKey = normalizeXrHandedness(handSource?.handedness) || resolveXrNodeKey(handNode, fallbackKey);
     if (handNode) {
-      registerQuestXrNodeEvents(handNode, "hands", key);
-      setQuestXrNodeSourceState(handNode, "hands", handSource, key);
+      registerQuestXrNodeEvents(handNode, "hands", handKey);
+      setQuestXrNodeSourceState(handNode, "hands", handSource, handKey);
       ensureQuestHandNodeVisuals(handNode);
       if (!handNode.parent) {
         scene.add(handNode);
@@ -4913,6 +4924,10 @@ function getSceneObjectVisualQuaternion(model, physicsQuaternion) {
 }
 
 function getSceneObjectVisualOffsetWorld(model) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+
   const localOffset = model?.userData?.visualOffsetLocal;
   if (!(localOffset instanceof THREE.Vector3)) {
     return new THREE.Vector3(0, 0, 0);
@@ -4945,6 +4960,7 @@ function resolveSceneObjectMinWorldY(config) {
 }
 
 function enforceSceneObjectVisualMinWorldY(model, config) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) return;
   if (!model) return;
 
   const minWorldY = resolveSceneObjectMinWorldY(config);
@@ -4960,6 +4976,7 @@ function enforceSceneObjectVisualMinWorldY(model, config) {
 }
 
 function calibrateSceneObjectVisualAlignment(model, config) {
+  if (STRICT_MUJOCO_RENDER_AUTHORITY) return;
   if (!model) return;
 
   const box = new THREE.Box3().setFromObject(model);
@@ -5468,6 +5485,8 @@ function applySceneObjectPoseFromBackend(objectId, objectState) {
   if (!model) return;
   if (!objectState || typeof objectState !== "object") return;
   const config = SCENE_OBJECT_CONFIGS.find((item) => item?.id === objectId) || null;
+  model.visible = true;
+  model.userData.hasMujocoState = true;
 
   const quaternionFrontend = backendQuaternionToFrontend(objectState.quaternion);
   if (quaternionFrontend) {
@@ -5492,6 +5511,7 @@ function applySceneObjectsFromBackendState(state) {
   Object.entries(state.objects).forEach(([objectId, objectState]) => {
     applySceneObjectPoseFromBackend(objectId, objectState);
   });
+  updateClientPhysicsMirrorDiagnostics();
 }
 
 function applyBackendStateToScene(state, options = {}) {
@@ -5881,6 +5901,19 @@ function buildManifestTransform(transform, fallback) {
   };
 }
 
+function normalizePhysicsConfig(physics) {
+  if (!physics || typeof physics !== "object") return null;
+  const collisionProxies = Array.isArray(physics.collision_proxies)
+    ? physics.collision_proxies
+        .map((proxy) => (proxy && typeof proxy === "object" ? { ...proxy } : null))
+        .filter(Boolean)
+    : [];
+  return {
+    ...physics,
+    collision_proxies: collisionProxies,
+  };
+}
+
 const DEFAULT_ROBOT_SCENE_CONFIG = {
   assetPath: "./ur5/ur5.urdf",
   transform: {
@@ -5961,6 +5994,7 @@ const manifestObjectConfigs = Array.isArray(sceneManifest?.objects)
             item?.visual_alignment && typeof item.visual_alignment === "object"
               ? { ...item.visual_alignment }
               : null,
+          physics: normalizePhysicsConfig(item?.physics),
         };
       })
       .filter((item) => item && item.assetPath)
@@ -6366,6 +6400,8 @@ let renderer = "";
 let controls = "";
 const sceneObjectModels = new Map();
 const latestSceneObjectStates = new Map();
+const scenePhysicsProxyGroups = new Map();
+let lastClientPhysicsWarningAt = 0;
 let wristCameraMountModel = null;
 const QUEST_CONTROLLER_MODEL_PATHS = {
   left: "./webxr-input-profiles/profiles/meta-quest-touch-plus-v2/left.glb",
@@ -6526,6 +6562,183 @@ function focusCameraOnObject(object) {
   controls.update();
 }
 
+function makeCollisionProxyMaterial() {
+  return new THREE.MeshBasicMaterial({
+    color: 0x21a3ff,
+    transparent: true,
+    opacity: SHOW_MUJOCO_COLLISION_PROXIES ? 0.18 : 0.0,
+    depthWrite: false,
+    wireframe: true,
+  });
+}
+
+function getProxyLocalQuaternion(proxy) {
+  const quat = normalizeManifestVector(proxy?.quaternion_xyzw, 4, [0, 0, 0, 1]);
+  if (Array.isArray(proxy?.quaternion_xyzw) && proxy.quaternion_xyzw.length >= 4) {
+    return new THREE.Quaternion(quat[0], quat[1], quat[2], quat[3]).normalize();
+  }
+
+  const rpy = normalizeManifestVector(proxy?.rotation_rpy, 3, [0, 0, 0]);
+  if (Array.isArray(proxy?.rotation_rpy) && proxy.rotation_rpy.length >= 3) {
+    return new THREE.Quaternion().setFromEuler(new THREE.Euler(rpy[0], rpy[1], rpy[2], "XYZ"));
+  }
+
+  return new THREE.Quaternion();
+}
+
+function createBoxCollisionProxy(proxy, material) {
+  const halfSize = normalizeManifestVector(proxy?.size, 3, [0, 0, 0]);
+  if (halfSize.some((value) => value <= 0)) return null;
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(halfSize[0] * 2, halfSize[1] * 2, halfSize[2] * 2),
+    material
+  );
+  mesh.position.fromArray(normalizeManifestVector(proxy?.position, 3, [0, 0, 0]));
+  mesh.quaternion.copy(getProxyLocalQuaternion(proxy));
+  return mesh;
+}
+
+function createCapsuleCollisionProxy(proxy, material) {
+  const fromto = normalizeManifestVector(proxy?.fromto, 6, [0, 0, 0, 0, 0, 0]);
+  const radius = Math.max(0, Number(proxy?.size?.[0] ?? proxy?.radius ?? 0));
+  if (!Number.isFinite(radius) || radius <= 0) return null;
+
+  const start = new THREE.Vector3(fromto[0], fromto[1], fromto[2]);
+  const end = new THREE.Vector3(fromto[3], fromto[4], fromto[5]);
+  const axis = end.clone().sub(start);
+  const length = axis.length();
+  if (!Number.isFinite(length) || length <= 1e-6) return null;
+
+  const mesh = new THREE.Mesh(
+    new THREE.CapsuleGeometry(radius, Math.max(0, length - radius * 2), 8, 12),
+    material
+  );
+  mesh.position.copy(start.clone().add(end).multiplyScalar(0.5));
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.normalize());
+  mesh.quaternion.multiply(getProxyLocalQuaternion(proxy));
+  return mesh;
+}
+
+function createSceneCollisionProxy(proxy, objectId, material) {
+  const type = String(proxy?.type || "").trim().toLowerCase();
+  const mesh =
+    type === "box"
+      ? createBoxCollisionProxy(proxy, material)
+      : type === "capsule"
+        ? createCapsuleCollisionProxy(proxy, material)
+        : null;
+  if (!mesh) return null;
+
+  mesh.name = String(proxy?.name || `${objectId}_${type}_collision`);
+  mesh.visible = SHOW_MUJOCO_COLLISION_PROXIES;
+  mesh.userData.mujocoCollisionProxy = true;
+  mesh.userData.objectId = objectId;
+  mesh.userData.proxyType = type;
+  mesh.userData.proxyName = mesh.name;
+  return mesh;
+}
+
+function attachSceneObjectPhysicsProxies(model, config) {
+  if (!model || !config?.physics) return;
+
+  const existing = scenePhysicsProxyGroups.get(config.id);
+  if (existing?.parent) {
+    existing.parent.remove(existing);
+  }
+
+  const proxies = Array.isArray(config.physics.collision_proxies)
+    ? config.physics.collision_proxies
+    : [];
+  if (proxies.length === 0) return;
+
+  const group = new THREE.Group();
+  group.name = `${config.id}_mujoco_collision_proxies`;
+  group.userData.mujocoPhysicsSource = config.physics.source || "";
+  const material = makeCollisionProxyMaterial();
+
+  proxies.forEach((proxy) => {
+    const mesh = createSceneCollisionProxy(proxy, config.id, material);
+    if (mesh) group.add(mesh);
+  });
+
+  if (group.children.length === 0) return;
+  model.add(group);
+  scenePhysicsProxyGroups.set(config.id, group);
+}
+
+function shouldSkipClientPhysicsPair(left, right) {
+  if (!left || !right) return true;
+  if (left.objectId === right.objectId) return true;
+  const pair = new Set([left.objectId, right.objectId]);
+  if (pair.has("rack")) return true;
+  if (pair.has("toolbox")) {
+    return true;
+  }
+  return false;
+}
+
+function getBoxIntersectionDepth(a, b) {
+  const overlapX = Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x);
+  const overlapY = Math.min(a.max.y, b.max.y) - Math.max(a.min.y, b.min.y);
+  const overlapZ = Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z);
+  if (
+    overlapX <= CLIENT_PHYSICS_INTERFERENCE_EPSILON_M ||
+    overlapY <= CLIENT_PHYSICS_INTERFERENCE_EPSILON_M ||
+    overlapZ <= CLIENT_PHYSICS_INTERFERENCE_EPSILON_M
+  ) {
+    return 0;
+  }
+  return Math.min(overlapX, overlapY, overlapZ);
+}
+
+function collectClientPhysicsInterferences() {
+  const entries = [];
+  scenePhysicsProxyGroups.forEach((group, objectId) => {
+    if (!group?.parent || group.parent.visible === false) return;
+    group.updateWorldMatrix(true, true);
+    group.traverse((child) => {
+      if (!child?.userData?.mujocoCollisionProxy) return;
+      const bounds = new THREE.Box3().setFromObject(child);
+      if (bounds.isEmpty()) return;
+      entries.push({
+        objectId,
+        proxyName: child.userData.proxyName || child.name || objectId,
+        bounds,
+      });
+    });
+  });
+
+  const interferences = [];
+  for (let leftIdx = 0; leftIdx < entries.length; leftIdx += 1) {
+    for (let rightIdx = leftIdx + 1; rightIdx < entries.length; rightIdx += 1) {
+      const left = entries[leftIdx];
+      const right = entries[rightIdx];
+      if (shouldSkipClientPhysicsPair(left, right)) continue;
+      const depth = getBoxIntersectionDepth(left.bounds, right.bounds);
+      if (depth <= 0) continue;
+      interferences.push({
+        body_a: left.objectId,
+        body_b: right.objectId,
+        proxy_a: left.proxyName,
+        proxy_b: right.proxyName,
+        dist: -depth,
+      });
+    }
+  }
+  return interferences;
+}
+
+function updateClientPhysicsMirrorDiagnostics() {
+  if (!STRICT_MUJOCO_RENDER_AUTHORITY) return;
+  const interferences = collectClientPhysicsInterferences();
+  if (interferences.length === 0) return;
+
+  const now = Date.now();
+  if (now - lastClientPhysicsWarningAt < 1000) return;
+  lastClientPhysicsWarningAt = now;
+  console.warn("前端 MuJoCo 碰撞代理检测到镜像干涉:", interferences.slice(0, 3));
+}
+
 // 初始化
 initBase();
 // 添加灯光
@@ -6544,8 +6757,10 @@ function initSceneObjects() {
       result.position.set(position[0], position[1], position[2]);
       result.rotation.set(rotation[0], rotation[1], rotation[2]);
       result.userData.manifestQuaternion = getManifestQuaternion(config.transform);
+      attachSceneObjectPhysicsProxies(result, config);
       calibrateSceneObjectVisualAlignment(result, config);
       enforceSceneObjectVisualMinWorldY(result, config);
+      result.userData.hasMujocoState = false;
       scene.add(result);
       sceneObjectModels.set(config.id, result);
       const latestState =

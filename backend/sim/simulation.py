@@ -92,7 +92,9 @@ BACKEND_FRAME_Z_OFFSET = 0.5
 BACKEND_ALIGNMENT_QUATERNION = [math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0]
 MAX_ALLOWED_PENETRATION_M = 8e-4
 MAX_COLLISION_REPORTS = 3
-ENABLE_HARD_COLLISION_ROLLBACK = False
+ENABLE_HARD_COLLISION_ROLLBACK = str(
+    os.getenv("SIM_ENABLE_HARD_COLLISION_ROLLBACK", "true")
+).strip().lower() not in {"0", "false", "off", "no"}
 EXPECTED_CAMERA_DEVICE = "intel_realsense_d405"
 EXPECTED_RGB_CAMERA_NAME = "d405_rgb"
 EXPECTED_DEPTH_CAMERA_NAME = "d405_depth"
@@ -4342,11 +4344,6 @@ class SimulationCore:
             )
             if key in normalized_input
         }
-        motion_objects = {
-            object_id: deepcopy(object_state)
-            for object_id, object_state in self._objects_state.items()
-            if isinstance(object_state, dict) and bool(object_state.get("attached_to_gripper", False))
-        }
         payload: dict[str, Any] = {
             "timestamp": time.time(),
             "sim_time": self._sim_time,
@@ -4360,6 +4357,7 @@ class SimulationCore:
             "control_ee_pose": self._build_control_ee_pose_locked(),
             "gripper_opening": float(self._gripper_opening),
             "gripper_joints": dict(self._gripper_joints),
+            "objects": deepcopy(self._objects_state),
             "source": self._source,
             "input_source": self._last_input_source,
             "selected_joint_group": self._last_selected_joint_group,
@@ -4368,8 +4366,6 @@ class SimulationCore:
             "collision_blocked": collision_blocked,
             "collision_contacts": deepcopy(self._last_collision_contacts) if collision_blocked else [],
         }
-        if motion_objects:
-            payload["objects"] = motion_objects
         return payload
 
     async def _command_worker(self) -> None:
