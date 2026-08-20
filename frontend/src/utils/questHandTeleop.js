@@ -52,6 +52,9 @@ export function createQuestHandTeleop(options = {}) {
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
       : 0.42,
+    max_vertical_control_offset: Number.isFinite(Number(options.max_vertical_control_offset))
+      ? Number(options.max_vertical_control_offset)
+      : 0.72,
     movement_gain: Number.isFinite(Number(options.sensitivity))
       ? Number(options.sensitivity) * 2.0
       : 3.0,
@@ -118,6 +121,7 @@ export function createQuestHandTeleop(options = {}) {
     mapping_mode: "anchored_absolute",
     movement_deadzone: cfg.movement_deadzone,
     max_control_offset: cfg.max_control_offset,
+    max_vertical_control_offset: cfg.max_vertical_control_offset,
     movement_smoothing: cfg.movement_smoothing,
     max_ee_step_m: cfg.max_ee_step_m,
     anchor_reset_threshold_m: cfg.anchor_reset_threshold_m,
@@ -326,6 +330,7 @@ export function createQuestHandTeleop(options = {}) {
           ? "anchored_absolute_hand_orientation"
           : "anchored_absolute_position",
         max_control_offset_m: cfg.max_control_offset,
+        max_vertical_control_offset_m: cfg.max_vertical_control_offset,
         fist: smoothedFist,
         fist_active: fistLatched ? 1 : 0,
         grip: gripRaw,

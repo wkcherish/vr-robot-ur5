@@ -168,7 +168,7 @@
       "object_type": "tool",
       "tool_class": "wrench",
       "transform": {
-        "position": [0.08, 0.5240336800934792, 0.3],
+        "position": [0.08, 0.5255, 0.3],
         "rotation_rpy": [0.0, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },
@@ -222,7 +222,7 @@
       "object_type": "tool",
       "tool_class": "screwdriver",
       "transform": {
-        "position": [0.2, 0.5, 0.26],
+        "position": [0.2, 0.503, 0.26],
         "rotation_rpy": [-1.5707963267948966, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },
@@ -269,7 +269,7 @@
       "object_type": "tool",
       "tool_class": "pliers",
       "transform": {
-        "position": [0.28, 0.5100852437109232, 0.12],
+        "position": [0.28, 0.5124, 0.12],
         "rotation_rpy": [0.0, 0.0, 0.0],
         "scale": [1.0, 1.0, 1.0]
       },

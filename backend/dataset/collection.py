@@ -328,6 +328,7 @@ class DatasetCollectionService:
             episode_dir / "validation_summary.json",
             self._build_validation_summary(precheck=precheck, state=state, completed=False),
         )
+        self._write_episode_relation_and_phase_seed(episode_dir, metadata)
         _append_jsonl(
             episode_dir / "events.jsonl",
             {
@@ -360,6 +361,32 @@ class DatasetCollectionService:
             "metadata": metadata,
             "precheck": precheck,
         }
+
+    def _write_episode_relation_and_phase_seed(self, episode_dir: Path, metadata: dict[str, Any]) -> None:
+        # relations/phase_labels 是训练转换前的结构化索引：新 episode 先写入粗粒度种子，后续可追加更细 phase。
+        _append_jsonl(
+            episode_dir / "relations.jsonl",
+            {
+                "timestamp": time.time(),
+                "episode_id": metadata.get("episode_id"),
+                "relation_type": "target_tool_to_zone",
+                "object_id": metadata.get("target_tool_id") or metadata.get("handover_object_id"),
+                "object_class": metadata.get("target_tool_class") or metadata.get("handover_object_class"),
+                "target_zone_id": metadata.get("target_zone_id") or metadata.get("handover_zone_id"),
+                "instruction_text": metadata.get("instruction_text"),
+            },
+        )
+        _append_jsonl(
+            episode_dir / "phase_labels.jsonl",
+            {
+                "timestamp": time.time(),
+                "episode_id": metadata.get("episode_id"),
+                "phase": "demonstration",
+                "phase_index": 0,
+                "start_event": "episode_start",
+                "instruction_text": metadata.get("instruction_text"),
+            },
+        )
 
     async def stop_episode(
         self,
@@ -508,6 +535,11 @@ class DatasetCollectionService:
                     "type": "toolbox_slot",
                     "display_name": slot_id,
                     "tool_class": slot.get("tool_class"),
+                    # slot 位姿是 toolbox_local 碰撞坐标，不允许消费端当作前端/世界坐标解释。
+                    "frame": slot.get("frame", "toolbox_local"),
+                    "position": deepcopy(slot.get("position", [])),
+                    "size": deepcopy(slot.get("size", [])),
+                    "collision_margin_m": slot.get("collision_margin_m", 0.0),
                 }
             )
         if "toolbox" not in seen:
@@ -618,7 +650,14 @@ class DatasetCollectionService:
     def _create_episode_layout(self, episode_dir: Path) -> None:
         for child in ["rgb", "depth"]:
             (episode_dir / child).mkdir(parents=True, exist_ok=True)
-        for filename in ["visuals.jsonl", "states.jsonl", "actions.jsonl", "events.jsonl"]:
+        for filename in [
+            "visuals.jsonl",
+            "states.jsonl",
+            "actions.jsonl",
+            "relations.jsonl",
+            "events.jsonl",
+            "phase_labels.jsonl",
+        ]:
             path = episode_dir / filename
             if not path.exists():
                 path.write_text("", encoding="utf-8")
@@ -757,7 +796,9 @@ class DatasetCollectionService:
             "visuals": self._count_jsonl_lines(episode_dir / "visuals.jsonl"),
             "states": self._count_jsonl_lines(episode_dir / "states.jsonl"),
             "actions": self._count_jsonl_lines(episode_dir / "actions.jsonl"),
+            "relations": self._count_jsonl_lines(episode_dir / "relations.jsonl"),
             "events": self._count_jsonl_lines(episode_dir / "events.jsonl"),
+            "phase_labels": self._count_jsonl_lines(episode_dir / "phase_labels.jsonl"),
             "rgb_frames": self._count_files(episode_dir / "rgb"),
             "depth_frames": self._count_files(episode_dir / "depth"),
         }
@@ -767,15 +808,19 @@ class DatasetCollectionService:
                 (episode_dir / "visuals.jsonl").exists(),
                 (episode_dir / "states.jsonl").exists(),
                 (episode_dir / "actions.jsonl").exists(),
+                (episode_dir / "relations.jsonl").exists(),
                 (episode_dir / "events.jsonl").exists(),
+                (episode_dir / "phase_labels.jsonl").exists(),
+                (episode_dir / "result.json").exists(),
                 record_counts["visuals"] > 0,
                 record_counts["states"] > 0,
+                record_counts["actions"] > 0,
+                record_counts["relations"] > 0,
+                record_counts["phase_labels"] > 0,
                 record_counts["rgb_frames"] > 0,
                 record_counts["depth_frames"] > 0,
             ]
         )
-        if (episode_dir / "result.json").exists():
-            files_complete = files_complete and True
         return {
             "files_complete": files_complete,
             "record_counts": record_counts,

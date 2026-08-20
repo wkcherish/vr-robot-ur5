@@ -191,22 +191,8 @@ CARTESIAN_SERVO_JOINT_LIMIT_MARGIN_RAD = 0.18
 CARTESIAN_SERVO_MIN_SINGULAR_VALUE = 0.035
 CARTESIAN_SERVO_POSITION_DEADBAND_M = 1.2e-3
 CARTESIAN_SERVO_ORIENTATION_DEADBAND_RAD = 0.010
+# 仅保留旧环境变量读取，便于兼容部署脚本和日志排查；运行时不再启用抓取补偿。
 GRASP_ASSIST_MODE = str(os.getenv("SIM_GRASP_ASSIST_MODE", "disabled")).strip().lower()
-GRASP_ASSIST_ENABLED_MODES = {
-    "1",
-    "true",
-    "on",
-    "enabled",
-    "assist",
-    "loose",
-    "strict",
-    "high_fidelity",
-    "contact",
-}
-GRASP_ASSIST_STRICT_CONTACT_MODES = {"strict", "high_fidelity", "contact"}
-GRIPPER_GRASP_ENGAGE_OPENING = 0.70
-GRIPPER_GRASP_RELEASE_OPENING = 0.24
-GRIPPER_GRASP_CONTACT_MARGIN_M = 0.003
 GRIPPER_GRASP_PAD_BODY_NAMES = ("left_pad_link", "right_pad_link")
 SCENE_SETTLE_STEPS = 1000
 
@@ -358,11 +344,10 @@ def _is_slider_commit_input(input_source: str | None) -> bool:
 
 
 def _is_grasp_assist_enabled() -> bool:
-    return GRASP_ASSIST_MODE in GRASP_ASSIST_ENABLED_MODES
-
-
-def _grasp_assist_requires_both_pads() -> bool:
-    return GRASP_ASSIST_MODE in GRASP_ASSIST_STRICT_CONTACT_MODES
+    # 严格物理权威模式：所有控制源都必须依赖 MuJoCo 接触/摩擦完成抓取。
+    # 旧的 attach-to-gripper 补偿会让夹爪未接触工具时也“吸附”物体，必须全局关闭。
+    _ = GRASP_ASSIST_MODE
+    return False
 
 
 def _is_desktop_slider_input(source: str | None, input_source: str | None) -> bool:
@@ -2289,52 +2274,11 @@ class SimulationCore:
         self._attached_object_rel_quaternion = None
 
     def _allows_grasp_assist_locked(self) -> bool:
-        if not _is_grasp_assist_enabled():
-            return False
-        normalized_source = _normalize_control_source(self._source, self._last_input_source)
-        return normalized_source not in {"quest3_controller", "quest3_hand"}
+        # 所有入口统一禁止旧抓取辅助，保证桌面、手柄、手势模式行为一致。
+        return False
 
     def _find_contacted_graspable_object_locked(self) -> str | None:
-        if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
-            return None
-
-        contacts_by_object: dict[str, set[str]] = {}
-        for idx in range(int(self._mj_data.ncon)):
-            contact = self._mj_data.contact[idx]
-            if float(contact.dist) > GRIPPER_GRASP_CONTACT_MARGIN_M:
-                continue
-
-            geom_a = int(contact.geom1)
-            geom_b = int(contact.geom2)
-            body_a = int(self._mj_model.geom_bodyid[geom_a])
-            body_b = int(self._mj_model.geom_bodyid[geom_b])
-            body_name_a = (
-                _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_a)
-                if body_a > 0
-                else ""
-            )
-            body_name_b = (
-                _mujoco.mj_id2name(self._mj_model, _mujoco.mjtObj.mjOBJ_BODY, body_b)
-                if body_b > 0
-                else ""
-            )
-
-            if body_name_a in GRASPABLE_TOOL_BODY_NAMES and body_name_b in GRIPPER_GRASP_PAD_BODY_NAMES:
-                contacts_by_object.setdefault(body_name_a, set()).add(body_name_b)
-            if body_name_b in GRASPABLE_TOOL_BODY_NAMES and body_name_a in GRIPPER_GRASP_PAD_BODY_NAMES:
-                contacts_by_object.setdefault(body_name_b, set()).add(body_name_a)
-
-        if not contacts_by_object:
-            return None
-
-        if not _grasp_assist_requires_both_pads():
-            return next(iter(contacts_by_object))
-
-        required_pads = set(GRIPPER_GRASP_PAD_BODY_NAMES)
-        for obj_id, pad_names in contacts_by_object.items():
-            if required_pads.issubset(pad_names):
-                return obj_id
-
+        # 旧抓取辅助已禁用；真实抓取由 MuJoCo 接触、摩擦和夹爪关节自然产生。
         return None
 
     def _attach_object_to_gripper_locked(
@@ -2342,90 +2286,20 @@ class SimulationCore:
         obj_id: str,
         grasp_pose: dict[str, list[float]],
     ) -> bool:
-        object_pose = self._get_object_pose_locked(obj_id)
-        if object_pose is None:
-            return False
-
-        grasp_position = grasp_pose["position"]
-        grasp_quaternion = _normalize_quaternion(grasp_pose["quaternion"])
-        object_position = object_pose["position"]
-        object_quaternion = _normalize_quaternion(object_pose["quaternion"])
-        inverse_grasp_quaternion = _quaternion_conjugate(grasp_quaternion)
-        relative_position_world = [
-            object_position[axis] - grasp_position[axis]
-            for axis in range(3)
-        ]
-
-        self._attached_object_id = obj_id
-        self._attached_object_rel_position = _rotate_vector_by_quaternion(
-            relative_position_world,
-            inverse_grasp_quaternion,
-        )
-        self._attached_object_rel_quaternion = _normalize_quaternion(
-            _quaternion_multiply(inverse_grasp_quaternion, object_quaternion)
-        )
-        if obj_id in self._scene_objects_template:
-            self._scene_objects_template[obj_id]["attached_to_gripper"] = True
-        return True
+        # 防御性 no-op：任何路径都不允许再把工具隐式绑定到夹爪。
+        _ = (obj_id, grasp_pose)
+        self._clear_grasp_attachment_locked()
+        return False
 
     def _follow_attached_object_locked(self, forward: bool = True) -> None:
-        obj_id = self._attached_object_id
-        if (
-            not obj_id
-            or self._attached_object_rel_position is None
-            or self._attached_object_rel_quaternion is None
-        ):
-            return
-
-        grasp_pose = self._compute_gripper_grasp_pose_locked()
-        object_pose = _compose_pose(
-            grasp_pose["position"],
-            grasp_pose["quaternion"],
-            self._attached_object_rel_position,
-            self._attached_object_rel_quaternion,
-        )
-        if not self._set_object_pose_locked(
-            obj_id,
-            object_pose["position"],
-            object_pose["quaternion"],
-            reset_velocity=True,
-        ):
-            self._clear_grasp_attachment_locked()
-            return
-
-        if obj_id in self._scene_objects_template:
-            self._scene_objects_template[obj_id]["attached_to_gripper"] = True
-        if (
-            forward
-            and self._using_mujoco_model()
-            and _mujoco is not None
-            and self._mj_model is not None
-            and self._mj_data is not None
-        ):
-            _mujoco.mj_forward(self._mj_model, self._mj_data)
+        # 防御性 no-op：禁止旧补偿路径继续 teleport 工具跟随夹爪。
+        _ = forward
+        self._clear_grasp_attachment_locked()
 
     def _update_grasp_assist_locked(self, forward: bool = True) -> None:
-        if not self._allows_grasp_assist_locked():
-            self._clear_grasp_attachment_locked()
-            return
-
-        if self._gripper_opening <= GRIPPER_GRASP_RELEASE_OPENING:
-            self._clear_grasp_attachment_locked()
-            return
-
-        if self._attached_object_id is not None:
-            self._follow_attached_object_locked(forward=forward)
-            return
-
-        if self._gripper_opening < GRIPPER_GRASP_ENGAGE_OPENING:
-            return
-
-        grasp_pose = self._compute_gripper_grasp_pose_locked()
-        graspable_id = self._find_contacted_graspable_object_locked()
-        if graspable_id is None:
-            return
-        if self._attach_object_to_gripper_locked(graspable_id, grasp_pose):
-            self._follow_attached_object_locked(forward=forward)
+        # 兼容旧调用点，但只做状态清理，不再根据开合度/接触执行隐藏绑定。
+        _ = forward
+        self._clear_grasp_attachment_locked()
 
     def _sync_scene_objects_to_model_locked(self) -> None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None:

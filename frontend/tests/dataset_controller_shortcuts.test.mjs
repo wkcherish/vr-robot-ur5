@@ -56,6 +56,28 @@ assert.equal(
   "只按 X 键时不应误触发 episode 开始"
 );
 
+const swappedReportedHandSnapshot = readQuestControllerSnapshotFromPads(
+  makePad({ hand: "right", pressed: [5] }),
+  makePad({ hand: "left", pressed: [4] }),
+  "test"
+);
+
+assert.equal(
+  swappedReportedHandSnapshot.raw.left.handedness,
+  "left",
+  "逻辑左手柄必须稳定标记为 left，不能被浏览器上报的反向 hand 字段覆盖"
+);
+assert.equal(
+  swappedReportedHandSnapshot.raw.left.reported_handedness,
+  "right",
+  "原始浏览器 hand 字段应保存在 reported_handedness 中，便于后续排查设备上报异常"
+);
+assert.equal(
+  swappedReportedHandSnapshot.raw.right.handedness,
+  "right",
+  "逻辑右手柄必须稳定标记为 right，防止 UI 和控制链路左右互换"
+);
+
 assert.deepEqual(
   readDatasetControllerShortcutValues({
     controls: { dataset_start: 0.4, dataset_reset: 0.2 },

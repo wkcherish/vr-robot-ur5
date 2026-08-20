@@ -219,6 +219,9 @@ export function createQuestControllerTeleop(options = {}) {
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
       : 0.42,
+    max_vertical_control_offset: Number.isFinite(Number(options.max_vertical_control_offset))
+      ? Number(options.max_vertical_control_offset)
+      : 0.72,
     movement_gain: Number.isFinite(Number(options.sensitivity))
       ? Number(options.sensitivity) * 2.1
       : 3.0,
@@ -296,6 +299,7 @@ export function createQuestControllerTeleop(options = {}) {
   const eeTargetTracker = createQuestEePoseTargetTracker({
     movement_deadzone: cfg.movement_deadzone,
     max_control_offset: cfg.max_control_offset,
+    max_vertical_control_offset: cfg.max_vertical_control_offset,
     movement_smoothing: cfg.movement_smoothing,
     max_ee_step_m: cfg.max_ee_step_m,
     anchor_reset_threshold_m: cfg.anchor_reset_threshold_m,
@@ -786,6 +790,7 @@ export function createQuestControllerTeleop(options = {}) {
           orientationFollowEnabled && orientationError > cfg.orientation_activity_epsilon_rad ? 1 : 0,
         ee_follow_mode: eeFollowMode,
         max_control_offset_m: cfg.max_control_offset,
+        max_vertical_control_offset_m: cfg.max_vertical_control_offset,
       },
       raw_input: rawInput,
       timestamp_ms: nowMs,

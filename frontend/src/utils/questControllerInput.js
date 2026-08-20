@@ -190,10 +190,14 @@ function normalizeHandedness(value) {
 function buildControllerRaw(handedness, pad, buttonIndexMap) {
   const stick = readStickAxes(pad);
   const buttons = summarizeButtons(pad?.buttons);
+  const logicalHandedness = normalizeHandedness(handedness);
+  const reportedHandedness = normalizeHandedness(pad?.hand);
   return {
     id: String(pad?.id || ""),
     mapping: String(pad?.mapping || ""),
-    handedness: String(pad?.hand || handedness || ""),
+    // handedness 表示系统内部的逻辑左右手，reported_handedness 保留浏览器原始上报值用于排查。
+    handedness: logicalHandedness || reportedHandedness,
+    reported_handedness: reportedHandedness,
     axes: readNumericArray(pad?.axes),
     axis_pair: stick.pair,
     button_values: buttons.values,

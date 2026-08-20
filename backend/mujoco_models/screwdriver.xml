@@ -26,7 +26,7 @@
   <worldbody>
     <body
       name="screwdriver_01"
-      pos="0.2 -0.26 1.0"
+      pos="0.2 -0.26 1.003"
       euler="0 0 0"
     >
       <freejoint/>

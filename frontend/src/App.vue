@@ -819,6 +819,12 @@ import {
   getQuestXRSession,
   stopQuestXRSession,
 } from "./utils/questXRSession.js";
+import {
+  buildQuestXrNodeSourceState,
+  normalizeXrHandedness,
+  resolveQuestXrNodeKey as resolveXrNodeKey,
+  resolveQuestXrNodeSourceForIndex,
+} from "./utils/questXrHandedness.js";
 import sceneManifest from "../../shared/scene_manifest.json";
 
 // 修改视角控制为下拉菜单
@@ -2687,16 +2693,6 @@ function buildQuestHandSkeletonFallback() {
   return group;
 }
 
-function normalizeXrHandedness(value) {
-  const handedness = String(value || "").toLowerCase();
-  if (handedness === "left" || handedness === "right") return handedness;
-  return "";
-}
-
-function resolveXrNodeKey(node, fallbackKey = "") {
-  return normalizeXrHandedness(node?.userData?.handedness) || normalizeXrHandedness(fallbackKey);
-}
-
 function assignQuestXrVisualNode(kind, key, node) {
   if (!node || !xrVisualNodes[kind]) return;
   Object.keys(xrVisualNodes[kind]).forEach((entryKey) => {
@@ -2710,16 +2706,15 @@ function assignQuestXrVisualNode(kind, key, node) {
 
 function setQuestXrNodeSourceState(node, kind, source, fallbackKey = "") {
   if (!node) return;
-  const handedness =
-    normalizeXrHandedness(source?.handedness) ||
-    resolveXrNodeKey(node, fallbackKey);
+  const state = buildQuestXrNodeSourceState(node, source, fallbackKey);
+  const handedness = state.handedness;
   if (handedness) {
     node.userData.handedness = handedness;
     assignQuestXrVisualNode(kind, handedness, node);
   }
-  node.userData.inputSource = source || null;
-  node.userData.connected = Boolean(source);
-  if (!source) {
+  node.userData.inputSource = state.inputSource;
+  node.userData.connected = state.connected;
+  if (state.shouldHide) {
     node.visible = false;
   }
 }
@@ -2746,9 +2741,12 @@ function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
   node.addEventListener("connected", (event) => {
     const handedness = normalizeXrHandedness(event?.data?.handedness) || normalizeXrHandedness(fallbackKey);
     node.userData.inputSource = event?.data || null;
-    if (!handedness) return;
-    node.userData.handedness = handedness;
     node.userData.connected = true;
+    if (!handedness) {
+      updateQuestXrVisualVisibility();
+      return;
+    }
+    node.userData.handedness = handedness;
     assignQuestXrVisualNode(kind, handedness, node);
     updateQuestXrVisualVisibility();
   });
@@ -2759,42 +2757,17 @@ function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
   });
 }
 
-function resolveQuestXrNodeSourceForIndex(sources, index, node, fallbackKey = "") {
-  const nodeHandedness = normalizeXrHandedness(node?.userData?.handedness);
-  if (nodeHandedness) {
-    return sources.find((source) => normalizeXrHandedness(source?.handedness) === nodeHandedness) || null;
-  }
-
-  const existingSource = node?.userData?.inputSource || null;
-  const existingHandedness = normalizeXrHandedness(existingSource?.handedness);
-  if (existingHandedness) {
-    return existingSource;
-  }
-
-  const indexedSource = sources[index] || null;
-  if (normalizeXrHandedness(indexedSource?.handedness)) {
-    return indexedSource;
-  }
-
-  const fallbackHandedness = normalizeXrHandedness(fallbackKey);
-  if (fallbackHandedness) {
-    return sources.find((source) => normalizeXrHandedness(source?.handedness) === fallbackHandedness) || null;
-  }
-
-  return null;
-}
-
 function getQuestControllerModelPath(handedness = "") {
-  return handedness === "left"
+  return normalizeXrHandedness(handedness) === "left"
     ? QUEST_CONTROLLER_MODEL_PATHS.left
     : QUEST_CONTROLLER_MODEL_PATHS.right;
 }
 
-async function loadQuestControllerModelClone(handedness = "") {
+async function loadQuestControllerModelScene(handedness = "") {
   const modelPath = getQuestControllerModelPath(handedness);
   const cachedScene = questControllerModelCache.get(modelPath);
   if (cachedScene) {
-    return cachedScene.clone(true);
+    return cachedScene;
   }
 
   let loadingPromise = questControllerModelPromiseCache.get(modelPath);
@@ -2821,12 +2794,26 @@ async function loadQuestControllerModelClone(handedness = "") {
   }
 
   const loadedScene = await loadingPromise;
+  return loadedScene;
+}
+
+async function loadQuestControllerModelClone(handedness = "") {
+  const loadedScene = await loadQuestControllerModelScene(handedness);
   return loadedScene.clone(true);
+}
+
+function preloadQuestControllerModels() {
+  // 进入沉浸模式前预热本地 GLB，减少 Quest 首次显示手柄时的空白和卡顿。
+  return Promise.allSettled([
+    loadQuestControllerModelScene("left"),
+    loadQuestControllerModelScene("right"),
+  ]);
 }
 
 function ensureQuestControllerGripVisuals(controllerGrip, handedness = "") {
   if (!controllerGrip) return;
-  const normalizedHandedness = normalizeXrHandedness(handedness) || "right";
+  const normalizedHandedness = normalizeXrHandedness(handedness);
+  if (!normalizedHandedness) return;
   const expectedModelPath = getQuestControllerModelPath(normalizedHandedness);
   const currentModelPath = String(controllerGrip.userData.questControllerModelPath || "");
   const needsReload =
@@ -2895,7 +2882,7 @@ function hasVisibleQuestHandMesh(handNode) {
 
 function updateQuestHandSkeletonFallbacks() {
   if (!renderer?.xr?.isPresenting || vrModeState.value !== "vr_hand_mode") return;
-  const { tmpPosition, tmpFrom, tmpTo, tmpMid, tmpDirection, tmpQuaternion, yAxis } =
+  const { tmpPosition, tmpFrom, tmpTo, tmpMid, tmpDirection, tmpQuaternion, tmpZero, yAxis } =
     questHandFallbackTemps;
   Object.values(xrVisualNodes.hands).forEach((handNode) => {
     if (!handNode) return;
@@ -2977,7 +2964,7 @@ function updateQuestHandSkeletonFallbacks() {
         const to = jointMeshes[toName];
         const fromVisible = Boolean(from?.visible);
         const toVisible = Boolean(to?.visible);
-        const fromPos = fromVisible ? from.position : new THREE.Vector3();
+        const fromPos = fromVisible ? from.position : tmpZero;
         const toPos = toVisible ? to.position : fromPos;
         positions.setXYZ(offset, fromPos.x, fromPos.y, fromPos.z);
         positions.setXYZ(offset + 1, toPos.x, toPos.y, toPos.z);
@@ -3397,6 +3384,7 @@ async function enterVrMode() {
   try {
     const prereqOkAtClick = Boolean(networkPrereqOk.value);
     const preferHandTracking = selectedVrInputMode.value === "hand";
+    void preloadQuestControllerModels();
     const xrStatus = await ensureQuestXRSession({ preferHandTracking });
     if (!xrStatus.ready) {
       vrErrorMessage.value = describeVrEnterFailure(xrStatus.reason, xrStatus.detail);
@@ -6631,6 +6619,7 @@ const questHandFallbackTemps = {
   tmpMid: new THREE.Vector3(),
   tmpDirection: new THREE.Vector3(),
   tmpQuaternion: new THREE.Quaternion(),
+  tmpZero: new THREE.Vector3(),
   yAxis: new THREE.Vector3(0, 1, 0),
 };
 const questControllerPoseWorldPosition = new THREE.Vector3();

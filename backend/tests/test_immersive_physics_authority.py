@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 import asyncio
+import json
+import xml.etree.ElementTree as ET
 from copy import deepcopy
-from math import pi, sqrt
+from math import cos, pi, sin, sqrt
 from unittest.mock import patch
 
 from backend.sim.simulation import REPO_ROOT, SimulationCore
@@ -81,6 +83,57 @@ class ImmersivePhysicsAuthorityTest(unittest.TestCase):
         self.assertIsNone(sim._attached_object_rel_quaternion)
         self.assertFalse(sim._scene_objects_template["wrench_01"]["attached_to_gripper"])
 
+    def test_all_control_sources_disable_legacy_grasp_attachment_even_when_env_enabled(self) -> None:
+        sim = self._make_sim()
+        sim._source = "desktop_manual"
+        sim._last_input_source = "slider"
+        sim._attached_object_id = "wrench_01"
+        sim._attached_object_rel_position = [0.0, 0.0, 0.0]
+        sim._attached_object_rel_quaternion = [1.0, 0.0, 0.0, 0.0]
+        sim._scene_objects_template = {
+            "wrench_01": {
+                "position": [0.0, 0.0, 0.0],
+                "quaternion": [1.0, 0.0, 0.0, 0.0],
+                "attached_to_gripper": True,
+            }
+        }
+
+        with patch("backend.sim.simulation.GRASP_ASSIST_MODE", "enabled"):
+            self.assertFalse(sim._allows_grasp_assist_locked())
+            sim._update_grasp_assist_locked(forward=False)
+
+        self.assertIsNone(sim._attached_object_id)
+        self.assertIsNone(sim._attached_object_rel_position)
+        self.assertIsNone(sim._attached_object_rel_quaternion)
+        self.assertFalse(sim._scene_objects_template["wrench_01"]["attached_to_gripper"])
+
+    def test_legacy_grasp_attach_helpers_are_defensive_noops(self) -> None:
+        sim = self._make_sim()
+        sim._scene_objects_template = {
+            "wrench_01": {
+                "position": [1.0, 2.0, 3.0],
+                "quaternion": [1.0, 0.0, 0.0, 0.0],
+                "attached_to_gripper": False,
+            }
+        }
+
+        attached = sim._attach_object_to_gripper_locked(
+            "wrench_01",
+            {
+                "position": [0.0, 0.0, 0.0],
+                "quaternion": [1.0, 0.0, 0.0, 0.0],
+            },
+        )
+        sim._attached_object_id = "wrench_01"
+        sim._attached_object_rel_position = [0.0, 0.0, 0.0]
+        sim._attached_object_rel_quaternion = [1.0, 0.0, 0.0, 0.0]
+        sim._follow_attached_object_locked(forward=False)
+
+        self.assertFalse(attached)
+        self.assertIsNone(sim._attached_object_id)
+        self.assertEqual(sim._scene_objects_template["wrench_01"]["position"], [1.0, 2.0, 3.0])
+        self.assertFalse(sim._scene_objects_template["wrench_01"]["attached_to_gripper"])
+
     def test_motion_state_omits_full_object_payload_from_high_rate_stream(self) -> None:
         sim = self._make_sim()
         sim._objects_state = {
@@ -108,6 +161,115 @@ class ImmersivePhysicsAuthorityTest(unittest.TestCase):
         self.assertTrue(sim._object_reset_policy["wrench_01"].get("random_yaw"))
         self.assertTrue(sim._object_reset_policy["screwdriver_01"].get("random_yaw"))
         self.assertTrue(sim._object_reset_policy["pliers_01"].get("random_yaw"))
+
+    def test_toolbox_slots_are_defined_in_mujoco_local_collision_space(self) -> None:
+        catalog = json.loads((REPO_ROOT / "shared" / "tool_catalog.json").read_text(encoding="utf-8"))
+        manifest = json.loads((REPO_ROOT / "shared" / "scene_manifest.json").read_text(encoding="utf-8"))
+        toolbox = next(obj for obj in manifest["objects"] if obj["id"] == "toolbox")
+        proxies = {proxy["name"]: proxy for proxy in toolbox["physics"]["collision_proxies"]}
+        left_wall = proxies["toolbox_left_wall_collision"]
+        right_wall = proxies["toolbox_right_wall_collision"]
+        front_wall = proxies["toolbox_front_wall_collision"]
+        back_wall = proxies["toolbox_back_wall_collision"]
+        bottom = proxies["toolbox_bottom_collision"]
+
+        inner_x_min = left_wall["position"][0] + left_wall["size"][0]
+        inner_x_max = right_wall["position"][0] - right_wall["size"][0]
+        inner_y_min = front_wall["position"][1] + front_wall["size"][1]
+        inner_y_max = back_wall["position"][1] - back_wall["size"][1]
+        floor_top_z = bottom["position"][2] + bottom["size"][2]
+        wall_top_z = left_wall["position"][2] + left_wall["size"][2]
+
+        for slot in catalog["toolbox_slots"]:
+            with self.subTest(slot=slot["slot_id"]):
+                self.assertEqual(slot.get("frame"), "toolbox_local")
+                position = slot["position"]
+                size = slot["size"]
+                margin = float(slot.get("collision_margin_m", 0.0))
+                self.assertGreaterEqual(position[0] - size[0] * 0.5, inner_x_min + margin)
+                self.assertLessEqual(position[0] + size[0] * 0.5, inner_x_max - margin)
+                self.assertGreaterEqual(position[1] - size[1] * 0.5, inner_y_min + margin)
+                self.assertLessEqual(position[1] + size[1] * 0.5, inner_y_max - margin)
+                self.assertGreaterEqual(position[2] - size[2] * 0.5, floor_top_z + margin)
+                self.assertLessEqual(position[2] + size[2] * 0.5, wall_top_z - margin)
+
+    def test_tool_initial_collision_proxies_start_clear_of_tabletop(self) -> None:
+        manifest = json.loads((REPO_ROOT / "shared" / "scene_manifest.json").read_text(encoding="utf-8"))
+        objects = {obj["id"]: obj for obj in manifest["objects"]}
+        rack = objects["rack"]
+        tabletop = next(proxy for proxy in rack["physics"]["collision_proxies"] if proxy["name"] == "rack_tabletop_collision")
+        tabletop_y = rack["transform"]["position"][1] + tabletop["position"][1] + tabletop["size"][1]
+
+        for obj in manifest["objects"]:
+            if obj.get("object_type") != "tool":
+                continue
+            with self.subTest(obj_id=obj["id"]):
+                min_y = self._min_frontend_collision_y(obj)
+                self.assertGreaterEqual(
+                    min_y - tabletop_y,
+                    0.002,
+                    "工具初始碰撞体必须略高于桌面，避免 MuJoCo 初始穿透后把零件弹起/翻起。",
+                )
+
+    def test_tool_manifest_positions_match_mujoco_xml_initial_positions(self) -> None:
+        manifest = json.loads((REPO_ROOT / "shared" / "scene_manifest.json").read_text(encoding="utf-8"))
+        for obj in manifest["objects"]:
+            if obj.get("object_type") != "tool":
+                continue
+            with self.subTest(obj_id=obj["id"]):
+                xml_path = REPO_ROOT / obj["physics"]["source"]
+                body = ET.parse(xml_path).getroot().find(f".//body[@name='{obj['id']}']")
+                self.assertIsNotNone(body)
+                xml_pos = [float(value) for value in body.attrib["pos"].split()]
+                frontend_pos = obj["transform"]["position"]
+                expected_backend = [frontend_pos[0], -frontend_pos[2], frontend_pos[1] + 0.5]
+                for actual, expected in zip(xml_pos, expected_backend):
+                    self.assertAlmostEqual(actual, expected, places=6)
+
+    def _min_frontend_collision_y(self, obj: dict) -> float:
+        base = obj["transform"]["position"]
+        rotation = obj["transform"].get("rotation_rpy", [0.0, 0.0, 0.0])
+        min_y = float("inf")
+        for proxy in obj["physics"].get("collision_proxies", []):
+            for point in self._proxy_points(proxy):
+                rotated = self._rotate_xyz(point, rotation)
+                min_y = min(min_y, float(base[1]) + rotated[1])
+        return min_y
+
+    def _proxy_points(self, proxy: dict) -> list[list[float]]:
+        if proxy.get("type") == "box":
+            return self._box_points(proxy["position"], proxy["size"])
+        if proxy.get("type") == "capsule":
+            radius = float(proxy["size"][0])
+            fromto = proxy["fromto"]
+            return self._box_points(fromto[0:3], [radius, radius, radius]) + self._box_points(
+                fromto[3:6],
+                [radius, radius, radius],
+            )
+        return []
+
+    def _box_points(self, center: list[float], half_size: list[float]) -> list[list[float]]:
+        return [
+            [
+                float(center[0]) + sx * float(half_size[0]),
+                float(center[1]) + sy * float(half_size[1]),
+                float(center[2]) + sz * float(half_size[2]),
+            ]
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ]
+
+    def _rotate_xyz(self, point: list[float], rotation: list[float]) -> list[float]:
+        x, y, z = [float(value) for value in point]
+        rx, ry, rz = [float(value) for value in rotation[:3]]
+        cy, sy = cos(rx), sin(rx)
+        y, z = y * cy - z * sy, y * sy + z * cy
+        cy, sy = cos(ry), sin(ry)
+        x, z = x * cy + z * sy, -x * sy + z * cy
+        cy, sy = cos(rz), sin(rz)
+        x, y = x * cy - y * sy, x * sy + y * cy
+        return [x, y, z]
 
     def test_random_tool_reset_preserves_table_height_and_applies_yaw(self) -> None:
         sim = self._make_sim()

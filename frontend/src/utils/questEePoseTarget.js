@@ -212,6 +212,14 @@ export function clampVecStep(previous, next, maxStep) {
   return vecAdd(prev, clampVecMagnitude(delta, maxStep));
 }
 
+function clampControlOffset(vector, cfg) {
+  const delta = cloneVec3(vector) || [0, 0, 0];
+  const horizontal = clampVecMagnitude([delta[0], delta[1], 0], cfg.max_control_offset);
+  const verticalMax = Math.max(0, Number(cfg.max_vertical_control_offset) || cfg.max_control_offset);
+  // 水平仍保持保守球形限幅；垂直轴独立限幅，避免下探抓取薄工具时被横向安全半径过早截断。
+  return [horizontal[0], horizontal[1], clamp(delta[2], -verticalMax, verticalMax)];
+}
+
 export function applyVecDeadzone(vector, deadzone) {
   const magnitude = vecNorm(vector);
   const dz = Math.max(0, Number(deadzone) || 0);
@@ -305,6 +313,11 @@ export function createQuestEePoseTargetTracker(options = {}) {
     max_control_offset: Number.isFinite(Number(options.max_control_offset))
       ? Number(options.max_control_offset)
       : 0.42,
+    max_vertical_control_offset: Number.isFinite(Number(options.max_vertical_control_offset))
+      ? Number(options.max_vertical_control_offset)
+      : Number.isFinite(Number(options.max_control_offset))
+        ? Number(options.max_control_offset)
+        : 0.42,
     movement_smoothing: Number.isFinite(Number(options.movement_smoothing))
       ? Number(options.movement_smoothing)
       : 0.72,
@@ -445,10 +458,7 @@ export function createQuestEePoseTargetTracker(options = {}) {
       const anchorBackendPosition = cloneVec3(anchorInputBackendPose.position) || [0, 0, 0];
       const currentBackendPosition = cloneVec3(backendInputPose.position) || anchorBackendPosition;
       const positionDelta = vecSub(currentBackendPosition, anchorBackendPosition);
-      const scaledBackendDelta = clampVecMagnitude(
-        vecScale(positionDelta, movementGain),
-        cfg.max_control_offset
-      );
+      const scaledBackendDelta = clampControlOffset(vecScale(positionDelta, movementGain), cfg);
       const scaledInputPosition = vecAdd(anchorBackendPosition, scaledBackendDelta);
       desiredPosition = vecAdd(
         cloneVec3(anchorEePose.position) || desiredPosition,
@@ -488,10 +498,7 @@ export function createQuestEePoseTargetTracker(options = {}) {
         cfg.movement_smoothing
       );
     } else if (anchorEePose) {
-      const backendDelta = clampVecMagnitude(
-        frontendDeltaToBackend(vecScale(rawInputDelta, movementGain)),
-        cfg.max_control_offset
-      );
+      const backendDelta = clampControlOffset(frontendDeltaToBackend(vecScale(rawInputDelta, movementGain)), cfg);
       smoothedBackendDelta = lowPassVec(
         smoothedBackendDelta,
         backendDelta,
