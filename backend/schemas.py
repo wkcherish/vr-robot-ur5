@@ -82,6 +82,10 @@ class StepRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     model_path: str | None = None
+    reload_model: bool = True
+    preserve_vr_state: bool = False
+    settle_steps: int | None = Field(default=None, ge=0, le=1000)
+    randomize_scene_objects: bool = False
 
     class Config:
         extra = "ignore"

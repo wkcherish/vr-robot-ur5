@@ -158,9 +158,7 @@
         ]
       },
       "reset_policy": {
-        "mode": "random_in_region",
-        "region_id": "toolbox_workspace_region",
-        "preserve_height": true
+        "mode": "fixed"
       },
       "notes": "Target container for tool sorting."
     },
@@ -214,7 +212,8 @@
       "reset_policy": {
         "mode": "random_in_region",
         "region_id": "wrench_workspace_region",
-        "preserve_height": true
+        "preserve_height": true,
+        "random_yaw": true
       }
     },
     {
@@ -260,7 +259,8 @@
       "reset_policy": {
         "mode": "random_in_region",
         "region_id": "screwdriver_workspace_region",
-        "preserve_height": true
+        "preserve_height": true,
+        "random_yaw": true
       }
     },
     {
@@ -320,7 +320,8 @@
       "reset_policy": {
         "mode": "random_in_region",
         "region_id": "pliers_workspace_region",
-        "preserve_height": true
+        "preserve_height": true,
+        "random_yaw": true
       }
     }
   ],

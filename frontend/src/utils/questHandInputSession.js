@@ -8,6 +8,7 @@ import {
 
 export const state = {
   running: false,
+  loopGeneration: 0,
   session: null,
   referenceSpace: null,
   status: { ready: false, reason: "not_started" },

@@ -1,5 +1,28 @@
 export const CLIENT_PHYSICS_DIAGNOSTICS_MIN_INTERVAL_MS = 250;
 
+export function shouldContinueXrInputLoop({
+  running,
+  generation,
+  activeGeneration,
+  frameSession,
+  session,
+} = {}) {
+  return Boolean(
+    running === true &&
+    generation === activeGeneration &&
+    frameSession &&
+    session &&
+    frameSession === session
+  );
+}
+
+export function shouldSendRealtimeCommand({ nowMs, lastSentAtMs, minIntervalMs = 24 } = {}) {
+  const now = Number(nowMs);
+  const lastSent = Number(lastSentAtMs);
+  const interval = Math.max(1, Number(minIntervalMs) || 24);
+  return Number.isFinite(now) && (!Number.isFinite(lastSent) || now - lastSent >= interval);
+}
+
 function clampNumber(value, min, max) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return min;

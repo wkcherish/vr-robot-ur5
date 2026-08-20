@@ -644,6 +644,7 @@ class SimulationCore:
         self._arm_joint_names = list(DEFAULT_ARM_JOINT_NAMES)
         self._home_arm_qpos = list(DEFAULT_HOME_QPOS)
         self._scene_objects_template: dict[str, dict[str, Any]] = {}
+        self._scene_objects_manifest_template: dict[str, dict[str, Any]] = {}
         self._object_reset_policy: dict[str, dict[str, Any]] = {}
         self._spawn_regions: dict[str, dict[str, Any]] = {}
         self._camera_sensor_config_path: str | None = None
@@ -1029,10 +1030,31 @@ class SimulationCore:
             }
             return self._build_state_locked(refresh_camera=refresh_camera)
 
-    async def reset(self, model_path: str | None = None) -> dict[str, Any]:
+    async def reset(
+        self,
+        model_path: str | None = None,
+        reload_model: bool = True,
+        preserve_vr_state: bool = False,
+        settle_steps: int | None = None,
+        randomize_scene_objects: bool = False,
+    ) -> dict[str, Any]:
         async with self._lock:
-            self._load_model(model_path)
-            self._reset_state_locked()
+            preserved_vr_state = deepcopy(self._vr_state) if preserve_vr_state else None
+            if reload_model or model_path is not None:
+                self._load_model(model_path)
+            self._reset_state_locked(
+                settle_steps=settle_steps,
+                randomize_scene_objects=randomize_scene_objects,
+            )
+            if isinstance(preserved_vr_state, dict):
+                # 采集流程 reset 只复原机械臂/工具，不应把 Quest 沉浸式控制状态打回桌面模式。
+                self._vr_state.update(preserved_vr_state)
+                owner = str(self._vr_state.get("control_owner") or "").strip()
+                if owner in {"quest3_controller", "quest3_hand"}:
+                    self._source = owner
+                    self._last_input_source = owner
+                    selected_group = str(self._vr_state.get("selected_joint_group") or "").strip()
+                    self._last_selected_joint_group = selected_group or self._last_selected_joint_group
             return self._build_state_locked()
 
     async def get_state(self, refresh_camera: bool = True) -> dict[str, Any]:
@@ -1204,6 +1226,7 @@ class SimulationCore:
             self._home_arm_qpos = list(DEFAULT_HOME_QPOS)
 
         self._scene_objects_template = {}
+        self._scene_objects_manifest_template = {}
         self._object_reset_policy = {}
         for obj in self._manifest_data.get("objects", []):
             obj_id = str(obj.get("id", "")).strip()
@@ -1218,6 +1241,11 @@ class SimulationCore:
             self._scene_objects_template[obj_id] = {
                 "position": backend_position,
                 "quaternion": backend_quaternion,
+                "attached_to_gripper": False,
+            }
+            self._scene_objects_manifest_template[obj_id] = {
+                "position": list(backend_position),
+                "quaternion": list(backend_quaternion),
                 "attached_to_gripper": False,
             }
             reset_policy = obj.get("reset_policy", {})
@@ -2426,7 +2454,14 @@ class SimulationCore:
         if scene_changed and _mujoco is not None:
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
-    def _reset_state_locked(self) -> None:
+    def _restore_manifest_scene_objects_locked(self) -> None:
+        self._scene_objects_template = deepcopy(self._scene_objects_manifest_template)
+
+    def _reset_state_locked(
+        self,
+        settle_steps: int | None = None,
+        randomize_scene_objects: bool = False,
+    ) -> None:
         self._arm_qpos = list(self._home_arm_qpos)
         self._arm_qvel = [0.0 for _ in self._arm_qpos]
         self._arm_command_qpos = list(self._home_arm_qpos)
@@ -2480,9 +2515,16 @@ class SimulationCore:
             )
             _mujoco.mj_forward(self._mj_model, self._mj_data)
 
+        # 先回到 manifest 定义的固定初始位置，再按调用方要求随机化工具。
+        self._restore_manifest_scene_objects_locked()
         self._sync_scene_objects_to_model_locked()
-        self._apply_object_reset_policy_locked()
-        self._settle_scene_locked()
+        if randomize_scene_objects:
+            self._apply_object_reset_policy_locked()
+        settle_locked_objects = self._get_scene_object_ids_to_lock_during_settle(randomize_scene_objects)
+        self._settle_scene_locked(
+            settle_steps=settle_steps,
+            locked_scene_object_ids=settle_locked_objects,
+        )
         self._hold_current_pose_targets_locked()
         self._objects_state = self._collect_objects_state_locked()
         self._source = "manual"
@@ -2534,7 +2576,22 @@ class SimulationCore:
             return
         self._mj_data.act[act_addr] = float(target)
 
-    def _settle_scene_locked(self) -> None:
+    def _get_scene_object_ids_to_lock_during_settle(self, randomize_scene_objects: bool) -> set[str]:
+        if not randomize_scene_objects:
+            return set(self._scene_objects_template.keys())
+
+        locked_object_ids: set[str] = set()
+        for obj_id, policy in self._object_reset_policy.items():
+            mode = str(policy.get("mode", "fixed")).strip().lower()
+            if mode == "fixed":
+                locked_object_ids.add(obj_id)
+        return locked_object_ids
+
+    def _settle_scene_locked(
+        self,
+        settle_steps: int | None = None,
+        locked_scene_object_ids: set[str] | None = None,
+    ) -> None:
         if not self._using_mujoco_model() or self._mj_model is None or self._mj_data is None or _mujoco is None:
             return
 
@@ -2554,9 +2611,32 @@ class SimulationCore:
             if qvel_addr is not None:
                 preserved_qvel.append(int(qvel_addr))
 
+        preserved_object_qpos: list[tuple[int, list[float]]] = []
+        preserved_object_qvel: list[int] = []
+        for obj_id in locked_scene_object_ids or set():
+            qpos_addr = self._object_freejoint_qpos_addr.get(obj_id)
+            if qpos_addr is None:
+                continue
+            qpos_addr_int = int(qpos_addr)
+            preserved_object_qpos.append(
+                (qpos_addr_int, [float(value) for value in self._mj_data.qpos[qpos_addr_int : qpos_addr_int + 7]])
+            )
+            qvel_addr = self._object_freejoint_dof_addr.get(obj_id)
+            if qvel_addr is not None:
+                preserved_object_qvel.append(int(qvel_addr))
+
+        def restore_locked_scene_objects() -> None:
+            # 固定对象在 settle 期间保持 manifest/采集锚点位姿，避免工具箱被碰撞或重力带偏。
+            for qpos_addr, values in preserved_object_qpos:
+                self._mj_data.qpos[qpos_addr : qpos_addr + 7] = values
+            for qvel_addr in preserved_object_qvel:
+                self._mj_data.qvel[qvel_addr : qvel_addr + 6] = [0.0] * 6
+
         ctrl_snapshot = self._mj_data.ctrl.copy() if self._mj_data.ctrl is not None and len(self._mj_data.ctrl) > 0 else None
-        for _ in range(max(0, int(SCENE_SETTLE_STEPS))):
+        step_count = SCENE_SETTLE_STEPS if settle_steps is None else int(settle_steps)
+        for _ in range(max(0, step_count)):
             _mujoco.mj_step(self._mj_model, self._mj_data)
+            restore_locked_scene_objects()
             for qpos_addr, qpos_value in preserved_qpos:
                 self._mj_data.qpos[qpos_addr] = qpos_value
             for qvel_addr in preserved_qvel:
@@ -2564,6 +2644,7 @@ class SimulationCore:
             if ctrl_snapshot is not None:
                 self._mj_data.ctrl[:] = ctrl_snapshot
             _mujoco.mj_forward(self._mj_model, self._mj_data)
+        restore_locked_scene_objects()
         for qpos_addr, qpos_value in preserved_qpos:
             self._mj_data.qpos[qpos_addr] = qpos_value
         for qvel_addr in preserved_qvel:
@@ -2615,12 +2696,34 @@ class SimulationCore:
                 else sampled
             )
 
+            template_quaternion = [1.0, 0.0, 0.0, 0.0]
+            if isinstance(template_state, dict):
+                raw_quaternion = template_state.get("quaternion", template_quaternion)
+                if isinstance(raw_quaternion, list) and len(raw_quaternion) >= 4:
+                    template_quaternion = _normalize_quaternion(raw_quaternion)
+
+            quaternion = list(template_quaternion)
+            if bool(policy.get("random_yaw", False)):
+                yaw_range = policy.get("yaw_range_rad", [-math.pi, math.pi])
+                yaw_min = -math.pi
+                yaw_max = math.pi
+                if isinstance(yaw_range, list) and len(yaw_range) >= 2:
+                    try:
+                        yaw_min = float(yaw_range[0])
+                        yaw_max = float(yaw_range[1])
+                    except (TypeError, ValueError):
+                        yaw_min = -math.pi
+                        yaw_max = math.pi
+                # 工具只绕后端竖直 Z 轴随机朝向，保持贴桌面和平放姿态，避免出现悬空或翻转。
+                yaw = random.uniform(min(yaw_min, yaw_max), max(yaw_min, yaw_max))
+                quaternion = _normalize_quaternion(_quaternion_multiply(_rpy_to_quaternion(0.0, 0.0, yaw), template_quaternion))
+
             if obj_id in self._scene_objects_template:
                 self._scene_objects_template[obj_id]["position"] = list(backend_position)
+                self._scene_objects_template[obj_id]["quaternion"] = list(quaternion)
                 self._scene_objects_template[obj_id]["attached_to_gripper"] = False
 
             if using_mujoco and obj_id in self._scene_objects_template:
-                quaternion = self._scene_objects_template[obj_id].get("quaternion", [1.0, 0.0, 0.0, 0.0])
                 if isinstance(quaternion, list) and len(quaternion) >= 4:
                     if self._set_object_pose_locked(obj_id, backend_position, quaternion, reset_velocity=True):
                         scene_changed = True

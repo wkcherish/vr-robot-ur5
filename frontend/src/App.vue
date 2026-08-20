@@ -123,7 +123,7 @@
           </div>
           <button
             class="scene-restore-button"
-            :disabled="sceneRestorePending || datasetEpisodeActive || datasetEpisodeInFlight || datasetAutoCollecting"
+            :disabled="desktopSceneRestoreDisabled"
             @click="restoreSceneToInitialState"
           >
             {{ sceneRestorePending ? "复原中..." : "恢复初始场景" }}
@@ -258,6 +258,13 @@
                   L T={{ Number(questControllerRawInput.left?.trigger || 0).toFixed(2) }},
                   R G={{ Number(questControllerRawInput.right?.grip || 0).toFixed(2) }},
                   R T={{ Number(questControllerRawInput.right?.trigger || 0).toFixed(2) }}
+                </span>
+              </div>
+              <div class="network-status-row" v-if="questControllerRawInput && questControllerRawInput.left">
+                <span class="network-label">采集快捷键:</span>
+                <span class="network-value">
+                  Y开始={{ Number(questControllerRawInput.left?.dataset_start || 0).toFixed(0) }},
+                  X复原={{ Number(questControllerRawInput.left?.dataset_reset || 0).toFixed(0) }}
                 </span>
               </div>
               <div class="network-status-row" v-if="questControllerNormalizedInput">
@@ -445,6 +452,18 @@
             <div class="network-status-row">
               <span class="network-label">控制模式:</span>
               <span class="network-value">{{ datasetControlModeText }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">采集计划:</span>
+              <span class="network-value">{{ datasetCollectionPlanText }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">当前进度:</span>
+              <span class="network-value">{{ datasetCurrentEpisodeProgressText }}</span>
+            </div>
+            <div class="network-status-row">
+              <span class="network-label">本地保存:</span>
+              <span class="network-value dataset-save-path">{{ datasetLocalSaveText }}</span>
             </div>
             <div class="network-status-row">
               <span class="network-label">最近错误:</span>
@@ -771,11 +790,22 @@ import { runtimeConfig, getDeviceCategory } from "./utils/runtimeConfig.js";
 import { get, post } from "./utils/network.js";
 import {
   getSceneJointInterpolationAlphaForMode,
+  shouldSendRealtimeCommand,
   shouldApplyBackendPoseImmediately,
   shouldRunClientPhysicsDiagnostics,
 } from "./utils/immersiveStateHotPath.js";
 import { readQuestControllerSnapshot } from "./utils/questControllerInput.js";
 import { createQuestControllerTeleop } from "./utils/questControllerTeleop.js";
+import { resolveDatasetControllerShortcutAction } from "./utils/datasetControllerShortcuts.js";
+import {
+  buildDatasetPrecheckUiStatus,
+  shouldClearRecoveredWebSocketError,
+} from "./utils/datasetPrecheckStatus.js";
+import {
+  buildDatasetSceneResetPayload,
+  buildDesktopSceneRestorePayload,
+  shouldDisableDesktopSceneRestore,
+} from "./utils/sceneRestoreControl.js";
 import {
   startQuestHandInput,
   stopQuestHandInput,
@@ -796,6 +826,11 @@ const selectedView = ref("perspective"); // 默认选择透视视角
 const sceneRestorePending = ref(false);
 const sceneRestoreStatusMessage = ref("碰撞后可一键恢复 MuJoCo 与前端初始场景。");
 const sceneRestoreStatusTone = ref("idle");
+const desktopSceneRestoreDisabled = computed(() =>
+  shouldDisableDesktopSceneRestore({
+    sceneRestorePending: sceneRestorePending.value,
+  })
+);
 
 // 各面板显示状态控制
 const showSlider = ref(false); // 滑块面板默认不显示
@@ -917,9 +952,8 @@ const UI_REACTIVE_MOTION_MIN_INTERVAL_MS = 250;
 const SYNC_STATS_MIN_INTERVAL_MS = 250;
 const VR_STATE_SYNC_MIN_INTERVAL_MS = 180;
 const QUEST_TELEOP_UI_MIN_INTERVAL_MS = 125;
-// 16ms caps teleop at about 62.5Hz, which is visibly below Quest's common
-// 72Hz refresh. Use a slightly tighter send interval to reduce step feeling.
-const VR_COMMAND_MIN_INTERVAL_MS = 16;
+// 控制采样仍按 XR 帧运行，但命令发送限频到约 42Hz，避免后端物理队列过载。
+const VR_COMMAND_MIN_INTERVAL_MS = 24;
 const VR_COMMAND_STEPS = 1;
 const VR_MODE_TRANSITION_GUARD_MS = 420;
 const VR_CONTROL_WATCHDOG_INTERVAL_MS = 33;
@@ -1039,6 +1073,7 @@ const datasetEpisodeInFlight = ref(false);
 const datasetActiveEpisodeId = ref("");
 const datasetLastEpisodeId = ref("");
 const datasetLastEpisodeDir = ref("");
+const datasetRootPath = ref("");
 const datasetLastMessage = ref("");
 const datasetLastError = ref("");
 const datasetResultStatus = ref("success");
@@ -1055,6 +1090,8 @@ const datasetAutoVoiceText = ref("");
 const datasetVoiceEnabled = ref(true);
 const datasetAutoDelayTimer = ref(null);
 const datasetControllerNextWasPressed = ref(false);
+const datasetControllerShortcutLatch = ref({ start: false, reset: false });
+const lastDatasetControllerShortcutAt = ref(0);
 const lastDatasetControllerNextAt = ref(0);
 let datasetAutoDelayResolver = null;
 
@@ -1265,6 +1302,30 @@ const datasetAutoStatusText = computed(() => {
     return `${datasetAutoStatus.value} | episode${datasetAutoEpisodeIndex.value}`;
   }
   return datasetAutoStatus.value || "未启动";
+});
+
+const datasetConfiguredEpisodeCountText = computed(() => {
+  const maxEpisodes = normalizeDatasetAutoMaxEpisodes(datasetAutoMaxEpisodes.value);
+  return maxEpisodes > 0 ? `${maxEpisodes}轮` : "不限轮(手动停止)";
+});
+
+const datasetCurrentEpisodeProgressText = computed(() => {
+  const maxEpisodes = normalizeDatasetAutoMaxEpisodes(datasetAutoMaxEpisodes.value);
+  const current = Number(datasetAutoEpisodeIndex.value || 0) + 1;
+  if (datasetAutoCollecting.value) {
+    return maxEpisodes > 0 ? `第${current}/${maxEpisodes}轮` : `第${current}轮`;
+  }
+  return maxEpisodes > 0 ? `计划${maxEpisodes}轮` : "未开始";
+});
+
+const datasetLocalSaveText = computed(() => {
+  if (datasetLastEpisodeDir.value) return datasetLastEpisodeDir.value;
+  return datasetRootPath.value || "启动后由后端返回本地保存目录";
+});
+
+const datasetCollectionPlanText = computed(() => {
+  const durationSec = normalizeDatasetAutoSeconds(datasetAutoEpisodeDurationSec.value, 30, 3, 3600);
+  return `${datasetConfiguredEpisodeCountText.value}，每轮最多${durationSec}秒，按左手柄X可提前完成本轮并复原场景`;
 });
 
 // 兼容旧 UI 关节名(link*_joint)与当前 URDF 关节名
@@ -1570,6 +1631,9 @@ function syncDatasetInstructionFromTemplate(force = false) {
 
 function applyDatasetTemplatesPayload(payload) {
   if (!payload || typeof payload !== "object") return;
+  if (payload.dataset_root) {
+    datasetRootPath.value = String(payload.dataset_root || "");
+  }
   if (Array.isArray(payload.task_templates) && payload.task_templates.length > 0) {
     datasetTemplates.value = payload.task_templates;
   }
@@ -1600,21 +1664,51 @@ function applyDatasetTemplatesPayload(payload) {
 
 function applyDatasetPrecheckPayload(payload) {
   datasetPrecheck.value = payload || null;
-  datasetRecordingReady.value = Boolean(payload?.recording_ready);
+  const uiStatus = buildDatasetPrecheckUiStatus(payload, {
+    websocketConnected: websocketManager.isConnected,
+  });
+  datasetRecordingReady.value = uiStatus.recordingReady;
+  if (payload?.dataset_root) {
+    datasetRootPath.value = String(payload.dataset_root || "");
+  }
   const activeEpisode = String(payload?.active_episode_id || "").trim();
   datasetActiveEpisodeId.value = activeEpisode;
-  const summary = Array.isArray(payload?.summary) ? payload.summary : [];
-  if (summary.length > 0) {
-    datasetLastError.value = summary[0];
-  } else {
+  datasetLastError.value = uiStatus.lastError;
+  if (payload) {
+    recordingCheckStatus.value = uiStatus.recordingStatus;
+    recordingCheckMessage.value = uiStatus.recordingMessage;
+  }
+}
+
+function clearRecoveredWebSocketErrors() {
+  // 前端 WebSocket 重连成功后，只清理后端旧 precheck/VR 状态里的连接错误，避免遮盖其它真实采集问题。
+  if (shouldClearRecoveredWebSocketError(datasetLastError.value, websocketManager.isConnected)) {
     datasetLastError.value = "";
   }
-  if (datasetRecordingReady.value) {
-    recordingCheckStatus.value = "ok";
-    recordingCheckMessage.value = "precheck 已通过";
-  } else if (payload) {
-    recordingCheckStatus.value = "error";
-    recordingCheckMessage.value = summary[0] || "precheck 未通过";
+  if (shouldClearRecoveredWebSocketError(vrErrorMessage.value, websocketManager.isConnected)) {
+    vrErrorMessage.value = "";
+  }
+  if (shouldClearRecoveredWebSocketError(recordingCheckMessage.value, websocketManager.isConnected)) {
+    recordingCheckMessage.value = "WebSocket 已恢复，请重新执行 precheck。";
+  }
+}
+
+function getDatasetBackendErrorMessage(ready) {
+  if (ready) {
+    return "";
+  }
+  if (shouldClearRecoveredWebSocketError(datasetLastError.value, websocketManager.isConnected)) {
+    return "";
+  }
+  return datasetLastError.value;
+}
+
+function applyBackendVrErrorMessage(message) {
+  const nextMessage = String(message || "");
+  if (shouldClearRecoveredWebSocketError(nextMessage, websocketManager.isConnected)) {
+    vrErrorMessage.value = "";
+  } else {
+    vrErrorMessage.value = nextMessage;
   }
 }
 
@@ -1633,16 +1727,17 @@ async function runDatasetPrecheck() {
   try {
     const response = await get("/dataset/precheck/", { timeout: 6000 });
     applyDatasetPrecheckPayload(response?.data);
-    const ready = Boolean(response?.data?.recording_ready);
+    const ready = datasetRecordingReady.value;
+    const blockingMessage = datasetLastError.value || recordingCheckMessage.value;
     datasetLastMessage.value = ready
       ? "precheck 通过，可以开始正式录制。"
-      : "precheck 未通过，只允许 debug_trial。";
+      : (blockingMessage || "precheck 未通过，只允许 debug_trial。");
     syncVrStateToBackend({
       mode: vrModeState.value,
       source: vrControlOwner.value,
       selected_joint_group: vrSelectedJointGroup.value,
       recording_ready: ready,
-      error_message: ready ? "" : datasetLastError.value,
+      error_message: getDatasetBackendErrorMessage(ready),
     }, { force: true });
     return response?.data;
   } catch (error) {
@@ -1722,7 +1817,7 @@ async function startDatasetEpisode() {
     datasetActiveEpisodeId.value = String(data.episode_id || "");
     datasetLastEpisodeId.value = datasetActiveEpisodeId.value;
     datasetLastEpisodeDir.value = String(data.episode_dir || "");
-    datasetLastMessage.value = `episode 已开始: ${datasetActiveEpisodeId.value}`;
+    datasetLastMessage.value = `正在采集 ${datasetCurrentEpisodeProgressText.value}: ${datasetActiveEpisodeId.value}。完成动作后按左手柄X保存本轮并复原场景。`;
     return data;
   } catch (error) {
     datasetLastError.value = "episode 启动失败: " + (error?.message || error);
@@ -1755,7 +1850,7 @@ async function stopDatasetEpisode() {
     datasetLastEpisodeId.value = episodeId;
     datasetLastEpisodeDir.value = String(data.episode_dir || datasetLastEpisodeDir.value || "");
     datasetActiveEpisodeId.value = "";
-    datasetLastMessage.value = `episode 已停止并标记: ${datasetResultStatus.value}`;
+    datasetLastMessage.value = `episode 已保存到本地: ${datasetLastEpisodeDir.value || episodeId}`;
     applyDatasetPrecheckPayload(data.precheck);
     datasetActiveEpisodeId.value = "";
     return data;
@@ -1880,14 +1975,14 @@ async function restoreQuestModeAfterDatasetReset(inputMode) {
   await chooseVrInputMode(mode);
 }
 
-async function resetDatasetSceneForNextEpisode() {
+async function resetDatasetSceneForNextEpisode(options = {}) {
   const inputMode = getDatasetAutoInputMode();
-  datasetAutoStatus.value = "重置场景";
-  datasetLastMessage.value = "正在重置场景并随机工具位置...";
+  datasetAutoStatus.value = String(options.status_text || "重置场景");
+  datasetLastMessage.value = String(options.message || "正在重置场景并随机工具位置...");
 
   stopQuestControllerLoop();
   stopQuestHandLoop();
-  const response = await post("/sim/reset/", {}, { timeout: 12000 });
+  const response = await post("/sim/reset/", buildDatasetSceneResetPayload(), { timeout: 12000 });
   const data = response?.data || {};
   if (data.status !== "success") {
     throw new Error(data.message || "场景重置失败");
@@ -1908,8 +2003,75 @@ async function resetDatasetSceneForNextEpisode() {
   }
 
   await restoreQuestModeAfterDatasetReset(inputMode);
+  if (inputMode === "controller") {
+    suppressQuestControllerTransition({
+      duration_ms: 900,
+      require_neutral: true,
+      clear_queue: true,
+    });
+  }
   updateNetworkPrereq();
   return data;
+}
+
+async function resetDatasetSceneFromController({ afterEpisode = false } = {}) {
+  if (sceneRestorePending.value || datasetEpisodeInFlight.value || datasetAutoCollecting.value) return null;
+  if (datasetEpisodeActive.value) {
+    datasetLastError.value = "请先结束当前 episode，再执行场景复原。";
+    datasetLastMessage.value = datasetLastError.value;
+    return null;
+  }
+
+  sceneRestorePending.value = true;
+  sceneRestoreStatusTone.value = "idle";
+  sceneRestoreStatusMessage.value = "左手柄 X: 正在复原场景...";
+  receivedText.value = sceneRestoreStatusMessage.value;
+
+  try {
+    const data = await resetDatasetSceneForNextEpisode({
+      status_text: "手柄复原场景",
+      message: afterEpisode
+        ? "手柄 X: 当前轮已结束，正在复原场景并随机工具位置..."
+        : "手柄 X: 正在复原场景并随机工具位置...",
+    });
+    sceneRestoreStatusTone.value = "success";
+    sceneRestoreStatusMessage.value = "场景已复原，工具已在机械臂工作范围内重新随机摆放。";
+    datasetLastMessage.value = afterEpisode
+      ? "手柄 X: episode 已结束，场景已复原。"
+      : "手柄 X: 场景已复原。";
+    receivedText.value = sceneRestoreStatusMessage.value;
+    return data;
+  } catch (error) {
+    const message = error?.message || String(error);
+    sceneRestoreStatusTone.value = "error";
+    sceneRestoreStatusMessage.value = "手柄复原失败: " + message;
+    datasetLastError.value = sceneRestoreStatusMessage.value;
+    datasetLastMessage.value = sceneRestoreStatusMessage.value;
+    receivedText.value = sceneRestoreStatusMessage.value;
+    if (websocketManager.isConnected) {
+      websocketManager.requestState();
+    }
+    return null;
+  } finally {
+    sceneRestorePending.value = false;
+    checkWebSocketReady();
+    updateNetworkPrereq();
+  }
+}
+
+async function finishDatasetEpisodeAndResetFromController() {
+  if (!datasetEpisodeActive.value || datasetEpisodeInFlight.value || datasetAutoCollecting.value) return;
+  datasetLastError.value = "";
+  datasetLastMessage.value = "手柄 X: 正在结束当前 episode...";
+
+  const stopData = await stopDatasetEpisode();
+  if (stopData?.status !== "success") {
+    datasetLastError.value = stopData?.message || datasetLastError.value || "episode 停止失败";
+    datasetLastMessage.value = datasetLastError.value;
+    return;
+  }
+
+  await resetDatasetSceneFromController({ afterEpisode: true });
 }
 
 function startDatasetAutoCollection() {
@@ -1919,8 +2081,10 @@ function startDatasetAutoCollection() {
   datasetAutoEpisodeIndex.value = 0;
   datasetAutoStatus.value = "准备中";
   datasetLastError.value = "";
-  datasetLastMessage.value = "连续采集准备中...";
+  datasetLastMessage.value = `连续采集准备中: ${datasetCollectionPlanText.value}。数据将保存到本地目录 ${datasetRootPath.value || "后端默认数据集目录"}。`;
   datasetControllerNextWasPressed.value = false;
+  datasetControllerShortcutLatch.value = { start: false, reset: false };
+  lastDatasetControllerShortcutAt.value = 0;
   lastDatasetControllerNextAt.value = 0;
   datasetAutoEpisodeDurationSec.value = normalizeDatasetAutoSeconds(
     datasetAutoEpisodeDurationSec.value,
@@ -1944,6 +2108,7 @@ function stopDatasetAutoCollection() {
   datasetAutoStatus.value = "正在停止";
   datasetLastMessage.value = "正在停止连续采集...";
   datasetControllerNextWasPressed.value = false;
+  datasetControllerShortcutLatch.value = { start: false, reset: false };
   clearDatasetAutoDelay(true);
 }
 
@@ -1961,11 +2126,11 @@ function requestDatasetAutoNextFromController(nowMs = Date.now()) {
     return;
   }
   lastDatasetControllerNextAt.value = now;
-  datasetAutoStatus.value = datasetEpisodeActive.value ? "提前结束当前轮" : "跳过等待";
+  datasetAutoStatus.value = datasetEpisodeActive.value ? "完成当前轮" : "跳过等待";
   datasetLastMessage.value = datasetEpisodeActive.value
-    ? `手柄触发: 结束 episode${datasetAutoEpisodeIndex.value} 并进入下一轮`
-    : "手柄触发: 准备进入下一轮";
-  speakDatasetPrompt(datasetEpisodeActive.value ? "已收到，进入下一轮" : "已收到，准备下一轮");
+    ? `左手柄X: ${datasetCurrentEpisodeProgressText.value} 完成，正在保存并复原场景`
+    : "左手柄X: 跳过等待，准备下一轮";
+  speakDatasetPrompt(datasetEpisodeActive.value ? "本轮完成，正在保存并复原场景" : "准备下一轮");
   clearDatasetAutoDelay(true);
 }
 
@@ -1976,6 +2141,53 @@ function handleDatasetControllerNextButton(snapshot, nowMs = Date.now()) {
     requestDatasetAutoNextFromController(nowMs);
   }
   datasetControllerNextWasPressed.value = pressed;
+}
+
+function handleDatasetControllerShortcuts(snapshot, nowMs = Date.now()) {
+  const resolution = resolveDatasetControllerShortcutAction({
+    snapshot,
+    previousLatch: datasetControllerShortcutLatch.value,
+    nowMs,
+    lastActionAtMs: lastDatasetControllerShortcutAt.value,
+    autoCollecting: datasetAutoCollecting.value,
+    canStartCollection: datasetCanStartAutoCollection.value,
+    canStartEpisode: datasetCanStartEpisode.value && !datasetAutoCollecting.value,
+    episodeActive: datasetEpisodeActive.value,
+    canResetScene:
+      !sceneRestorePending.value &&
+      !datasetEpisodeInFlight.value &&
+      !datasetAutoCollecting.value,
+  });
+
+  datasetControllerShortcutLatch.value = resolution.nextLatch;
+  if (resolution.action === "none") return;
+
+  lastDatasetControllerShortcutAt.value = nowMs;
+  if (resolution.action === "start_episode") {
+    datasetLastMessage.value = "左手柄 Y: 开始当前 episode 采集。";
+    speakDatasetPrompt("开始采集");
+    void startDatasetEpisode();
+    return;
+  }
+  if (resolution.action === "start_collection") {
+    datasetLastMessage.value = `左手柄Y: 开始连续采集流程，${datasetCollectionPlanText.value}`;
+    speakDatasetPrompt(`开始连续采集，${datasetConfiguredEpisodeCountText.value}`);
+    startDatasetAutoCollection();
+    return;
+  }
+  if (resolution.action === "advance_collection") {
+    requestDatasetAutoNextFromController(nowMs);
+    return;
+  }
+  if (resolution.action === "finish_episode_and_reset") {
+    speakDatasetPrompt("结束本轮并复原场景");
+    void finishDatasetEpisodeAndResetFromController();
+    return;
+  }
+  if (resolution.action === "reset_scene") {
+    speakDatasetPrompt("复原场景");
+    void resetDatasetSceneFromController();
+  }
 }
 
 async function runDatasetAutoCollectionLoop() {
@@ -2143,7 +2355,7 @@ function applyVrStateFromBackend(state) {
     vrControlOwner.value = vr.control_owner;
   }
   if (typeof vr.error_message === "string") {
-    vrErrorMessage.value = vr.error_message;
+    applyBackendVrErrorMessage(vr.error_message);
   }
   const selectedGroup = String(state?.selected_joint_group || "").trim();
   if (selectedGroup) {
@@ -2265,8 +2477,6 @@ function describeVrEnterFailure(reason, detail) {
 async function runQuest3AccessChecks() {
   await checkBackendHealth();
 
-  const latestWsOk = websocketManager.isConnected;
-
   try {
     const stateResponse = await get("/sim/state/", { timeout: 2000 });
     const state = stateResponse?.data || null;
@@ -2282,8 +2492,12 @@ async function runQuest3AccessChecks() {
 
   await runDatasetPrecheck();
 
+  const latestWsOk = websocketManager.isConnected;
   wsCheckStatus.value = latestWsOk ? "ok" : "error";
   wsCheckMessage.value = latestWsOk ? "WebSocket 已连接" : "WebSocket 未连接";
+  if (latestWsOk) {
+    clearRecoveredWebSocketErrors();
+  }
   updateNetworkPrereq();
   if (!isQuest3Device.value && !vrErrorMessage.value) {
     vrErrorMessage.value = "当前访问端不是 Quest3，建议在 Quest3 浏览器中操作。";
@@ -2523,6 +2737,7 @@ function resetQuestXrVisualNodes() {
       nodeMap[key] = null;
     });
   });
+  lastQuestXrVisualRefreshAt = 0;
 }
 
 function registerQuestXrNodeEvents(node, kind, fallbackKey = "") {
@@ -2680,13 +2895,8 @@ function hasVisibleQuestHandMesh(handNode) {
 
 function updateQuestHandSkeletonFallbacks() {
   if (!renderer?.xr?.isPresenting || vrModeState.value !== "vr_hand_mode") return;
-  const tmpPosition = new THREE.Vector3();
-  const tmpFrom = new THREE.Vector3();
-  const tmpTo = new THREE.Vector3();
-  const tmpMid = new THREE.Vector3();
-  const tmpDirection = new THREE.Vector3();
-  const tmpQuaternion = new THREE.Quaternion();
-  const yAxis = new THREE.Vector3(0, 1, 0);
+  const { tmpPosition, tmpFrom, tmpTo, tmpMid, tmpDirection, tmpQuaternion, yAxis } =
+    questHandFallbackTemps;
   Object.values(xrVisualNodes.hands).forEach((handNode) => {
     if (!handNode) return;
     const skeleton = handNode.getObjectByName("quest_hand_skeleton_fallback");
@@ -2782,8 +2992,11 @@ function updateQuestHandSkeletonFallbacks() {
   });
 }
 
-function ensureQuestXrVisualNodes() {
+function ensureQuestXrVisualNodes(force = false) {
   if (!renderer?.xr || !scene) return;
+  const nowMs = Date.now();
+  if (!force && nowMs - lastQuestXrVisualRefreshAt < 120) return;
+  lastQuestXrVisualRefreshAt = nowMs;
   const sessionSources = Array.from(getQuestXRSession()?.inputSources || []);
   const controllerInputSources = sessionSources.filter((source) => source && !source.hand);
   const handInputSources = sessionSources.filter((source) => source && source.hand);
@@ -2916,7 +3129,7 @@ function resetQuestXrSourceRefreshTimer() {
 
 async function refreshQuestXrInputBindings() {
   lastQuestControllerPoseSnapshot = null;
-  ensureQuestXrVisualNodes();
+  ensureQuestXrVisualNodes(true);
   updateQuestXrVisualVisibility();
 
   if (isQuestControllerModeActive()) {
@@ -3081,11 +3294,13 @@ function attachQuestXrSessionListeners(session) {
       }
       scheduleQuestXrInputRefresh(VR_MODE_TRANSITION_GUARD_MS);
     }
-    ensureQuestXrVisualNodes();
+    ensureQuestXrVisualNodes(true);
     updateQuestXrVisualVisibility();
   };
   questXrInputSourcesHandler = () => {
-    ensureQuestXrVisualNodes();
+    // 输入源顺序可能在 Quest 重连后变化，先清掉旧的左右手映射再重建。
+    resetQuestXrVisualNodes();
+    ensureQuestXrVisualNodes(true);
     updateQuestXrVisualVisibility();
     if (isQuestControllerModeActive()) {
       suppressQuestControllerTransition({
@@ -3144,7 +3359,7 @@ async function chooseVrInputMode(mode) {
       last_quest_input_ts: Date.now() / 1000,
       error_message: "",
     }, { force: true });
-    ensureQuestXrVisualNodes();
+    ensureQuestXrVisualNodes(true);
     updateQuestXrVisualVisibility();
     startQuestControllerLoop();
     return;
@@ -3163,7 +3378,7 @@ async function chooseVrInputMode(mode) {
     last_quest_input_ts: Date.now() / 1000,
     error_message: "",
   }, { force: true });
-  ensureQuestXrVisualNodes();
+  ensureQuestXrVisualNodes(true);
   updateQuestXrVisualVisibility();
   stopQuestControllerLoop();
   await startQuestHandLoop();
@@ -3208,7 +3423,7 @@ async function enterVrMode() {
 
     attachQuestXrSessionListeners(xrSession);
     questXrPresentingLostSinceAt.value = 0;
-    ensureQuestXrVisualNodes();
+    ensureQuestXrVisualNodes(true);
     updateQuestXrVisualVisibility();
 
     stopQuestControllerLoop();
@@ -3764,7 +3979,11 @@ function sendQuestControlToBackend(mapped) {
 
   const now = Date.now();
   const elapsed = now - Number(lastQuestControllerSentAt.value || 0);
-  if (elapsed < VR_COMMAND_MIN_INTERVAL_MS) {
+  if (!shouldSendRealtimeCommand({
+    nowMs: now,
+    lastSentAtMs: lastQuestControllerSentAt.value,
+    minIntervalMs: VR_COMMAND_MIN_INTERVAL_MS,
+  })) {
     questControllerPendingMapped.value = mapped;
     scheduleQuestControllerQueuedFlush(VR_COMMAND_MIN_INTERVAL_MS - elapsed);
     return;
@@ -3837,7 +4056,11 @@ function sendQuestHandControlToBackend(mapped) {
 
   const now = Date.now();
   const elapsed = now - Number(lastQuestHandSentAt.value || 0);
-  if (elapsed < VR_COMMAND_MIN_INTERVAL_MS) {
+  if (!shouldSendRealtimeCommand({
+    nowMs: now,
+    lastSentAtMs: lastQuestHandSentAt.value,
+    minIntervalMs: VR_COMMAND_MIN_INTERVAL_MS,
+  })) {
     questHandPendingMapped.value = mapped;
     scheduleQuestHandQueuedFlush(VR_COMMAND_MIN_INTERVAL_MS - elapsed);
     return;
@@ -3882,11 +4105,14 @@ function runQuestControllerTick(nowOverrideMs = Date.now(), xrFrame = null) {
       left_grip: 0,
       right_trigger: 0,
       right_grip: 0,
+      dataset_start: 0,
+      dataset_reset: 0,
       next_episode: 0,
       active_hand: "",
     },
     raw: null,
   };
+  handleDatasetControllerShortcuts(snapshot, nowMs);
   handleDatasetControllerNextButton(snapshot, nowMs);
   const controllerPose = readQuestControllerPoseSnapshot(xrFrame);
 
@@ -4497,12 +4723,6 @@ function applyRestoredSceneState(state) {
 
 async function restoreSceneToInitialState() {
   if (sceneRestorePending.value) return;
-  if (datasetEpisodeActive.value || datasetEpisodeInFlight.value || datasetAutoCollecting.value) {
-    sceneRestoreStatusTone.value = "error";
-    sceneRestoreStatusMessage.value = "采集进行中，当前不允许执行场景复原。";
-    receivedText.value = sceneRestoreStatusMessage.value;
-    return;
-  }
 
   sceneRestorePending.value = true;
   sceneRestoreStatusTone.value = "idle";
@@ -4513,7 +4733,7 @@ async function restoreSceneToInitialState() {
   stopQuestHandLoop();
 
   try {
-    const response = await post("/sim/reset/", {}, { timeout: 12000 });
+    const response = await post("/sim/reset/", buildDesktopSceneRestorePayload(), { timeout: 12000 });
     const data = response?.data || {};
     if (String(data.status || "").toLowerCase() !== "success") {
       throw new Error(data.message || "场景复原失败");
@@ -6403,6 +6623,16 @@ const xrVisualNodes = {
   controllerRays: { left: null, right: null },
   hands: { left: null, right: null },
 };
+// 复用手势骨骼计算对象，避免 XR 帧循环持续制造临时对象触发 GC。
+const questHandFallbackTemps = {
+  tmpPosition: new THREE.Vector3(),
+  tmpFrom: new THREE.Vector3(),
+  tmpTo: new THREE.Vector3(),
+  tmpMid: new THREE.Vector3(),
+  tmpDirection: new THREE.Vector3(),
+  tmpQuaternion: new THREE.Quaternion(),
+  yAxis: new THREE.Vector3(0, 1, 0),
+};
 const questControllerPoseWorldPosition = new THREE.Vector3();
 const questControllerPoseWorldQuaternion = new THREE.Quaternion();
 let activeQuestXrSession = null;
@@ -6411,6 +6641,7 @@ let questXrInputSourcesHandler = null;
 let questXrEndedHandler = null;
 let questXrSourceRefreshTimer = null;
 let questVrExitInFlight = false;
+let lastQuestXrVisualRefreshAt = 0;
 
 // 初始化
 function initBase() {
@@ -6847,6 +7078,8 @@ const setupWebSocketStateSync = () => {
 
     if (isWebSocketConnected.value) {
       console.log('WebSocket状态同步已连接');
+      checkWebSocketReady();
+      clearRecoveredWebSocketErrors();
       websocketManager.requestState();
       if (fetchInterval.value) {
         clearInterval(fetchInterval.value);

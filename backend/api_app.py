@@ -267,7 +267,13 @@ async def post_sim_step(request: StepRequest) -> CommandResult:
 @app.post("/sim/reset/", response_model=CommandResult)
 async def post_sim_reset(request: ResetRequest) -> CommandResult:
     try:
-        state = await simulation.reset(model_path=request.model_path)
+        state = await simulation.reset(
+            model_path=request.model_path,
+            reload_model=bool(request.reload_model),
+            preserve_vr_state=bool(request.preserve_vr_state),
+            settle_steps=request.settle_steps,
+            randomize_scene_objects=bool(request.randomize_scene_objects),
+        )
     except Exception as exc:
         return CommandResult(status="error", message=f"reset failed: {exc}")
 
@@ -501,7 +507,13 @@ async def _handle_ws_message(raw_message: Any) -> dict[str, Any] | None:
     if message_type == "reset":
         try:
             request = ResetRequest.model_validate(message_data)
-            state = await simulation.reset(model_path=request.model_path)
+            state = await simulation.reset(
+                model_path=request.model_path,
+                reload_model=bool(request.reload_model),
+                preserve_vr_state=bool(request.preserve_vr_state),
+                settle_steps=request.settle_steps,
+                randomize_scene_objects=bool(request.randomize_scene_objects),
+            )
             return {
                 "type": "reset_result",
                 "data": {

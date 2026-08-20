@@ -186,7 +186,8 @@ export default defineConfig({
     },
     proxy: {
       '/health/': createBackendProxyOptions(),
-      '/sim': createBackendProxyOptions(true),
+      '/sim/ws': createBackendProxyOptions(true),
+      '/sim': createBackendProxyOptions(),
       '/data/': createBackendProxyOptions(),
       '/dataset': createBackendProxyOptions(),
     },

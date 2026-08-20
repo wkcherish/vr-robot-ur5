@@ -2,9 +2,35 @@ import assert from "node:assert/strict";
 
 import {
   getSceneJointInterpolationAlphaForMode,
+  shouldContinueXrInputLoop,
+  shouldSendRealtimeCommand,
   shouldApplyBackendPoseImmediately,
   shouldRunClientPhysicsDiagnostics,
 } from "../src/utils/immersiveStateHotPath.js";
+
+assert.equal(
+  shouldContinueXrInputLoop({
+    running: true,
+    generation: 1,
+    activeGeneration: 2,
+    frameSession: {},
+    session: {},
+  }),
+  false,
+  "旧的 XR 输入循环不能在新循环启动后继续运行"
+);
+
+assert.equal(
+  shouldSendRealtimeCommand({ nowMs: 100, lastSentAtMs: 80, minIntervalMs: 24 }),
+  false,
+  "实时控制命令应遵守最小发送间隔"
+);
+
+assert.equal(
+  shouldSendRealtimeCommand({ nowMs: 105, lastSentAtMs: 80, minIntervalMs: 24 }),
+  true,
+  "达到最小发送间隔后应允许发送最新控制命令"
+);
 
 assert.equal(
   shouldApplyBackendPoseImmediately({ immediate: false }),

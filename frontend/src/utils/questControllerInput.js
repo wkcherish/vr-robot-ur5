@@ -10,6 +10,9 @@ const LEFT_BUTTON_INDEX = {
   select_wrist: [3],
   select_upper_arm: [4],
   select_forearm: [5],
+  // Quest 左手柄 X/Y 在沉浸式采集里作为快捷键：X=结束/复原，Y=开始采集。
+  dataset_reset: [4],
+  dataset_start: [5],
   grip: [1],
   trigger: [0],
 };
@@ -309,6 +312,8 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
         left_grip: 0,
         right_trigger: 0,
         right_grip: 0,
+        dataset_start: 0,
+        dataset_reset: 0,
         next_episode: 0,
         active_hand: "",
       },
@@ -322,6 +327,8 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
   const selectUpperArm = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_upper_arm);
   const selectForearm = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_forearm);
   const selectWrist = readButtonValue(selectPad, LEFT_BUTTON_INDEX.select_wrist);
+  const datasetReset = readButtonValue(leftPad, LEFT_BUTTON_INDEX.dataset_reset);
+  const datasetStart = readButtonValue(leftPad, LEFT_BUTTON_INDEX.dataset_start);
   const leftPrecision = readButtonPressedValue(leftPad, LEFT_BUTTON_INDEX.precision);
   const rightPrecision = readButtonPressedValue(rightPad, RIGHT_BUTTON_INDEX.precision);
   const precision = Math.max(leftPrecision, rightPrecision);
@@ -346,6 +353,8 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       select_upper_arm: selectUpperArm,
       select_forearm: selectForearm,
       select_wrist: selectWrist,
+      dataset_start: datasetStart,
+      dataset_reset: datasetReset,
       precision: leftPrecision,
     },
     right: {
@@ -380,6 +389,8 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
       left_grip: raw.left.grip,
       right_trigger: raw.right.trigger,
       right_grip: raw.right.grip,
+      dataset_start: raw.left.dataset_start,
+      dataset_reset: raw.left.dataset_reset,
       next_episode: raw.right.next_episode,
       active_hand: activeHand,
     },
@@ -387,12 +398,16 @@ function readSnapshotFromPads(leftPad, rightPad, source) {
   };
 }
 
+export function readQuestControllerSnapshotFromPads(leftPad, rightPad, source = "manual") {
+  return readSnapshotFromPads(leftPad, rightPad, source);
+}
+
 export function readQuestControllerSnapshot() {
   const xrPads = pickLeftRightPadsFromXRSession();
   if (xrPads.leftPad || xrPads.rightPad) {
-    return readSnapshotFromPads(xrPads.leftPad, xrPads.rightPad, xrPads.source);
+    return readQuestControllerSnapshotFromPads(xrPads.leftPad, xrPads.rightPad, xrPads.source);
   }
 
   const navigatorPads = pickLeftRightPads();
-  return readSnapshotFromPads(navigatorPads.leftPad, navigatorPads.rightPad, navigatorPads.source);
+  return readQuestControllerSnapshotFromPads(navigatorPads.leftPad, navigatorPads.rightPad, navigatorPads.source);
 }
