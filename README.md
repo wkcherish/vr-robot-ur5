@@ -1,4 +1,4 @@
-# ar-ur5-rl
+# vr-robot-ur5
 
 基于 MuJoCo + FastAPI + Vue 3 + WebXR 的 UR5 数字孪生与 Quest3 VR 控制项目。支持桌面端调试与 Quest3 局域网访问，进入 VR 后可通过手柄或手势连续控制机械臂与夹爪。
 
